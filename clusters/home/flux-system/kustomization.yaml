@@ -4,3 +4,5 @@ resources:
 - gotk-components.yaml
 - gotk-sync.yaml
 - secret-slackurl.yml
+- slack-provider.yml
+- slack-alert.yml
