@@ -45,8 +45,8 @@ Install the helm chart on the cluster using `1password-credentials.json`
     apiVersion: external-secrets.io/v1beta1
     kind: SecretStore
     metadata:
-    name: onepassword-k3s
-    namespace: 1password
+        name: onepassword-k3s
+        namespace: 1password
     spec:
     provider:
         onepassword:
@@ -64,19 +64,19 @@ Install the helm chart on the cluster using `1password-credentials.json`
     apiVersion: external-secrets.io/v1beta1
     kind: ClusterSecretStore
     metadata:
-    name: onepassword-k3s
+        name: onepassword-k3s
     spec:
-    provider:
-        onepassword:
-        connectHost: http://onepassword-connect.1password.svc.cluster.local:8080
-        vaults:
-            k3s: 1  # search order
-        auth:
-            secretRef:
-            connectTokenSecretRef:
-                name: onepassword-connect-token
-                key: token
-                namespace: 1password
+        provider:
+            onepassword:
+            connectHost: http://onepassword-connect.1password.svc.cluster.local:8080
+            vaults:
+                k3s: 1  # search order
+            auth:
+                secretRef:
+                connectTokenSecretRef:
+                    name: onepassword-connect-token
+                    key: token
+                    namespace: 1password
     ```
 
 ## Other Notes
