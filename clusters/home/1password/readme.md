@@ -35,10 +35,12 @@ Install the helm chart on the cluster using `1password-credentials.json`
     ```
 
 4. (Optional) Setup a secretStore:
-    - Requires external-secrets helm chart installed
-    - connectHost can refer to the kubernetes service URL: service-name.namespace.svc.cluster.local:service-port
-    - 8080 is the connect-api container endpoint tcp default
+    - Requires `external-secrets` helm chart installed
+    - `connectHost` can refer to the kubernetes service URL: service-name.namespace.svc.cluster.local:service-port
+    - `8080` is the connect-api container endpoint tcp default
+    - Note the scoping difference between [secretstore][SecretStore] and [ClusterSecretStore][clustersecretstore]
     - See: [1Password Secrets Automation][1password-externalsecrets]
+    SecretStore:
     ```
     apiVersion: external-secrets.io/v1beta1
     kind: SecretStore
@@ -57,6 +59,25 @@ Install the helm chart on the cluster using `1password-credentials.json`
                 name: onepassword-connect-token
                 key: token
     ```
+    ClusterSecretStore:
+    ```
+    apiVersion: external-secrets.io/v1beta1
+    kind: ClusterSecretStore
+    metadata:
+    name: onepassword-k3s
+    spec:
+    provider:
+        onepassword:
+        connectHost: http://onepassword-connect.1password.svc.cluster.local:8080
+        vaults:
+            k3s: 1  # search order
+        auth:
+            secretRef:
+            connectTokenSecretRef:
+                name: onepassword-connect-token
+                key: token
+                namespace: 1password
+    ```
 
 ## Other Notes
 1Password is included in FluxCD Secrets Management recommendations, particularly [Secrets Synchronized by Operators][flux-secrets-operators]
@@ -69,3 +90,5 @@ This uses ExternalSecrets instead of the 1password operator simply because of co
 [1password-externalsecrets]: https://external-secrets.io/v0.5.7/provider-1password-automation/#creating-compatible-1password-items
 [op-operator-comment]: https://github.com/1Password/onepassword-operator/issues/128
 [flux-secrets-operators]: https://fluxcd.io/flux/security/secrets-management/#secrets-synchronized-by-operators
+[clustersecretstore]: https://external-secrets.io/v0.4.4/api-clustersecretstore/
+[secretstore]: https://external-secrets.io/v0.4.4/api-secretstore/
