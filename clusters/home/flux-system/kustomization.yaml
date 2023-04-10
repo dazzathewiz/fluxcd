@@ -6,3 +6,6 @@ resources:
 - secret-slackurl.yml
 - slack-provider.yml
 - slack-alert.yml
+spec:
+  dependsOn:
+    - name: external-secrets
