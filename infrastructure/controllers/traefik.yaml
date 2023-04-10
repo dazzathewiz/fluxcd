@@ -6,7 +6,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
-  url: ttps://helm.traefik.io/traefik
+  url: https://helm.traefik.io/traefik
 ---
 apiVersion: v1
 kind: ConfigMap
