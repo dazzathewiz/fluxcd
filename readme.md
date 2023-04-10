@@ -29,7 +29,14 @@ Apply new repo updates immediately: `flux reconcile kustomization flux-system --
 
 ## Features
 
-✅ [Flux Notify/Alerts in Slack](clusters/home/flux-system#notify)
-✅ [1Password integration using External Secrets Operator](clusters/home/1password)
+- ✅ [Flux Notify/Alerts in Slack](infrastructure/configs)
+- ✅ [1Password integration using External Secrets Operator](infrastructure/doc-1password)
+
+## Repo Structure
+
+Loosely following the [Monorepo][flux-monorepo] structure, but specifically referring to the example:
+ [flux2-kustomise-helm-example][flux2-kustomise-helm-example]
 
 [fluxcd]: https://fluxcd.io/
+[flux2-kustomise-helm-example]: https://github.com/fluxcd/flux2-kustomize-helm-example
+[flux-monorepo]: https://fluxcd.io/flux/guides/repository-structure/#monorepo
