@@ -8,7 +8,7 @@ spec:
   dependsOn:
     - name: external-secrets
   interval: 5m
-  path: "./secretstore/"
+  path: "./clusters/home/1password/secretstore/"
   prune: true
   sourceRef:
     kind: GitRepository
