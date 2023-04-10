@@ -28,10 +28,10 @@ spec:
   target:
     creationPolicy: Owner
   data:
-  - secretKey: b64-secret
+  - secretKey: users
     remoteRef:
       key: traefik-dashboard
-      property: b64-secret
+      property: users
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
