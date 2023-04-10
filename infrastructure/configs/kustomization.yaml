@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - op-secretstore.yaml
   - notify-slack.yaml
+  - traefik.yaml
