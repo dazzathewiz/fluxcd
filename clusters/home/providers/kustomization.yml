@@ -7,7 +7,7 @@ metadata:
   namespace: 1password
 spec:
   interval: 5m
-  path: "./clusters/home/providers/1password/"
+  path: "./clusters/home/providers/1password"
   prune: true
   sourceRef:
     kind: GitRepository
@@ -34,7 +34,7 @@ spec:
   dependsOn:
     - name: onepassword-secretstore
   interval: 5m
-  path: "./clusters/home/providers/notify-slack/"
+  path: "./clusters/home/providers/notify-slack"
   prune: true
   sourceRef:
     kind: GitRepository
