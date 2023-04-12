@@ -46,4 +46,4 @@ spec:
       whenUnsatisfiable: DoNotSchedule
       labelSelector:
         matchLabels:
-          app: '{{ template "cert-manager.name" . }}'
+          app.kubernetes.io/name: cert-manager
