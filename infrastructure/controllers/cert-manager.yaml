@@ -31,3 +31,20 @@ spec:
   timeout: 5m
   values:
     installCRDs: true
+    replicaCount: 3
+    extraArgs:
+      - --dns01-recursive-nameservers=1.1.1.1:53,9.9.9.9:53
+      - --dns01-recursive-nameservers-only
+    podDnsPolicy: None
+    podDnsConfig:
+      nameservers:
+        - 1.1.1.1
+        - 9.9.9.9
+    topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: cert-manager
+          app.kubernetes.io/component: controller
