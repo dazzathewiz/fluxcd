@@ -5,3 +5,4 @@ resources:
   - op-secretstore.yaml
   - notify-slack.yaml
   - traefik.yaml
+  - cert-manager.yaml

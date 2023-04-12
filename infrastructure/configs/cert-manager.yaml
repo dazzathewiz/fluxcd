@@ -1,0 +1,45 @@
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: aws-r53-key-secret
+  namespace: cert-manager
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: accessKeyID
+    remoteRef:
+      key: k3s-certmanager
+      property: accessKeyID
+  - secretKey: secret-access-key
+    remoteRef:
+      key: k3s-certmanager
+      property: secret-access-key
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: dazzathewiz@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+      - dns01:
+          route53:
+            region: ap-southeast-2
+            accessKeyIDSecretRef:
+              name: aws-r53-key-secret
+              key: accessKeyID
+            secretAccessKeySecretRef:
+              name: aws-r53-key-secret
+              key: secret-access-key
+        selector:
+          dnsZones:
+            - "dazzathewiz.com"
