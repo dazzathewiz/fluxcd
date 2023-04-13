@@ -5,9 +5,9 @@ metadata:
   name: inf-dazzathewiz-com
   namespace: traefik
 spec:
-  secretName: inf-dazzathewiz-com-staging-tls
+  secretName: inf-dazzathewiz-com-tls
   issuerRef:
-    name: letsencrypt-staging
+    name: letsencrypt-production
     kind: ClusterIssuer
   commonName: "*.inf.dazzathewiz.com"
   dnsNames:

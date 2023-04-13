@@ -43,3 +43,27 @@ spec:
         selector:
           dnsZones:
             - "dazzathewiz.com"
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: dazzathewiz@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-production
+    solvers:
+      - dns01:
+          route53:
+            region: ap-southeast-2
+            accessKeyIDSecretRef:
+              name: aws-r53-key-secret
+              key: accessKeyID
+            secretAccessKeySecretRef:
+              name: aws-r53-key-secret
+              key: secret-access-key
+        selector:
+          dnsZones:
+            - "dazzathewiz.com"

@@ -36,7 +36,7 @@ spec:
       # middlewares:
       #   - name: default-headers
   tls:
-    secretName: inf-dazzathewiz-com-staging-tls
+    secretName: inf-dazzathewiz-com-tls
 ---
 kind: Deployment
 apiVersion: apps/v1
