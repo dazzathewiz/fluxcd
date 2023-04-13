@@ -6,3 +6,4 @@ resources:
   - notify-slack.yaml
   - traefik.yaml
   - cert-manager.yaml
+  - certificates

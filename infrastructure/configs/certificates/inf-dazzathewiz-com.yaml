@@ -1,0 +1,15 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: inf-dazzathewiz-com
+  namespace: traefik
+spec:
+  secretName: inf-dazzathewiz-com-staging-tls
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  commonName: "*.inf.dazzathewiz.com"
+  dnsNames:
+  - "inf.dazzathewiz.com"
+  - "*.inf.dazzathewiz.com"
