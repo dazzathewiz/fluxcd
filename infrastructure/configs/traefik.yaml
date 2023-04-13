@@ -61,5 +61,5 @@ spec:
       services:
         - name: api@internal
           kind: TraefikService
-#  tls:
-#    secretName: local-example-com-staging-tls
+  tls:
+    secretName: inf-dazzathewiz-com-tls
