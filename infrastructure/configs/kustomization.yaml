@@ -8,3 +8,4 @@ resources:
   - cert-manager.yaml
   - certificates
   - rancher.yaml
+  - longhorn.yaml

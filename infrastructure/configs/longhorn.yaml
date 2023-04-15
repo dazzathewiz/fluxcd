@@ -1,0 +1,78 @@
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: longhorn-dashboard-auth
+  namespace: longhorn-system
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: users
+    remoteRef:
+      key: longhorn-dashboard
+      property: users
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: longhorn-dashboard-basicauth
+  namespace: longhorn-system
+spec:
+  basicAuth:
+    secret: longhorn-dashboard-auth
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: svc-longhorn-headers
+  namespace: longhorn-system
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: cors-allow-all
+  namespace: longhorn-system
+spec:
+  headers:
+    accessControlAllowCredentials: true
+    accessControlAllowMethods:
+      - "*"
+    accessControlAllowOriginList:
+      - "*"
+    accessControlMaxAge: 100
+    addVaryHeader: true
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: longhorn-dashboard
+  namespace: longhorn-system
+  annotations: 
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`longhorn.inf.dazzathewiz.com`)
+      kind: Rule
+      middlewares:
+        - name: cors-allow-all
+          namespace: longhorn-system
+        - name: longhorn-dashboard-basicauth
+          namespace: longhorn-system
+        - name: svc-longhorn-headers
+          namespace: longhorn-system
+      services:
+        - name: longhorn-frontend
+          port: 80
+          namespace: longhorn-system
+  tls:
+    secretName: inf-dazzathewiz-com-tls

@@ -53,6 +53,12 @@ See: [1Password Connect](../doc-1password)
 
 ### [Rancher Dashboard](https://rancher.inf.dazzathewiz.com/)
 
+## Longhorn
+
+[Longhorn UI with Traefik](https://tansanrao.com/guide-storage-ingress-webui-k8s/)
+[Longhorn defaul disk labelling](https://longhorn.io/kb/tip-only-use-storage-on-a-set-of-nodes/#tell-longhorn-to-create-a-default-disk-on-a-specific-set-of-nodes)
+[Configuring Defaults for Nodes and Disks](https://longhorn.io/docs/1.4.1/advanced-resources/default-disk-and-node-config/)
+
 ### Requirements
 - Have emberstack/reflector installed to sync `cert-manager` [secrets across namespaces](https://cert-manager.io/docs/tutorials/syncing-secrets-across-namespaces/)
 - Configure a `Certificate` secret and ensure it's synced to the `cattle-system` namespace
