@@ -23,8 +23,6 @@ spec:
   values:
     hostname: rancher.inf.dazzathewiz.com
     ingress:
-      extraAnnotations:
-        kubernetes.io/ingress.class: traefik-external
       tls:
         source: secret
         secretName: inf-dazzathewiz-com-tls
