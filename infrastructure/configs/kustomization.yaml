@@ -7,3 +7,4 @@ resources:
   - traefik.yaml
   - cert-manager.yaml
   - certificates
+  - rancher.yaml
