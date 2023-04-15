@@ -6,3 +6,4 @@ resources:
   - external-secrets.yaml
   - cert-manager.yaml
   - traefik.yaml
+  - emberstack.yaml
