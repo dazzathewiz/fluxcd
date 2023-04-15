@@ -29,8 +29,11 @@ Apply new repo updates immediately: `flux reconcile kustomization flux-system --
 
 ## Features
 
+### Infrastructure Configuration
+
 - ✅ [Flux Notify/Alerts in Slack](infrastructure/configs)
 - ✅ [1Password integration using External Secrets Operator](infrastructure/doc-1password)
+- ✅ [Rancher](infrastructure/configs)
 
 ## Repo Structure
 
