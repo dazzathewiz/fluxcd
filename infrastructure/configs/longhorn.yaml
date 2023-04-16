@@ -76,3 +76,28 @@ spec:
           namespace: longhorn-system
   tls:
     secretName: inf-dazzathewiz-com-tls
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: linode-k3s-backup-bucket-secret
+  namespace: longhorn-system
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: AWS_ENDPOINTS
+    remoteRef:
+      key: linode-k3s-bucket
+      property: AWS_ENDPOINTS
+  - secretKey: AWS_ACCESS_KEY_ID
+    remoteRef:
+      key: linode-k3s-bucket
+      property: AWS_ACCESS_KEY_ID
+  - secretKey: AWS_SECRET_ACCESS_KEY
+    remoteRef:
+      key: linode-k3s-bucket
+      property: AWS_SECRET_ACCESS_KEY

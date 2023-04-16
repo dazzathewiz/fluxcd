@@ -31,5 +31,7 @@ spec:
   timeout: 15m
   values:
     defaultSettings:
+      backupTarget: s3://k3s-backup@ap-south-1/
+      backupTargetCredentialSecret: linode-k3s-backup-bucket-secret
       createDefaultDiskLabeledNodes: true
       defaultDataPath: /mnt/nvme0/
