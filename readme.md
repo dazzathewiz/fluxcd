@@ -31,9 +31,11 @@ Apply new repo updates immediately: `flux reconcile kustomization flux-system --
 
 ### Infrastructure Configuration
 
-- ✅ [Flux Notify/Alerts in Slack](infrastructure/configs)
+- ✅ [Flux Notify/Alerts in Slack](infrastructure/configs#notify-and-alerts-notify-slackyaml)
 - ✅ [1Password integration using External Secrets Operator](infrastructure/doc-1password)
-- ✅ [Rancher](infrastructure/configs)
+- ✅ [Traefik/Cert-Manager Ingress](infrastructure/configs#traefik--cert-manager)
+- ✅ [Rancher](infrastructure/configs#rancher)
+- ✅ [Longhorn](infrastructure/configs#longhorn)
 
 ## Repo Structure
 
