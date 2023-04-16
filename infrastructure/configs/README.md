@@ -9,9 +9,9 @@ See: [1Password Connect](../doc-1password)
 - A `slack` provider type is configured
 - `on-call-webapp` Alert is configured with default settings
 
-### Sources
-[Flux Guide][https://fluxcd.io/flux/guides/notifications/]
-[TechnoTim Guide][https://docs.technotim.live/posts/flux-devops-gitops/]
+    ### Sources
+    [Flux Guide][https://fluxcd.io/flux/guides/notifications/]
+    [TechnoTim Guide][https://docs.technotim.live/posts/flux-devops-gitops/]
 
 ## Traefik & Cert-Manager
 
@@ -41,11 +41,11 @@ See: [1Password Connect](../doc-1password)
     - `kubectl describe certificate --all-namespaces`
     - `kubectl get challenges --all-namespaces ` -> will only show challenges currently in progress of being validated.
 
-### Sources
-[FluxCD example of cert-manager helm release][https://geek-cookbook.funkypenguin.co.nz/kubernetes/ssl-certificates/cert-manager/]
-[Cert-Manager ClusterIssuer manifests][https://docs.gitops.weave.works/docs/guides/cert-manager/]
-[Certificate Generation](https://geek-cookbook.funkypenguin.co.nz/kubernetes/ssl-certificates/wildcard-certificate/)
-[Traefik Cookbook](https://geek-cookbook.funkypenguin.co.nz/kubernetes/ingress/traefik/)
+    ### Sources
+    [FluxCD example of cert-manager helm release][https://geek-cookbook.funkypenguin.co.nz/kubernetes/ssl-certificates/cert-manager/]
+    [Cert-Manager ClusterIssuer manifests][https://docs.gitops.weave.works/docs/guides/cert-manager/]
+    [Certificate Generation](https://geek-cookbook.funkypenguin.co.nz/kubernetes/ssl-certificates/wildcard-certificate/)
+    [Traefik Cookbook](https://geek-cookbook.funkypenguin.co.nz/kubernetes/ingress/traefik/)
 
 ## Rancher
 
@@ -53,13 +53,61 @@ See: [1Password Connect](../doc-1password)
 
 ### [Rancher Dashboard](https://rancher.inf.dazzathewiz.com/)
 
-## Longhorn
-
-[Longhorn UI with Traefik](https://tansanrao.com/guide-storage-ingress-webui-k8s/)
-[Longhorn defaul disk labelling](https://longhorn.io/kb/tip-only-use-storage-on-a-set-of-nodes/#tell-longhorn-to-create-a-default-disk-on-a-specific-set-of-nodes)
-[Configuring Defaults for Nodes and Disks](https://longhorn.io/docs/1.4.1/advanced-resources/default-disk-and-node-config/)
-
 ### Requirements
 - Have emberstack/reflector installed to sync `cert-manager` [secrets across namespaces](https://cert-manager.io/docs/tutorials/syncing-secrets-across-namespaces/)
 - Configure a `Certificate` secret and ensure it's synced to the `cattle-system` namespace
 - Include the `hostname:` as a subdomain of the traefik Controller loadBalancerIP
+
+## Longhorn
+
+📺 [Watch the TechnoTim Video](https://www.youtube.com/watch?v=eKBBHc0t7bc)
+
+[Helm Chart values.yaml](https://github.com/longhorn/longhorn/blob/master/chart/values.yaml)
+```
+  values:
+    defaultSettings:
+      backupTarget: s3://k3s-backup@ap-south-1/                         # See: [Backup to Linode](#backup-to-linode)
+      backupTargetCredentialSecret: linode-k3s-backup-bucket-secret     # See: [Backup to Linode](#backup-to-linode)
+      createDefaultDiskLabeledNodes: true                               # See: [Storage Node Selection](#storage-node-selection)
+      defaultDataPath: /mnt/nvme0/                                      # See: [Storage Node Selection](#storage-node-selection)
+```
+
+### Backup to Linode
+See: [Creating a Backup Target](https://fredrickb.com/2022/07/24/introducing-longhorn-to-the-homelab/#creating-backup-target)
+1. Configure a Kubernetes Secret (Note this repo will use ExternalSecrets)
+    ```
+    apiVersion: v1
+    kind: Secret
+    metadata:
+    name: longhorn-linode-s3-backup-credentials
+    namespace: longhorn-system
+    type: Opaque
+    data:
+    AWS_ENDPOINTS: "<s3-endpoint-excluding-bucket-name>" # https://<linode-region>.linodeobjects.com
+    AWS_ACCESS_KEY_ID: "<access-key>" # Access Key connected to given bucket in Linode
+    AWS_SECRET_ACCESS_KEY: "<access-secret>" # Access Secret connected to given bucket in Linode
+    ```
+    - The secret name becomes the value of `backupTargetCredentialSecret:` in Longhorn Helm deployment
+2. The S3 formatted URL (`s3://<bucket-name>@<placeholder-region>/`)
+    - This URL becomes the value of `backupTarget:` in Longhorn Helm deployment
+    - URL format can be tricky to get right when using S3 compatible services outside of AWS. 
+        - [Setting a backup target](https://longhorn.io/docs/1.4.0/snapshots-and-backups/backup-and-restore/set-backup-target/#enable-virtual-hosted-style-access-for-s3-compatible-backupstore)
+        - [Git BUG: support non aws s3 buckets](https://github.com/longhorn/longhorn/issues/4205)
+
+### Storage Node Selection 
+
+The Longhorn setting `Create Default Disk on Labeled Nodes` is enabled so k3s selects only labeled nodes for scheduling storage. 
+This is enabled at install of Longhorn Helm Chart with option `createDefaultDiskLabeledNodes: true`. See: 
+[Customizing Default Disks for New Nodes](https://longhorn.io/docs/1.4.1/advanced-resources/default-disk-and-node-config/#customizing-default-disks-for-new-nodes)
+
+1. Apply a label to storage nodes: `node.longhorn.io/create-default-disk=true`
+2. Change the `settings.default-data-path` in Helm config `defaultDataPath: /mnt/nvme0/`
+
+Note the node label is done automatically, and path `/mnt/nvme0/` automatically mounted when deploying k3s with 
+[dazzathewiz/k3s-ansible](https://github.com/dazzathewiz/k3s-ansible)
+
+### Sources
+- [Great example of configuration in homelab](https://fredrickb.com/2022/07/24/introducing-longhorn-to-the-homelab/)
+- [Longhorn UI with Traefik](https://tansanrao.com/guide-storage-ingress-webui-k8s/)
+- [Longhorn defaul disk labelling](https://longhorn.io/kb/tip-only-use-storage-on-a-set-of-nodes/#tell-longhorn-to-create-a-default-disk-on-a-specific-set-of-nodes)
+- [Configuring Defaults for Nodes and Disks](https://longhorn.io/docs/1.4.1/advanced-resources/default-disk-and-node-config/)
