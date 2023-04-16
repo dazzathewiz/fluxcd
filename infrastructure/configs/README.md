@@ -62,6 +62,8 @@ See: [1Password Connect](../doc-1password)
 
 📺 [Watch the TechnoTim Video](https://www.youtube.com/watch?v=eKBBHc0t7bc)
 
+### [Longhorn Dashboard](https://longhorn.inf.dazzathewiz.com/)
+
 [Helm Chart values.yaml](https://github.com/longhorn/longhorn/blob/master/chart/values.yaml)
 ```
   values:
