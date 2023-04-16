@@ -74,6 +74,12 @@ See: [1Password Connect](../doc-1password)
       defaultDataPath: /mnt/nvme0/                                      # See: [Storage Node Selection](#storage-node-selection)
 ```
 
+### Post Install (Manual Configuration)
+After the installation of Longhorn, I've needed to:
+1. Change the default StorageClass within the cluster to be `longhorn` instead of built-in `local-path` 
+    `kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'`
+2. Update the `Reserved` storage on each node; Node -> (scroll to right) Node Operation -> Edit nodes and disks -> Change: `Storage Reserved`
+
 ### Backup to Linode
 See: [Creating a Backup Target](https://fredrickb.com/2022/07/24/introducing-longhorn-to-the-homelab/#creating-backup-target)
 1. Configure a Kubernetes Secret (Note this repo will use ExternalSecrets)
@@ -95,6 +101,48 @@ See: [Creating a Backup Target](https://fredrickb.com/2022/07/24/introducing-lon
     - URL format can be tricky to get right when using S3 compatible services outside of AWS. 
         - [Setting a backup target](https://longhorn.io/docs/1.4.0/snapshots-and-backups/backup-and-restore/set-backup-target/#enable-virtual-hosted-style-access-for-s3-compatible-backupstore)
         - [Git BUG: support non aws s3 buckets](https://github.com/longhorn/longhorn/issues/4205)
+
+### Backup/snapshot scheduling
+[Recurring Snapshots and Backups](https://longhorn.io/docs/1.4.1/snapshots-and-backups/scheduling-backups-and-snapshots/)
+- `snapshot` takes a snapshot within Longhorn storage
+- `backup` sends a backup to the condigured [backup store](#backup-to-linode)
+
+    1. Take a `snapshot` locally every 12 hours and keep 4 versions (IE: 2 days)
+    ```
+    ---
+    apiVersion: longhorn.io/v1beta1
+    kind: RecurringJob
+    metadata:
+    name: 12-hour-snapshots
+    namespace: longhorn-system
+    spec:
+    cron: "0 */12 * * *"
+    task: "snapshot"
+    groups:
+    - default
+    retain: 4
+    concurrency: 2
+    labels:
+        job: 12-hour-snapshots
+    ```
+    2. Take a daily `backup` to remove backup store at 11am and keep 3 versions (IE: 3 days)
+    ```
+    ---
+    apiVersion: longhorn.io/v1beta1
+    kind: RecurringJob
+    metadata:
+    name: daily-backups
+    namespace: longhorn-system
+    spec:
+    cron: "0 11 * * *"
+    task: "backup"
+    groups:
+    - default
+    retain: 3
+    concurrency: 2
+    labels:
+        job: daily-backups
+    ```
 
 ### Storage Node Selection 
 

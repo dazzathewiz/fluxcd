@@ -101,3 +101,48 @@ spec:
     remoteRef:
       key: linode-k3s-bucket
       property: AWS_SECRET_ACCESS_KEY
+---
+apiVersion: longhorn.io/v1beta1
+kind: RecurringJob
+metadata:
+  name: 12-hour-snapshots
+  namespace: longhorn-system
+spec:
+  cron: "0 */12 * * *"
+  task: "snapshot"
+  groups:
+  - default
+  retain: 4
+  concurrency: 2
+  labels:
+    job: 12-hour-snapshots
+---
+apiVersion: longhorn.io/v1beta1
+kind: RecurringJob
+metadata:
+  name: daily-backups
+  namespace: longhorn-system
+spec:
+  cron: "0 11 * * *"
+  task: "backup"
+  groups:
+  - default
+  retain: 3
+  concurrency: 2
+  labels:
+    job: daily-backups
+---
+apiVersion: longhorn.io/v1beta1
+kind: RecurringJob
+metadata:
+  name: weekly-backups
+  namespace: longhorn-system
+spec:
+  cron: "20 23 * * 2"
+  task: "backup"
+  groups:
+  - default
+  retain: 2
+  concurrency: 2
+  labels:
+    job: weekly-backups
