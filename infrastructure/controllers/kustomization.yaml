@@ -9,3 +9,5 @@ resources:
   - emberstack.yaml
   - rancher.yaml
   - longhorn.yaml
+  - node-feature-discovery.yaml
+  - intel.yaml
