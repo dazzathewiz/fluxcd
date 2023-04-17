@@ -156,6 +156,13 @@ This is enabled at install of Longhorn Helm Chart with option `createDefaultDisk
 Note the node label is done automatically, and path `/mnt/nvme0/` automatically mounted when deploying k3s with 
 [dazzathewiz/k3s-ansible](https://github.com/dazzathewiz/k3s-ansible)
 
+### Volume Encryption
+
+[Volume Encryption](https://longhorn.io/docs/1.4.1/advanced-resources/security/volume-encryption/) is configured
+by creating the `longhorn-diskencrypt-global` StorageClass. PVC's should reference this class to create encrypted volumes.
+Note that [Automated Backups](#backupsnapshot-scheduling) are scheduled to external providers, so it's important to encrypt
+volumes containing anything sensitive as per the [Longhorn documentation](https://longhorn.io/blog/longhorn-v1.2/#encryption-volume-and-backup).
+
 ### Sources
 - [Great example of configuration in homelab](https://fredrickb.com/2022/07/24/introducing-longhorn-to-the-homelab/)
 - [Longhorn UI with Traefik](https://tansanrao.com/guide-storage-ingress-webui-k8s/)

@@ -146,3 +146,58 @@ spec:
   concurrency: 2
   labels:
     job: weekly-backups
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: longhorn-disk-encrypt
+  namespace: longhorn-system
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: CRYPTO_KEY_VALUE
+    remoteRef:
+      key: longhorn-diskencrypt
+      property: CRYPTO_KEY_VALUE
+  - secretKey: CRYPTO_KEY_PROVIDER
+    remoteRef:
+      key: longhorn-diskencrypt
+      property: CRYPTO_KEY_PROVIDER
+  - secretKey: CRYPTO_KEY_CIPHER
+    remoteRef:
+      key: longhorn-diskencrypt
+      property: CRYPTO_KEY_CIPHER
+  - secretKey: CRYPTO_KEY_HASH
+    remoteRef:
+      key: longhorn-diskencrypt
+      property: CRYPTO_KEY_HASH
+  - secretKey: CRYPTO_KEY_SIZE
+    remoteRef:
+      key: longhorn-diskencrypt
+      property: CRYPTO_KEY_SIZE
+  - secretKey: CRYPTO_PBKDF
+    remoteRef:
+      key: longhorn-diskencrypt
+      property: CRYPTO_PBKDF
+---
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: longhorn-diskencrypt-global
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+parameters:
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "2880"
+  fromBackup: ""
+  encrypted: "true"
+  csi.storage.k8s.io/provisioner-secret-name: "longhorn-disk-encrypt"
+  csi.storage.k8s.io/provisioner-secret-namespace: "longhorn-system"
+  csi.storage.k8s.io/node-publish-secret-name: "longhorn-disk-encrypt"
+  csi.storage.k8s.io/node-publish-secret-namespace: "longhorn-system"
+  csi.storage.k8s.io/node-stage-secret-name: "longhorn-disk-encrypt"
+  csi.storage.k8s.io/node-stage-secret-namespace: "longhorn-system"
