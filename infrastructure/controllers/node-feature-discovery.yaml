@@ -32,5 +32,6 @@ spec:
   values:
     worker:
       config:
-        pci:
-          deviceLabelFields: [class, vendor, device]
+        sources:
+          pci:
+            deviceLabelFields: [class, vendor, device]
