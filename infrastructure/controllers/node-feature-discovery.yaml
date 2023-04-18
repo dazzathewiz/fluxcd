@@ -29,3 +29,8 @@ spec:
         namespace: flux-system
       interval: 1m
   timeout: 5m
+  values:
+    worker:
+      config:
+        pci:
+          deviceLabelFields: [class, vendor, device]
