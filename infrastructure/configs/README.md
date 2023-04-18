@@ -168,3 +168,61 @@ volumes containing anything sensitive as per the [Longhorn documentation](https:
 - [Longhorn UI with Traefik](https://tansanrao.com/guide-storage-ingress-webui-k8s/)
 - [Longhorn defaul disk labelling](https://longhorn.io/kb/tip-only-use-storage-on-a-set-of-nodes/#tell-longhorn-to-create-a-default-disk-on-a-specific-set-of-nodes)
 - [Configuring Defaults for Nodes and Disks](https://longhorn.io/docs/1.4.1/advanced-resources/default-disk-and-node-config/)
+
+## Intel GPU resource and node labelling
+
+[Plex on Kubernetes with intel iGPU passthrough](https://www.reddit.com/r/selfhosted/comments/121vb07/plex_on_kubernetes_with_intel_igpu_passthrough/)
+
+### node-feature-discovery
+Use Node Featrure Discovery (NFD) to detect hardware features - including the Intel i915 iGPU
+- [NFD Helm Deployment](https://kubernetes-sigs.github.io/node-feature-discovery/master/deployment/helm.html)
+
+### Intel Device Features
+The Intel plugins are available as [Helm Charts](https://github.com/intel/helm-charts):
+- [Intel GPU Device Plugin Helm Chart](https://github.com/intel/helm-charts/tree/main/charts/gpu-device-plugin)
+- [Intel Device Plugins Operator Helm Chart](https://github.com/intel/helm-charts/tree/main/charts/device-plugin-operator)
+
+    #### NodeFeatureRules
+    The `NodeFeatureRule` spec will apply a label `"intel.feature.node.kubernetes.io/gpu": "true"` to nodes containing an Intel GPU. 
+    This is required for the scheduling of intel-gpu-plugin pods which allow the intel gpu resource to be consumed by pod deployments.
+
+    Rather than manually applying node-feature-rules from the Intel repo, instead specify in the `HelmRelease` of `intel-device-plugins-gpu`
+    a custom value: `nodeFeatureRule: true`:
+    ```
+    apiVersion: helm.toolkit.fluxcd.io/v2beta1
+    kind: HelmRelease
+    metadata:
+    name: intel-device-plugins-gpu
+    namespace: flux-system
+    spec:
+    interval: 5m
+    releaseName: intel-device-plugins-gpu
+    targetNamespace: intel-device
+    install:
+        createNamespace: true
+    chart:
+        spec:
+        chart: intel-device-plugins-gpu
+        sourceRef:
+            kind: HelmRepository
+            name: intel
+            namespace: flux-system
+        interval: 1m
+    timeout: 5m
+    values:
+        nodeFeatureRule: true
+    ```
+
+    #### Scheduling pods with gpu resource
+    Use the following pod specification:
+    ```
+    resources: 
+        requests: 
+            gpu.intel.com/i915: "1" 
+        limits: 
+            gpu.intel.com/i915: "1" 
+    ```
+
+## Sources
+- [intel-device-plugins-for-kubernetes](https://github.com/intel/intel-device-plugins-for-kubernetes)
+- [node-feature-discovery](https://github.com/kubernetes-sigs/node-feature-discovery)
