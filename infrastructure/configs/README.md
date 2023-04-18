@@ -176,6 +176,25 @@ volumes containing anything sensitive as per the [Longhorn documentation](https:
 ### node-feature-discovery
 Use Node Featrure Discovery (NFD) to detect hardware features - including the Intel i915 iGPU
 - [NFD Helm Deployment](https://kubernetes-sigs.github.io/node-feature-discovery/master/deployment/helm.html)
+- Assists with GPU PCI Device labelling in cluster EG: Label: `feature.node.kubernetes.io/pci-0300_8086_3e92.present=true`
+
+    #### PCI Feature Labels
+    The defafult [PCI Feature Labels](https://kubernetes-sigs.github.io/node-feature-discovery/v0.12/reference/worker-configuration-reference.html#sourespcidevicelabelfields)
+    will only include the `<class>_<vendor>` label. If we see the example below, this doesn't allow for differentiation of different devices available in the cluster:
+    - Node 1 `00:02.0 VGA compatible controller [0300]: Intel Corporation RocketLake-S GT1 [UHD Graphics 750] [8086:4c8a] (rev 04)`
+    - Node 2 `00:11.0 VGA compatible controller [0300]: Intel Corporation UHD Graphics 630 (Desktop) [8086:3e92]`
+    - Node 3 `00:11.0 VGA compatible controller [0300]: Intel Corporation HD Graphics 530 [8086:1912] (rev 06)`
+    To work around this problem, we add NFD-worker configuration for [sources.pci](https://kubernetes-sigs.github.io/node-feature-discovery/v0.12/reference/worker-configuration-reference.html#sourespci)
+    to be:
+    ```
+    sources:
+      pci:
+        deviceLabelFields: [class, vendor, device]
+    ```
+
+    See how to define this in `values:` of the [Helm Release](https://github.com/kubernetes-sigs/node-feature-discovery/blob/master/deployment/helm/node-feature-discovery/values.yaml)
+
+    Review a list of [PCI IDs](https://pci-ids.ucw.cz/v2.2/pci.ids) values
 
 ### Intel Device Features
 The Intel plugins are available as [Helm Charts](https://github.com/intel/helm-charts):
