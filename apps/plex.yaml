@@ -66,22 +66,28 @@ spec:
           - weight: 75
             preference:
               matchExpressions:
-              - key: feature.node.kubernetes.io/pci-0300_8086_4c8a.present=true
-                operator: Exists
+              - key: feature.node.kubernetes.io/pci-0300_8086_4c8a.present
+                operator: In
+                values:
+                  true
 
           # UHD Graphics 630 (Desktop)
           - weight: 63
             preference:
               matchExpressions:
-              - key: feature.node.kubernetes.io/pci-0300_8086_3e92.present=true
-                operator: Exists
+              - key: feature.node.kubernetes.io/pci-0300_8086_3e92.present
+                operator: In
+                values:
+                  true
           
           # HD Graphics 530
           - weight: 53
             preference:
               matchExpressions:
-              - key: feature.node.kubernetes.io/pci-0300_8086_1912.present=true
-                operator: Exists
+              - key: feature.node.kubernetes.io/pci-0300_8086_1912.present
+                operator: In
+                values:
+                  true
       containers:
       - name: plex
         image: plexinc/pms-docker:latest
