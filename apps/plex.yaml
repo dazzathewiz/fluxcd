@@ -164,6 +164,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: plex-beta-data-claim
+  namespace: plex-beta
 spec:
   storageClassName: longhorn-diskencrypt-global
   accessModes:
