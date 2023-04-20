@@ -1,0 +1,196 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plex-beta
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: plex-claim
+  namespace: plex-beta
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: PLEX_CLAIM
+    remoteRef:
+      key: plex-claim
+      property: PLEX_CLAIM
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: ceph-secret-admin
+  namespace: plex-beta
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: data
+    remoteRef:
+      key:  ceph-admin
+      property: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-beta
+  namespace: plex-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plex-beta
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app: plex-beta
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+
+          # RocketLake-S GT1 [UHD Graphics 750]
+          - weight: 75
+            preference:
+              matchExpressions:
+              - key: feature.node.kubernetes.io/pci-0300_8086_4c8a.present=true
+                operator: Exists
+
+          # UHD Graphics 630 (Desktop)
+          - weight: 63
+            preference:
+              matchExpressions:
+              - key: feature.node.kubernetes.io/pci-0300_8086_3e92.present=true
+                operator: Exists
+          
+          # HD Graphics 530
+          - weight: 53
+            preference:
+              matchExpressions:
+              - key: feature.node.kubernetes.io/pci-0300_8086_1912.present=true
+                operator: Exists
+      containers:
+      - name: plex
+        image: plexinc/pms-docker:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 32400
+        - name: tcp-3005
+          containerPort: 3005
+          protocol: TCP
+        - name: udp-1900
+          containerPort: 1900
+          protocol: UDP
+        - name: udp-5353
+          containerPort: 5353
+          protocol: UDP
+        - name: tcp-8324
+          containerPort: 8324
+          protocol: TCP
+        - name: tcp-32469
+          containerPort: 32469
+          protocol: TCP
+        volumeMounts:
+        - name: plex-data
+          mountPath: /config
+        - name: ceph-fs
+          mountPath: /data
+        - name: ramdisk
+          mountPath: /transcode
+        resources:
+          requests:
+            gpu.intel.com/i915: "1"
+            memory: 2Gi
+          limits:
+            gpu.intel.com/i915: "1"
+            memory: 10Gi
+        livenessProbe:
+          httpGet:
+            path: /web/index.html
+            port: 32400
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+            httpGet:
+              path: /web/index.html
+              port: 32400
+            initialDelaySeconds: 30
+            periodSeconds: 10
+        env:
+        - name: TZ
+          value: Australia/Brisbane
+        envFrom:
+        - secretRef:
+            name: plex-claim
+      volumes:
+      - name: plex-data
+        persistentVolumeClaim:
+          claimName: plex-data-claim
+      - name: ceph-fs
+        cephfs:
+          monitors:
+            - 10.10.10.34:6789
+            - 10.10.10.35:6789
+            - 10.10.10.36:6789
+          user: admin
+          secretRef:
+            name: ceph-secret-admin
+      - name: ramdisk
+        emptyDir:
+          medium: Memory
+          sizeLimit: "8Gi"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-beta-data-claim
+spec:
+  storageClassName: longhorn-diskencrypt-global
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-beta-lb
+  namespace: plex-beta
+spec:
+  selector:
+    app: plex-beta
+  ports:
+  - name: http
+    port: 32400
+    targetPort: 32400
+  - name: tcp-3005
+    port: 3005
+    protocol: TCP
+  - name: udp-1900
+    port: 1900
+    protocol: UDP
+  - name: udp-5353
+    port: 5353
+    protocol: UDP
+  - name: tcp-8324
+    port: 8324
+    protocol: TCP
+  - name: tcp-32469
+    port: 32469
+    protocol: TCP
+  type: LoadBalancer
