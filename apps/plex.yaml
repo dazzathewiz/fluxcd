@@ -145,7 +145,7 @@ spec:
       volumes:
       - name: plex-data
         persistentVolumeClaim:
-          claimName: plex-data-claim
+          claimName: plex-beta-data-claim
       - name: ceph-fs
         cephfs:
           monitors:
