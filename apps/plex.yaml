@@ -20,23 +20,23 @@ spec:
     remoteRef:
       key: plex-claim
       property: PLEX_CLAIM
----
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
-metadata:
-  name: ceph-secret-admin
-  namespace: plex-beta
-spec:
-  secretStoreRef:
-    kind: ClusterSecretStore
-    name: onepassword-k3s
-  target:
-    creationPolicy: Owner
-  data:
-  - secretKey: data
-    remoteRef:
-      key:  ceph-admin
-      property: password
+# ---
+# apiVersion: external-secrets.io/v1beta1
+# kind: ExternalSecret
+# metadata:
+#   name: ceph-secret-admin
+#   namespace: plex-beta
+# spec:
+#   secretStoreRef:
+#     kind: ClusterSecretStore
+#     name: onepassword-k3s
+#   target:
+#     creationPolicy: Owner
+#   data:
+#   - secretKey: data
+#     remoteRef:
+#       key:  ceph-admin
+#       property: password
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -149,6 +149,7 @@ spec:
       - name: ceph-fs
         persistentVolumeClaim:
           claimName: cephfs-plexdata
+          storageClassName: cephfs-plexdata
       - name: ramdisk
         emptyDir:
           medium: Memory
@@ -166,31 +167,31 @@ spec:
   resources:
     requests:
       storage: 20Gi
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: cephfs-plexdata
-  namespace: plex-beta
-spec:
-  accessModes:
-    - ReadWriteMany
-  resources:
-    requests:
-      storage: 1Gi
-  volumeMode: Filesystem
-  storageClassName: ""
-  dataSource:
-    name: ""
-    kind: CephFS
-    apiGroup: v1
-    secretRef:
-      name: ceph-secret-admin
-    readOnly: true
-    options:
-      monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
-      user: admin
-      readOnly: "false"
+# ---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: cephfs-plexdata
+#   namespace: plex-beta
+# spec:
+#   accessModes:
+#     - ReadWriteMany
+#   resources:
+#     requests:
+#       storage: 1Gi
+#   volumeMode: Filesystem
+#   storageClassName: ""
+#   dataSource:
+#     name: ""
+#     kind: CephFS
+#     apiGroup: v1
+#     secretRef:
+#       name: ceph-secret-admin
+#     readOnly: true
+#     options:
+#       monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
+#       user: admin
+#       readOnly: "false"
 ---
 apiVersion: v1
 kind: Service

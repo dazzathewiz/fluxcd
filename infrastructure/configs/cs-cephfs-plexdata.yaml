@@ -1,0 +1,38 @@
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: ceph-secret-admin
+  namespace: ceph-csi-cephfs
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: adminKey
+    remoteRef:
+      key:  ceph-admin
+      property: adminKey
+  - secretKey: adminID
+    remoteRef:
+      key:  ceph-admin
+      property: adminID
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cephfs-plexdata
+provisioner: cephrbd.csi.ceph.com
+parameters:
+  clusterID: 9187bf52-7c4d-4916-931d-fcf2b815732f
+  pool: ceph_plexdata_data
+  fsName: cephfs_plexdata
+  monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
+  csi.storage.k8s.io/provisioner-secret-name: ceph-secret-admin
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi-cephfs
+  csi.storage.k8s.io/controller-expand-secret-name: ceph-secret-admin
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi-cephfs
+  csi.storage.k8s.io/node-stage-secret-name: ceph-secret-admin
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi-cephfs
