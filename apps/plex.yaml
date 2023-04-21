@@ -147,14 +147,8 @@ spec:
         persistentVolumeClaim:
           claimName: plex-beta-data-claim
       - name: ceph-fs
-        cephfs:
-          monitors:
-            - 10.10.10.34:6789
-            - 10.10.10.35:6789
-            - 10.10.10.36:6789
-          user: admin
-          secretRef:
-            name: ceph-secret-admin
+        persistentVolumeClaim:
+          claimName: cephfs-plexdata
       - name: ramdisk
         emptyDir:
           medium: Memory
@@ -172,6 +166,31 @@ spec:
   resources:
     requests:
       storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cephfs-plexdata
+  namespace: plex-beta
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeMode: Filesystem
+  storageClassName: ""
+  dataSource:
+    name: ""
+    kind: CephFS
+    apiGroup: v1
+    secretRef:
+      name: ceph-secret-admin
+    readOnly: true
+    options:
+      monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
+      user: admin
+      readOnly: "false"
 ---
 apiVersion: v1
 kind: Service
