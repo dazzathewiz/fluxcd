@@ -3,7 +3,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: cephfs-plexdata
-  namespace: ceph-csi-cephfs
+  namespace: rook-ceph
 spec:
   storageClassName: cephfs-plexdata
   accessModes:
