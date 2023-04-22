@@ -32,3 +32,6 @@ spec:
       retries: -1 # keep trying to remediate
     crds: CreateReplace # Upgrade CRDs on package update
   releaseName: rook-ceph
+  targetNamespace: rook-ceph
+  install:
+    createNamespace: true
