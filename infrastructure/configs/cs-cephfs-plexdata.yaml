@@ -3,7 +3,7 @@ apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
   name: ceph-secret-admin
-  namespace: ceph-csi-cephfs
+  namespace: rook-ceph
 spec:
   secretStoreRef:
     kind: ClusterSecretStore
