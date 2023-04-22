@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cephfs-plexdata
+  namespace: ceph-csi-cephfs
+spec:
+  storageClassName: cephfs-plexdata
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  volumeMode: Filesystem

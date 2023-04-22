@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - nginx.yaml
   #- plex.yaml
+  - pvc-test.yaml
