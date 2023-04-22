@@ -100,11 +100,23 @@ data:
     # ingress: normally goes here
 
     # CRD Pools normally goes here
-    # cephBlockPools:
-    # cephFileSystems:
+    cephBlockPools:
+      - name: ceph-blockpool
+        storageClass:
+          enabled: false
+    
+    cephFileSystems:
+      - name: ceph-filesystem
+        storageClass:
+          enabled: false
+    
     # cephFileSystemVolumeSnapshotClass:
     # cephBlockPoolsVolumeSnapshotClass:
     # cephObjectStores:
+    cephObjectStores:
+      - name: ceph-objectstore
+        storageClass:
+          enabled: false
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
