@@ -10,4 +10,4 @@ resources:
   - rancher.yaml
   - longhorn.yaml
   - intel.yaml
-  #- cs-cephfs-plexdata.yaml
+  - cs-cephfs-plexdata.yaml
