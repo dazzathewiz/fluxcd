@@ -24,14 +24,13 @@ spec:
         namespace: flux-system
   interval: 30m
   timeout: 10m
+  targetNamespace: rook-ceph
   install:
     remediation:
       retries: 3
+    createNamespace: true
   upgrade:
     remediation:
       retries: -1 # keep trying to remediate
     crds: CreateReplace # Upgrade CRDs on package update
   releaseName: rook-ceph
-  targetNamespace: rook-ceph
-  install:
-    createNamespace: true
