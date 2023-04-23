@@ -7,16 +7,16 @@ metadata:
     storageclass.kubernetes.io/is-default-class: "false"
 provisioner: rook-ceph.cephfs.csi.ceph.com
 parameters:
-  clusterID: rook-ceph-external
+  clusterID: ceph-pve-external
   dataPool: ceph_plexdata_data
   fsName: cephfs_plexdata
   pool: ceph_plexdata_metadata
   csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
-  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph-external
   csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
-  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph-external
   csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
-  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph-external
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: "Immediate"
