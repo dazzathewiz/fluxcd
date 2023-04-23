@@ -42,47 +42,48 @@ data:
     kubeVersion:
 
     # -- Cluster ceph.conf override
-    configOverride: |
-      [global]
-        auth_client_required = cephx
-        auth_cluster_required = cephx
-        auth_service_required = cephx
-        cluster_network = 10.10.10.18/28
-        fsid = 9187bf52-7c4d-4916-931d-fcf2b815732f
-        mon_allow_pool_delete = true
-        mon_host = 10.10.10.34 10.10.10.36 10.10.10.35
-        ms_bind_ipv4 = true
-        ms_bind_ipv6 = false
-        osd_pool_default_min_size = 2
-        osd_pool_default_size = 3
-        public_network = 10.10.10.34/27
+    configOverride:
+    # configOverride: |
+    #   [global]
+    #     auth_client_required = cephx
+    #     auth_cluster_required = cephx
+    #     auth_service_required = cephx
+    #     cluster_network = 10.10.10.18/28
+    #     fsid = 9187bf52-7c4d-4916-931d-fcf2b815732f
+    #     mon_allow_pool_delete = true
+    #     mon_host = 10.10.10.34 10.10.10.36 10.10.10.35
+    #     ms_bind_ipv4 = true
+    #     ms_bind_ipv6 = false
+    #     osd_pool_default_min_size = 2
+    #     osd_pool_default_size = 3
+    #     public_network = 10.10.10.34/27
 
-      [client]
-        keyring = /etc/pve/priv/$cluster.$name.keyring
+    #   [client]
+    #     keyring = /etc/pve/priv/$cluster.$name.keyring
 
-      [mds]
-        keyring = /var/lib/ceph/mds/ceph-$id/keyring
+    #   [mds]
+    #     keyring = /var/lib/ceph/mds/ceph-$id/keyring
 
-      [mds.prox1]
-        host = prox1
-        mds_standby_for_name = pve
+    #   [mds.prox1]
+    #     host = prox1
+    #     mds_standby_for_name = pve
 
-      [mds.prox2]
-        host = prox2
-        mds_standby_for_name = pve
+    #   [mds.prox2]
+    #     host = prox2
+    #     mds_standby_for_name = pve
 
-      [mds.prox3]
-        host = prox3
-        mds standby for name = pve
+    #   [mds.prox3]
+    #     host = prox3
+    #     mds standby for name = pve
 
-      [mon.prox1]
-        public_addr = 10.10.10.34
+    #   [mon.prox1]
+    #     public_addr = 10.10.10.34
 
-      [mon.prox2]
-        public_addr = 10.10.10.35
+    #   [mon.prox2]
+    #     public_addr = 10.10.10.35
 
-      [mon.prox3]
-        public_addr = 10.10.10.36
+    #   [mon.prox3]
+    #     public_addr = 10.10.10.36
 
     # Installs a debugging toolbox deployment
     toolbox:
@@ -139,6 +140,8 @@ data:
     # -- Cluster configuration.
     # @default -- See [below](#ceph-cluster-spec)
     cephClusterSpec:
+      cephVersion:
+        image: quay.io/ceph/ceph:v16.2.11
       external:
         enable: true
       crashCollector:
