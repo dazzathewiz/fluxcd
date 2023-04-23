@@ -42,12 +42,47 @@ data:
     kubeVersion:
 
     # -- Cluster ceph.conf override
-    configOverride:
-    # configOverride: |
-    #   [global]
-    #   mon_allow_pool_delete = true
-    #   osd_pool_default_size = 3
-    #   osd_pool_default_min_size = 2
+    configOverride: |
+      [global]
+        auth_client_required = cephx
+        auth_cluster_required = cephx
+        auth_service_required = cephx
+        cluster_network = 10.10.10.18/28
+        fsid = 9187bf52-7c4d-4916-931d-fcf2b815732f
+        mon_allow_pool_delete = true
+        mon_host = 10.10.10.34 10.10.10.36 10.10.10.35
+        ms_bind_ipv4 = true
+        ms_bind_ipv6 = false
+        osd_pool_default_min_size = 2
+        osd_pool_default_size = 3
+        public_network = 10.10.10.34/27
+
+      [client]
+        keyring = /etc/pve/priv/$cluster.$name.keyring
+
+      [mds]
+        keyring = /var/lib/ceph/mds/ceph-$id/keyring
+
+      [mds.prox1]
+        host = prox1
+        mds_standby_for_name = pve
+
+      [mds.prox2]
+        host = prox2
+        mds_standby_for_name = pve
+
+      [mds.prox3]
+        host = prox3
+        mds standby for name = pve
+
+      [mon.prox1]
+        public_addr = 10.10.10.34
+
+      [mon.prox2]
+        public_addr = 10.10.10.35
+
+      [mon.prox3]
+        public_addr = 10.10.10.36
 
     # Installs a debugging toolbox deployment
     toolbox:
@@ -73,7 +108,7 @@ data:
     monitoring:
       # -- Enable Prometheus integration, will also create necessary RBAC rules to allow Operator to create ServiceMonitors.
       # Monitoring requires Prometheus to be pre-installed
-      enabled: false
+      enabled: true
       # -- Whether to create the Prometheus rules for Ceph alerts
       createPrometheusRules: false
       # -- The namespace in which to create the prometheus rules, if different from the rook cluster namespace.
@@ -81,8 +116,11 @@ data:
       # deployed) to set rulesNamespace for all the clusters. Otherwise, you will get duplicate alerts with multiple alert definitions.
       rulesNamespaceOverride:
       # Monitoring settings for external clusters:
-      # externalMgrEndpoints: <list of endpoints>
-      # externalMgrPrometheusPort: <port>
+      externalMgrEndpoints:
+        - ip: "10.10.10.34"
+        - ip: "10.10.10.35"
+        - ip: "10.10.10.36"
+      externalMgrPrometheusPort: 9283
       # allow adding custom labels and annotations to the prometheus rule
       prometheusRule:
         # -- Labels applied to PrometheusRule
@@ -117,34 +155,34 @@ data:
       #   externalMgrEndpoints:
           #- ip: ip
           # externalMgrPrometheusPort: 9283
-      monitoring:
-        enabled: true
-        externalMgrEndpoints:
-          - ip: "10.10.10.34"
-          - ip: "10.10.10.35"
-          - ip: "10.10.10.36"
-        externalMgrPrometheusPort: 9283
+      # monitoring:
+      #   enabled: true
+      #   externalMgrEndpoints:
+      #     - ip: "10.10.10.34"
+      #     - ip: "10.10.10.35"
+      #     - ip: "10.10.10.36"
+      #   externalMgrPrometheusPort: 9283
     
     # ingress: normally goes here
 
     # CRD Pools normally goes here
-    cephBlockPools:
-      - name: ceph-blockpool
-        storageClass:
-          enabled: false
+    # cephBlockPools:
+    #   - name: ceph-blockpool
+    #     storageClass:
+    #       enabled: false
     
-    cephFileSystems:
-      - name: ceph-filesystem
-        storageClass:
-          enabled: false
+    # cephFileSystems:
+    #   - name: ceph-filesystem
+    #     storageClass:
+    #       enabled: false
     
     # cephFileSystemVolumeSnapshotClass:
     # cephBlockPoolsVolumeSnapshotClass:
     # cephObjectStores:
-    cephObjectStores:
-      - name: ceph-objectstore
-        storageClass:
-          enabled: false
+    # cephObjectStores:
+    #   - name: ceph-objectstore
+    #     storageClass:
+    #       enabled: false
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
