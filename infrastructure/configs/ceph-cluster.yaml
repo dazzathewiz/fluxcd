@@ -137,27 +137,6 @@ data:
       - name: ceph-filesystem
         storageClass:
           enabled: false
-      - name: ceph-filesystem-external
-        storageClass:
-          enabled: true
-          isDefault: false
-          name: ceph-filesystem-external
-          reclaimPolicy: Delete
-          allowVolumeExpansion: true
-          volumeBindingMode: "Immediate"
-          mountOptions: []
-          parameters:
-            clusterID: 9187bf52-7c4d-4916-931d-fcf2b815732f
-            dataPool: ceph_plexdata_data
-            pool: ceph_plexdata_metadata
-            fsName: cephfs_plexdata
-            monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
-            csi.storage.k8s.io/provisioner-secret-name: ceph-secret-admin
-            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
-            csi.storage.k8s.io/controller-expand-secret-name: ceph-secret-admin
-            csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
-            csi.storage.k8s.io/node-stage-secret-name: ceph-secret-admin
-            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
     
     # cephFileSystemVolumeSnapshotClass:
     # cephBlockPoolsVolumeSnapshotClass:
