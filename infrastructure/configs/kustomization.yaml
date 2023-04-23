@@ -10,5 +10,6 @@ resources:
   - rancher.yaml
   - longhorn.yaml
   - intel.yaml
+  - rook-ceph-secrets.yaml
   - ceph-cluster.yaml
   - cs-cephfs-plexdata.yaml

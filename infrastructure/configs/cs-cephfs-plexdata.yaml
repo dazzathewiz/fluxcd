@@ -10,11 +10,11 @@ parameters:
   pool: ceph_plexdata_metadata
   fsName: cephfs_plexdata
   monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
-  csi.storage.k8s.io/provisioner-secret-name: ceph-secret-admin
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
   csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
-  csi.storage.k8s.io/controller-expand-secret-name: ceph-secret-admin
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
   csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
-  csi.storage.k8s.io/node-stage-secret-name: ceph-secret-admin
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
   csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
 allowVolumeExpansion: true
 reclaimPolicy: Delete
