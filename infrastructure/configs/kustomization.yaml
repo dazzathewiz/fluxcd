@@ -12,4 +12,4 @@ resources:
   - intel.yaml
   - rook-ceph-secrets.yaml
   - ceph-cluster.yaml
-  - cs-cephfs-plexdata.yaml
+  # - cs-cephfs-plexdata.yaml
