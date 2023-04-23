@@ -19,4 +19,3 @@ parameters:
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: "Immediate"
-volumeBindingMode: "Immediate"
