@@ -11,4 +11,4 @@ resources:
   - longhorn.yaml
   - intel.yaml
   - ceph-cluster.yaml
-  #- cs-cephfs-plexdata.yaml
+  - cs-cephfs-plexdata.yaml
