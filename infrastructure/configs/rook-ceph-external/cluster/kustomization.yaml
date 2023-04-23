@@ -5,5 +5,5 @@ resources:
   - rook-ceph-secrets.yaml
   - ceph-common-external.yaml
   - ceph-cluster.yaml
-  # - storage-class.yaml
+  - storage-class.yaml
   - ceph-monitor.yaml
