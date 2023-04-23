@@ -1,0 +1,9 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - rook-ceph-secrets.yaml
+  - ceph-common-external.yaml
+  - ceph-cluster.yaml
+  - storage-class.yaml
+  - ceph-monitor.yaml
