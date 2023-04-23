@@ -76,8 +76,9 @@ See: [1Password Connect](../doc-1password)
 
 ### Post Install (Manual Configuration)
 After the installation of Longhorn, I've needed to:
-1. Change the default StorageClass within the cluster to be `longhorn` instead of built-in `local-path` 
+1. Change the default StorageClass within the cluster to be `longhorn-diskencrypt-global` instead of built-in `local-path` 
     `kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'`
+    `kubectl patch storageclass longhorn -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'`
 2. Update the `Reserved` storage on each node; Node -> (scroll to right) Node Operation -> Edit nodes and disks -> Change: `Storage Reserved`
 
 ### Backup to Linode
