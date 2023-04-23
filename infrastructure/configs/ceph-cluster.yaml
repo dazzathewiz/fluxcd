@@ -1,4 +1,25 @@
 ---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: ceph-secret-admin
+  namespace: rook-ceph
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-k3s
+  target:
+    creationPolicy: Owner
+  data:
+  - secretKey: adminKey
+    remoteRef:
+      key:  ceph-admin
+      property: adminKey
+  - secretKey: adminID
+    remoteRef:
+      key:  ceph-admin
+      property: adminID
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -96,6 +117,13 @@ data:
       #   externalMgrEndpoints:
           #- ip: ip
           # externalMgrPrometheusPort: 9283
+      monitoring:
+        enabled: true
+        externalMgrEndpoints:
+          - ip: "10.10.10.34"
+          - ip: "10.10.10.35"
+          - ip: "10.10.10.36"
+        externalMgrPrometheusPort: 9283
     
     # ingress: normally goes here
 
@@ -109,6 +137,27 @@ data:
       - name: ceph-filesystem
         storageClass:
           enabled: false
+      - name: ceph-filesystem-external
+        storageClass:
+          enabled: true
+          isDefault: false
+          name: ceph-filesystem-external
+          reclaimPolicy: Delete
+          allowVolumeExpansion: true
+          volumeBindingMode: "Immediate"
+          mountOptions: []
+          parameters:
+            clusterID: 9187bf52-7c4d-4916-931d-fcf2b815732f
+            dataPool: ceph_plexdata_data
+            pool: ceph_plexdata_metadata
+            fsName: cephfs_plexdata
+            monitors: 10.10.10.34:6789,10.10.10.35:6789,10.10.10.36:6789
+            csi.storage.k8s.io/provisioner-secret-name: ceph-secret-admin
+            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+            csi.storage.k8s.io/controller-expand-secret-name: ceph-secret-admin
+            csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+            csi.storage.k8s.io/node-stage-secret-name: ceph-secret-admin
+            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
     
     # cephFileSystemVolumeSnapshotClass:
     # cephBlockPoolsVolumeSnapshotClass:
@@ -122,7 +171,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
   name: rook-ceph-cluster
-  namespace: rook-ceph
+  namespace: flux-system
 spec:
   chart:
     spec:
@@ -134,6 +183,7 @@ spec:
         namespace: flux-system
   interval: 30m
   timeout: 10m
+  targetNamespace: rook-ceph
   install:
     remediation:
       retries: 3
