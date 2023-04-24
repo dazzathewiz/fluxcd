@@ -243,6 +243,9 @@ The Intel plugins are available as [Helm Charts](https://github.com/intel/helm-c
             gpu.intel.com/i915: "1" 
     ```
 
+## Rook Ceph External Cluster
+Refer: [rook-ceph-external](./rook-ceph-external)
+
 ## Sources
 - [intel-device-plugins-for-kubernetes](https://github.com/intel/intel-device-plugins-for-kubernetes)
 - [node-feature-discovery](https://github.com/kubernetes-sigs/node-feature-discovery)

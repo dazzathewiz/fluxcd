@@ -7,10 +7,10 @@ metadata:
     storageclass.kubernetes.io/is-default-class: "false"
 provisioner: rook-ceph.cephfs.csi.ceph.com
 parameters:
-  clusterID: ceph-pve-external
-  dataPool: ceph_plexdata_data
+  clusterID: rook-ceph-external
+  dataPool: ceph_plexdata_metadata
   fsName: cephfs_plexdata
-  pool: ceph_plexdata_metadata
+  pool: ceph_plexdata_data
   csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
   csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph-external
   csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
