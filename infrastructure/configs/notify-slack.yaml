@@ -41,3 +41,7 @@ spec:
       name: '*'
     - kind: Kustomization
       name: '*'
+    - kind: ImageUpdateAutomation
+      name: "*"
+    - kind: HelmRelease
+      name: "*"
