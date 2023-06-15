@@ -45,3 +45,5 @@ spec:
       name: "*"
     - kind: HelmRelease
       name: "*"
+  exclusionList:
+    - "rook-ceph-mon-endpoints"
