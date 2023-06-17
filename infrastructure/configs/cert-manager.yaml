@@ -27,7 +27,7 @@ metadata:
 spec:
   acme:
     server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: dazzathewiz@gmail.com
+    email: ${EMAIL_1}
     privateKeySecretRef:
       name: letsencrypt-staging
     solvers:
@@ -42,7 +42,7 @@ spec:
               key: secret-access-key
         selector:
           dnsZones:
-            - "dazzathewiz.com"
+            - "${PERSONAL_DOMAIN}"
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -51,7 +51,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: dazzathewiz@gmail.com
+    email: ${EMAIL_1}
     privateKeySecretRef:
       name: letsencrypt-production
     solvers:
@@ -66,4 +66,4 @@ spec:
               key: secret-access-key
         selector:
           dnsZones:
-            - "dazzathewiz.com"
+            - "${PERSONAL_DOMAIN}"

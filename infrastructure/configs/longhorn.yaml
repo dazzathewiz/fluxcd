@@ -61,7 +61,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`longhorn.inf.dazzathewiz.com`)
+    - match: Host(`longhorn.inf.${PERSONAL_DOMAIN}`)
       kind: Rule
       middlewares:
         - name: cors-allow-all
@@ -75,12 +75,12 @@ spec:
           port: 80
           namespace: longhorn-system
   tls:
-    secretName: inf-dazzathewiz-com-tls
+    secretName: inf-personal-domain-tls
 ---
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: linode-k3s-backup-bucket-secret
+  name: longhorn-s3bucket-secret
   namespace: longhorn-system
 spec:
   secretStoreRef:

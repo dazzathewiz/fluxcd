@@ -63,7 +63,7 @@ data:
       annotations: {}
       labels: {}
       spec:
-        loadBalancerIP: 10.10.1.100 # this should be an IP in the MetalLB range
+        loadBalancerIP: ${LB_TRAEFIK} # this should be an IP in the MetalLB range
       loadBalancerSourceRanges: []
       externalIPs: []
     

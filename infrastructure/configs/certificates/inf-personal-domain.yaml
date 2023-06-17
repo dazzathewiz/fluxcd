@@ -2,17 +2,17 @@
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: inf-dazzathewiz-com
+  name: inf-personal-domain
   namespace: cert-manager
 spec:
-  secretName: inf-dazzathewiz-com-tls
+  secretName: inf-personal-domain-tls
   issuerRef:
     name: letsencrypt-production
     kind: ClusterIssuer
-  commonName: "*.inf.dazzathewiz.com"
+  commonName: "*.inf.${PERSONAL_DOMAIN}"
   dnsNames:
-  - "inf.dazzathewiz.com"
-  - "*.inf.dazzathewiz.com"
+  - "inf.${PERSONAL_DOMAIN}"
+  - "*.inf.${PERSONAL_DOMAIN}"
   secretTemplate:
     annotations:
       reflector.v1.k8s.emberstack.com/reflection-allowed: "true"

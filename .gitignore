@@ -1,0 +1,15 @@
+# Trash
+.DS_Store
+Thumbs.db
+
+# Installed roles and collections
+.ansible/
+
+# Flux update
+bin/flux
+
+# Sops
+.decrypted~*
+
+# Other files
+kubeconfig

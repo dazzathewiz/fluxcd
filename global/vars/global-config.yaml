@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: global-config
+  namespace: flux-system
+data:
+  PVE_NODE_PRIMARY_NAME: prox1
+  PVE_CEPH_MON_COUNT: 3
+  PVE_CEPH_MON1: 10.10.10.34
+  PVE_CEPH_MON2: 10.10.10.35
+  PVE_CEPH_MON3: 10.10.10.36

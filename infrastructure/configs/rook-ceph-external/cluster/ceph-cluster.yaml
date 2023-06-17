@@ -20,7 +20,7 @@ spec:
   monitoring:
     enabled: true
     externalMgrEndpoints:
-      - ip: "10.10.10.34"
-      - ip: "10.10.10.35"
-      - ip: "10.10.10.36"
+      - ip: "${PVE_CEPH_MON1}"
+      - ip: "${PVE_CEPH_MON2}"
+      - ip: "${PVE_CEPH_MON3}"
     externalMgrPrometheusPort: 9283

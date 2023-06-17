@@ -49,10 +49,7 @@ spec:
     matchLabels:
       app: plex-beta
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 1
-      maxSurge: 0
+    type: Recreate
   template:
     metadata:
       labels:
@@ -138,7 +135,7 @@ spec:
             periodSeconds: 10
         env:
         - name: TZ
-          value: Australia/Brisbane
+          value: ${TIMEZONE}
         envFrom:
         - secretRef:
             name: plex-claim

@@ -53,7 +53,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`traefik.inf.dazzathewiz.com`)
+    - match: Host(`traefik.inf.${PERSONAL_DOMAIN}`)
       kind: Rule
       middlewares:
         - name: traefik-dashboard-basicauth
@@ -62,4 +62,4 @@ spec:
         - name: api@internal
           kind: TraefikService
   tls:
-    secretName: inf-dazzathewiz-com-tls
+    secretName: inf-personal-domain-tls
