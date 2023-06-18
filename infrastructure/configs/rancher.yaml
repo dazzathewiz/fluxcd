@@ -21,7 +21,11 @@ spec:
       interval: 1m
   timeout: 5m
   values:
+<<<<<<< HEAD
     hostname: rancher.inf.${PERSONAL_DOMAIN}
+=======
+    hostname: rancher.inf.$(PERSONAL_DOMAIN)
+>>>>>>> 33ec35ae9e49493917553c1b6df3c3a6120707f0
     ingress:
       tls:
         source: secret
