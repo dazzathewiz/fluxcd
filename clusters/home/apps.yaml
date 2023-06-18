@@ -12,6 +12,17 @@ spec:
     kind: GitRepository
     name: flux-system
   path: ./apps
+  postBuild:
+    substitute: {}
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
   prune: true
   wait: true
   timeout: 5m0s

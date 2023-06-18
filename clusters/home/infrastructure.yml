@@ -15,6 +15,17 @@ spec:
     kind: GitRepository
     name: flux-system
   path: ./infrastructure/controllers
+  postBuild:
+    substitute: {}
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
   prune: true
   wait: true
 ---
@@ -33,5 +44,16 @@ spec:
     kind: GitRepository
     name: flux-system
   path: ./infrastructure/configs
+  postBuild:
+    substitute: {}
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
   prune: true
   
