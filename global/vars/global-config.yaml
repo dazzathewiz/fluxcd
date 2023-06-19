@@ -6,3 +6,6 @@ metadata:
   namespace: flux-system
 data:
   TEST: test
+
+  UNRAID_IP: 192.68.10.10
+  PVE_CEPH_NFS_IP: 10.10.2.200
