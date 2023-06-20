@@ -12,7 +12,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   nfs:
     server: ${MEDIA_SERVER}
-    path: "/Media/TV Shows"
+    path: "/Media/Movies"
   mountOptions:
     - nfsvers=4.1
     - tcp
