@@ -11,7 +11,7 @@ spec:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
   nfs:
-    server: ${MEDIA_SERVER}
+    server: ${PVE_CEPH_NFS_IP}
     path: "/Media/DVD Rips"
   mountOptions:
     - nfsvers=4.1
