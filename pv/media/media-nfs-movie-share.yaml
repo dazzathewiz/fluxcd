@@ -1,0 +1,37 @@
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: media-nfs-movie-share-pv
+spec:
+  capacity:
+    storage: 1Mi
+  storageClassName: nfs
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: ${MEDIA_SERVER}
+    path: "/Media/TV Shows"
+  mountOptions:
+    - nfsvers=4.1
+    - tcp
+    # - hard
+    # - noatime
+    # - nodiratime
+    # - rsize=1048576
+    # - wsize=1048576
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-nfs-movie-share-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs
+  resources:
+    requests:
+      storage: 1Mi
+  volumeName: media-nfs-movie-share-pv
