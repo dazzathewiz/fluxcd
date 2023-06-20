@@ -6,6 +6,8 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m
+  dependsOn:
+    - name: media-namespace
   path: "./pv/media"
   prune: true
   wait: true
