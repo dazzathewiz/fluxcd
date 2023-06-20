@@ -6,8 +6,6 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m
-  dependsOn:
-    - name: media-namespace
   path: "./pv/media"
   prune: true
   wait: true
@@ -22,7 +20,13 @@ spec:
     substitute: {}
     substituteFrom:
       - kind: ConfigMap
-        name: media-config
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
   patches:
     - patch: |-
         apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
@@ -39,7 +43,13 @@ spec:
             substitute: {}
             substituteFrom:
               - kind: ConfigMap
-                name: media-config
+                name: global-config
+              - kind: Secret
+                name: global-secrets
+              - kind: ConfigMap
+                name: cluster-config
+              - kind: Secret
+                name: cluster-secrets
       target:
         kind: Kustomization
         group: kustomize.toolkit.fluxcd.io
