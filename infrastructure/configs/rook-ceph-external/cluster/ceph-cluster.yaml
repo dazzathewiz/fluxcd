@@ -22,5 +22,6 @@ spec:
     externalMgrEndpoints:
       - ip: "10.10.10.34"
       - ip: "10.10.10.35"
-      - ip: "10.10.10.36"
+      #- ip: "10.10.10.36"
+      - ip: "10.10.10.37"
     externalMgrPrometheusPort: 9283
