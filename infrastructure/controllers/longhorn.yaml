@@ -34,4 +34,4 @@ spec:
       backupTarget: s3://${LONGHORN_S3_BUCKET_NAME}@${LONGHORN_S3_BUCKET_REGION}/
       backupTargetCredentialSecret: longhorn-s3bucket-secret
       createDefaultDiskLabeledNodes: true
-      defaultDataPath: /mnt/nvme0/
+      defaultDataPath: /mnt/longhorn/
