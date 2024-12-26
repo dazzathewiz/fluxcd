@@ -1,0 +1,33 @@
+---
+# Based on https://github.com/samip5/k8s-cluster/tree/main/k8s/nebula/apps/databases/influx
+
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &appname influxdb
+  namespace: flux-system
+  # labels:
+  #   component.skylab.fi/part-of: definitions
+spec:
+  targetNamespace: databases
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *appname
+  dependsOn:
+    - name: infra-configs
+  path: ./apps/databases/influxdb/app
+  prune: true
+  wait: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  interval: 30m
+  timeout: 5m
+  postBuild:
+    substitute:
+      APP: *appname
+      APP_UID: "568"
+      APP_GID: "568"
+      PV_CLAIM: influx-v1-data
+      PV_CAPACITY: 50Gi
+      PV_STORAGECLASS: longhorn-diskencrypt-global

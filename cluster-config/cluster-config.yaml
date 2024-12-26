@@ -9,4 +9,5 @@ data:
 
   # Loadbalancer IP's
   LB_TRAEFIK: 10.10.1.100
+  LB_INFLUXDB: 10.10.1.101
   #LB_PLEX: 10.200.1.53
