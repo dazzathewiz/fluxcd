@@ -10,4 +10,4 @@ resources:
   - rancher.yaml
   - longhorn.yaml
   - intel.yaml
-  - rook-ceph-external
+  # - rook-ceph-external
