@@ -21,13 +21,13 @@ spec:
         image: eclipse-mosquitto:2
         volumeMounts:
         - name: config
-          mountPath: /mosquitto/config
+          mountPath: /mosquitto/config/
           subPath: mosquitto.conf
         - name: password
           subPath: passwordfile.txt
-          mountPath: /mosquitto/config
+          mountPath: /mosquitto/auth/
         - name: data
-          mountPath: /mosquitto/data
+          mountPath: /mosquitto/data/
         ports:
           - containerPort: 1883
       volumes:

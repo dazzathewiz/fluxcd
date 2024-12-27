@@ -25,6 +25,6 @@ data:
     # protocol websockets
 
     allow_anonymous false
-    password_file /mosquitto/config/passwordfile.txt
+    password_file /mosquitto/auth/passwordfile.txt
 
 
