@@ -16,6 +16,10 @@ spec:
       labels:
         app: mosquitto
     spec:
+      securityContext:
+        runAsUser: 1883
+        runAsGroup: 1883
+        fsGroup: 1883
       containers:
       - name: mosquitto
         image: eclipse-mosquitto:2
@@ -36,6 +40,7 @@ spec:
       - name: password
         secret:
           secretName: mosquitto-secret
+          defaultMode: 0700
       - name: data
         persistentVolumeClaim:
           claimName: mosquitto-pvc
