@@ -73,16 +73,6 @@ spec:
     service:
       type: LoadBalancer
       loadBalancerIP: "${LB_INFLUXDB}"
-      # nodePorts:
-      #   http: 8086
-      #   # udp: 8089
-
-    ingress:
-      enabled: true
-      classname: traefik
-      tls: true
-      secretName: inf-personal-domain-tls
-      hostname: influxdbv1.inf.${PERSONAL_DOMAIN}
           
     persistence:
       enabled: true
