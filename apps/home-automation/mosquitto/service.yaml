@@ -1,0 +1,31 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto
+  namespace: home-automation
+spec:
+  selector:
+    app: mosquitto
+  type: ClusterIP
+  ports:
+  - name: webui
+    protocol: TCP
+    port: 1883
+    targetPort: 1883
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto-metallb
+  annotations:
+    metallb.universe.tf/allow-shared-ip: home-automation-lb
+spec:
+  selector:
+    app: mosquitto
+  ports:
+    - protocol: TCP
+      port: 1883
+      targetPort: 1883
+  type: LoadBalancer
+  loadBalancerIP: ${LB_HOMEAUTOMATION}
