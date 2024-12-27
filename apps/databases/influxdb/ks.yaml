@@ -23,10 +23,6 @@ spec:
     name: flux-system
   interval: 30m
   timeout: 5m
-  decryption:
-    provider: sops
-    secretRef:
-      name: sops-age
   postBuild:
     substitute:
       APP: *appname
