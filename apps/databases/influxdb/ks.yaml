@@ -6,9 +6,9 @@ kind: Kustomization
 metadata:
   name: &appname influxdb
   namespace: flux-system
-  # labels:
-  #   component.skylab.fi/part-of: definitions
 spec:
+  interval: 30m
+  timeout: 5m
   targetNamespace: databases
   commonMetadata:
     labels:
@@ -21,8 +21,10 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
-  interval: 30m
-  timeout: 5m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
   postBuild:
     substitute:
       APP: *appname
@@ -31,3 +33,39 @@ spec:
       PV_CLAIM: influx-v1-data
       PV_CAPACITY: 50Gi
       PV_STORAGECLASS: longhorn-diskencrypt-global
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
+  patches:
+    - patch: |-
+        apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+        kind: Kustomization
+        metadata:
+          name: not-used
+          namespace: not-used
+        spec:
+          decryption:
+            provider: sops
+            secretRef:
+              name: sops-age
+          postBuild:
+            substitute: {}
+            substituteFrom:
+              - kind: ConfigMap
+                name: global-config
+              - kind: Secret
+                name: global-secrets
+              - kind: ConfigMap
+                name: cluster-config
+              - kind: Secret
+                name: cluster-secrets
+      target:
+        kind: Kustomization
+        group: kustomize.toolkit.fluxcd.io
+        version: v1beta2
