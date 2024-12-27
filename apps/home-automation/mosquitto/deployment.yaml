@@ -22,10 +22,9 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /mosquitto/config/
-          subPath: mosquitto.conf
         - name: password
           subPath: passwordfile.txt
-          mountPath: /mosquitto/auth/
+          mountPath: /mosquitto/auth/passwordfile.txt
         - name: data
           mountPath: /mosquitto/data/
         ports:
