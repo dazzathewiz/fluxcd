@@ -71,9 +71,9 @@ spec:
     service:
       type: LoadBalancer
       loadBalancerIP: "${LB_INFLUXDB}"
-      nodePorts:
-        http: 8086
-        # udp: 8089
+      # nodePorts:
+      #   http: 8086
+      #   # udp: 8089
 
     ingress:
       enabled: true
