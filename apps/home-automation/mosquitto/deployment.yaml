@@ -27,8 +27,7 @@ spec:
         - name: config
           mountPath: /mosquitto/config/
         - name: password
-          subPath: passwordfile.txt
-          mountPath: /mosquitto/auth/passwordfile.txt
+          mountPath: /mosquitto/auth/
         - name: data
           mountPath: /mosquitto/data/
         ports:
