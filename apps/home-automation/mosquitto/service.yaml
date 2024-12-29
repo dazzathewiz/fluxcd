@@ -29,4 +29,4 @@ spec:
       port: 1883
       targetPort: 1883
   type: LoadBalancer
-  loadBalancerIP: ${LB_HOMEAUTOMATION}
+  loadBalancerIP: "${LB_HOMEAUTOMATION}"
