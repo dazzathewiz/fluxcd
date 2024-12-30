@@ -23,12 +23,12 @@ spec:
           - name: MQTT_USER
             valueFrom:
               secretKeyRef:
-                name: mosquitto-secret
+                name: mosquitto-login-secret
                 key: username
           - name: MQTT_PASSWORD
             valueFrom:
               secretKeyRef:
-                name: mosquitto-secret
+                name: mosquitto-login-secret
                 key: password
         volumeMounts:
         - name: config
