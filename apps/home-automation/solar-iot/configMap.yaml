@@ -1,0 +1,60 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: solariot-config
+  namespace: home-automation
+data:
+  config.py: |
+
+    inverter_ip = "${IOT_INVERTER_IP}"
+    # set inverter_port to 502 for ModbusTCP,
+    # If you have a WiNet-S dongle set to 8082 to use HTTP requests
+    inverter_port = 502
+    # Slave Defaults
+    # Sungrow: 0x01
+    # SMA: 3
+    slave = 0x01 
+    model = "sungrow-sg5kd"
+    timeout = 3
+    scan_interval = 10
+
+    # Optional:
+    dweepy_uuid = "random-uuid"
+
+    # optional
+    # prometheus = True
+    # prometheus_port = 8000
+
+    # Optional:
+    influxdb_ip = "influxdb-v1"
+    influxdb_port = 8086
+    influxdb_user = ""
+    influxdb_password = ""
+    influxdb_database = "inverter"
+    influxdb_ssl = False # True
+    influxdb_verify_ssl = False
+
+    # Optional
+    mqtt_server = "mosquitto"
+    mqtt_port = 1883
+    mqtt_topic = "inverter/stats"
+    mqtt_username = "${MQTT_USER}"
+    mqtt_password = "${MQTT_PASSWORD}"
+
+    # Commented out for testing
+    # # Optional
+    # pvoutput_api = "<secret>"
+    # pvoutput_sid = "<secret>"
+    # # 60 for regular accounts, 300 for donation accounts
+    # pvoutput_rate_limit = 60
+    # # This sends the c1 option to PVOutput. See here for details https://pvoutput.org/help/api_specification.html#cumulative-energy
+    # pvoutput_cumulative = True
+    # # This only sends the v2 and v4 (Power) values to PVOutput. See here for details https://pvoutput.org/help/api_specification.html#power-and-energy-calculation
+    # pvoutput_power_only = False
+
+
+    # Optional: save telemetry to a json file
+    #json_file = "telemetry.json"
+    # This option, when set to True, writes new lines to the end of the current file.  When set to False you get a single (latest) line per file
+    #append_log = False

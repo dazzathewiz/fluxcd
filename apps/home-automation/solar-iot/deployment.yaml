@@ -1,0 +1,39 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: home-automation
+  name: solar-iot
+  labels:
+    app: solar-iot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: solar-iot
+  template:
+    metadata:
+      labels:
+        app: solar-iot
+    spec:
+      containers:
+      - name: solariot
+        image: meltaxa/solariot
+        env:
+          - name: MQTT_USER
+            valueFrom:
+              secretKeyRef:
+                name: mosquitto-secret
+                key: username
+          - name: MQTT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mosquitto-secret
+                key: password
+        volumeMounts:
+        - name: config
+          mountPath: /config/
+      volumes:
+      - name: config
+        configMap:
+          name: solariot-config
