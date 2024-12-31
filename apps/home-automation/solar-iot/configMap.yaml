@@ -27,7 +27,7 @@ data:
     # prometheus_port = 8000
 
     # Optional:
-    influxdb_ip = "influxdb-v1-influxdb.databases"
+    influxdb_ip = "influx-v1-influxdb.databases"
     influxdb_port = 8086
     influxdb_user = ""
     influxdb_password = ""
