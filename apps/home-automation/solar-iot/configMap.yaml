@@ -20,7 +20,7 @@ data:
     scan_interval = 10
 
     # Optional:
-    dweepy_uuid = "random-uuid"
+    # dweepy_uuid = "random-uuid"
 
     # optional
     # prometheus = True
