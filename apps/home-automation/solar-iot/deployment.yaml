@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: solariot
-        image: meltaxa/solariot
+        image: dazzathewiz/solariot
         env:
           - name: MQTT_USER
             valueFrom:
