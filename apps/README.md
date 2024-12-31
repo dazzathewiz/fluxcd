@@ -1,5 +1,12 @@
 # Applications
 
+## Quick Reference
+### [Cluster DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/)
+When building a stack of pods connecting to each other, to get the correct service name:
+- DNS Name is made up of <Service.Name>.<Namespace>
+- Lookup the Service Name under "Services" in Lens or `kubectl get svc --all-namespaces`
+- If you want a specific CNAME to reference a service in cluster pods, use `ExternalName` Service type; See: [publishing-services-service-types](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types)
+
 ## Plex
 
 - Resource scheduleing the GPU
