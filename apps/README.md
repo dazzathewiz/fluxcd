@@ -7,6 +7,14 @@ When building a stack of pods connecting to each other, to get the correct servi
 - Lookup the Service Name under "Services" in Lens or `kubectl get svc --all-namespaces`
 - If you want a specific CNAME to reference a service in cluster pods, use `ExternalName` Service type; See: [publishing-services-service-types](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types)
 
+### App Services
+Note: External references are manage by DNS outside of the Kubernetes cluster (EG PiHole)
+
+|  App Name  |  Internal Ref  |  External Ref  |
+| ---------- | -------------- | -------------- |
+| influx-v1 | influx-v1-influxdb.databases | influxdbv1.inf.${PERSONAL_DOMAIN} |
+| mosquitto | mosquitto.home-automation | mqtt.home.${PERSONAL_DOMAIN} |
+
 ## Plex
 
 - Resource scheduleing the GPU
