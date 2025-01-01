@@ -35,5 +35,5 @@ spec:
           mountPath: /config/
       volumes:
       - name: config
-        configMap:
-          name: solariot-config
+        secret:
+          secretName: solariot-config
