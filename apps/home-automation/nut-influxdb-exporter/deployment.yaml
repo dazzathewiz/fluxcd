@@ -35,7 +35,7 @@ spec:
         - name: INFLUXDB_PASSWORD
           value: ""
         - name: VERBOSE
-          value: "true"
+          value: "false"
         - name: UPS_ALIAS
           value: ups
         - name: UPS_NAME
