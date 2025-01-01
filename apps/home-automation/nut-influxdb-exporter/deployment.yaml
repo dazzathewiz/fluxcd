@@ -1,0 +1,58 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: home-automation
+  name: nut-influxdb-exporter-eaton420
+  labels:
+    app: nut-influxdb-exporter-eaton420
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nut-influxdb-exporter-eaton420
+  template:
+    metadata:
+      labels:
+        app: nut-influxdb-exporter-eaton420
+    spec:
+      containers:
+      - name: nut-influxdb-exporter
+        image: dazzathewiz/nut-influxdb-exporter
+        env:
+        - name: HOSTNAME
+          value: 3gbackup-ups
+        - name: WATTS
+          value: 420
+        - name: INFLUXDB_HOST
+          value: influx-v1-influxdb.databases
+        - name: INFLUXDB_PORT
+          value: 8086
+        - name: INFLUXDB_DATABASE
+          value: nut2
+        # - name: INFLUXDB_USER
+        #   value: 
+        # - name: INFLUXDB_PASSWORD
+        #   value: 
+        - name: VERBOSE
+          value: "true"
+        - name: UPS_ALIAS
+          value: ups
+        - name: UPS_NAME
+          value: ups
+        - name: NUT_HOST
+          value: "${HOST_PIZEROW}"
+        # - name: NUT_PORT
+        #   value: "1234"
+        - name: NUT_ALIAS
+          value: ups
+        - name: NUT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: username
+        - name: NUT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: password
