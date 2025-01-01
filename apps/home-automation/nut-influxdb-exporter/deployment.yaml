@@ -30,10 +30,10 @@ spec:
           value: "8086"
         - name: INFLUXDB_DATABASE
           value: nut2
-        # - name: INFLUXDB_USER
-        #   value: 
-        # - name: INFLUXDB_PASSWORD
-        #   value: 
+        - name: INFLUXDB_USER
+          value: ""
+        - name: INFLUXDB_PASSWORD
+          value: ""
         - name: VERBOSE
           value: "true"
         - name: UPS_ALIAS
@@ -42,8 +42,8 @@ spec:
           value: ups
         - name: NUT_HOST
           value: "${HOST_PIZEROW}"
-        # - name: NUT_PORT
-        #   value: "1234"
+        - name: NUT_PORT
+          value: "3493"
         - name: NUT_ALIAS
           value: ups
         - name: NUT_USERNAME
