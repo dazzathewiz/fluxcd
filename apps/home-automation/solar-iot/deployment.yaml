@@ -19,17 +19,6 @@ spec:
       containers:
       - name: solariot
         image: dazzathewiz/solariot
-        env:
-          - name: MQTT_USER
-            valueFrom:
-              secretKeyRef:
-                name: mosquitto-login-secret
-                key: username
-          - name: MQTT_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: mosquitto-login-secret
-                key: password
         volumeMounts:
         - name: config
           mountPath: /config/
