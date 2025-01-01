@@ -8,6 +8,8 @@ metadata:
     app: mosquitto
 spec:
   replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
   selector:
     matchLabels:
       app: mosquitto
