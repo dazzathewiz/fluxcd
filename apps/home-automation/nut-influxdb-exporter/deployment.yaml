@@ -23,11 +23,11 @@ spec:
         - name: HOSTNAME
           value: 3gbackup-ups
         - name: WATTS
-          value: 420
+          value: "420"
         - name: INFLUXDB_HOST
           value: influx-v1-influxdb.databases
         - name: INFLUXDB_PORT
-          value: 8086
+          value: "8086"
         - name: INFLUXDB_DATABASE
           value: nut2
         # - name: INFLUXDB_USER
