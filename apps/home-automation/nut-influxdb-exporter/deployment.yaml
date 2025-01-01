@@ -56,3 +56,235 @@ spec:
             secretKeyRef:
               name: nut-secret
               key: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: home-automation
+  name: nut-influxdb-exporter-apc1600si
+  labels:
+    app: nut-influxdb-exporter-apc1600si
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nut-influxdb-exporter-apc1600si
+  template:
+    metadata:
+      labels:
+        app: nut-influxdb-exporter-apc1600si
+    spec:
+      containers:
+      - name: nut-influxdb-exporter
+        image: dazzathewiz/nut-influxdb-exporter
+        env:
+        - name: HOSTNAME
+          value: APC1600SI
+        - name: WATTS
+          value: ""
+        - name: INFLUXDB_HOST
+          value: influx-v1-influxdb.databases
+        - name: INFLUXDB_PORT
+          value: "8086"
+        - name: INFLUXDB_DATABASE
+          value: nut2
+        - name: INFLUXDB_USER
+          value: ""
+        - name: INFLUXDB_PASSWORD
+          value: ""
+        - name: VERBOSE
+          value: "false"
+        - name: UPS_ALIAS
+          value: ups
+        - name: UPS_NAME
+          value: ups
+        - name: NUT_HOST
+          value: "${HOST_PIUPS}"
+        - name: NUT_PORT
+          value: "3492"
+        - name: NUT_ALIAS
+          value: ups
+        - name: NUT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: username
+        - name: NUT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: home-automation
+  name: nut-influxdb-exporter-eaton1500
+  labels:
+    app: nut-influxdb-exporter-eaton1500
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nut-influxdb-exporter-eaton1500
+  template:
+    metadata:
+      labels:
+        app: nut-influxdb-exporter-eaton1500
+    spec:
+      containers:
+      - name: nut-influxdb-exporter
+        image: dazzathewiz/nut-influxdb-exporter
+        env:
+        - name: HOSTNAME
+          value: Eaton1500
+        - name: WATTS
+          value: "900"
+        - name: INFLUXDB_HOST
+          value: influx-v1-influxdb.databases
+        - name: INFLUXDB_PORT
+          value: "8086"
+        - name: INFLUXDB_DATABASE
+          value: nut2
+        - name: INFLUXDB_USER
+          value: ""
+        - name: INFLUXDB_PASSWORD
+          value: ""
+        - name: VERBOSE
+          value: "false"
+        - name: UPS_ALIAS
+          value: ups
+        - name: UPS_NAME
+          value: ups
+        - name: NUT_HOST
+          value: "${HOST_PIUPS}"
+        - name: NUT_PORT
+          value: "3493"
+        - name: NUT_ALIAS
+          value: ups
+        - name: NUT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: username
+        - name: NUT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: home-automation
+  name: nut-influxdb-exporter-unraid
+  labels:
+    app: nut-influxdb-exporter-unraid
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nut-influxdb-exporter-unraid
+  template:
+    metadata:
+      labels:
+        app: nut-influxdb-exporter-unraid
+    spec:
+      containers:
+      - name: nut-influxdb-exporter
+        image: dazzathewiz/nut-influxdb-exporter
+        env:
+        - name: HOSTNAME
+          value: unraid-ups
+        - name: WATTS
+          value: "900"
+        - name: INFLUXDB_HOST
+          value: influx-v1-influxdb.databases
+        - name: INFLUXDB_PORT
+          value: "8086"
+        - name: INFLUXDB_DATABASE
+          value: nut2
+        - name: INFLUXDB_USER
+          value: ""
+        - name: INFLUXDB_PASSWORD
+          value: ""
+        - name: VERBOSE
+          value: "false"
+        - name: UPS_ALIAS
+          value: ups
+        - name: UPS_NAME
+          value: ups
+        - name: NUT_HOST
+          value: "${HOST_UNRAID}"
+        - name: NUT_PORT
+          value: "3493"
+        - name: NUT_ALIAS
+          value: ups
+        - name: NUT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: username
+        - name: NUT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: home-automation
+  name: nut-influxdb-exporter-garage
+  labels:
+    app: nut-influxdb-exporter-garage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nut-influxdb-exporter-garage
+  template:
+    metadata:
+      labels:
+        app: nut-influxdb-exporter-garage
+    spec:
+      containers:
+      - name: nut-influxdb-exporter
+        image: dazzathewiz/nut-influxdb-exporter
+        env:
+        - name: HOSTNAME
+          value: garage-ups
+        - name: WATTS
+          value: ""
+        - name: INFLUXDB_HOST
+          value: influx-v1-influxdb.databases
+        - name: INFLUXDB_PORT
+          value: "8086"
+        - name: INFLUXDB_DATABASE
+          value: nut2
+        - name: INFLUXDB_USER
+          value: ""
+        - name: INFLUXDB_PASSWORD
+          value: ""
+        - name: VERBOSE
+          value: "false"
+        - name: UPS_ALIAS
+          value: ups
+        - name: UPS_NAME
+          value: ups
+        - name: NUT_HOST
+          value: "${HOST_PIFOUR}"
+        - name: NUT_PORT
+          value: "3493"
+        - name: NUT_ALIAS
+          value: ups
+        - name: NUT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: username
+        - name: NUT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nut-secret
+              key: password
