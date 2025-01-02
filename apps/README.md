@@ -33,6 +33,24 @@ You may experience invalid: spec.strategy.rollingUpdate: Forbidden: may not be s
 
 Follow these instructions to manually [patch the Deployment using retainKeys](https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/#use-strategic-merge-patch-to-update-a-deployment-using-the-retainkeys-strategy)
 
+### App Persistent Volumes
+Apps having persistent data that is important not to be lost/deleted, I recommend using the [retain](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#retain) policy. This is to prevent a sitation where accidentally removing the Flux reference and a reconcilliation then deleting all references to the app, including deleting the PersistentVolume.
+
+```
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pv_claim
+  namespace: ns_one
+spec:
+  storageClassName: longhorn
+  persistentVolumeReclaimPolicy: Retain
+```
+
+\# Note that if you forget when initally setting up the app, Flux may not patch the existing PVC after changing the PVC spec. In this case, you should [Patch/Change the reclaim policy of PersistentVolume](https://kubernetes.io/docs/tasks/administer-cluster/change-pv-reclaim-policy/#changing-the-reclaim-policy-of-a-persistentvolume) manually:
+`kubectl patch pv <your-pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'`
+
 ## Plex
 
 - Resource scheduleing the GPU
