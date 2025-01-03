@@ -41,6 +41,6 @@ spec:
           - containerPort: 22
           - containerPort: 873
       volumes:
-      - name: data
+      - name: appdata
         persistentVolumeClaim:
           claimName: "${PV_CLAIM}"
