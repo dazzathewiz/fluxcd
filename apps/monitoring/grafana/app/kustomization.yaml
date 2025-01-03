@@ -6,3 +6,7 @@ resources:
   # - externalsecret.yaml
   # - deployment.yaml
   # - service.yaml
+
+  # Temp for data migration
+  - datamigration-deployment.yaml
+  - datamigration-service.yaml

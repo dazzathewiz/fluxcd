@@ -1,0 +1,46 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: monitoring
+  name: rsync-server
+  labels:
+    app: rsync-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
+  selector:
+    matchLabels:
+      app: rsync-server
+  template:
+    metadata:
+      labels:
+        app: rsync-server
+    spec:
+      containers:
+      - name: rsync-server
+        image: dazzathewiz/rsync-server
+        env:
+        - name: SSH_KEY
+          value: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDSYrn6j9zsM3GI2nOoyQHhW3OYRIj3/vlPzZI857WY2FViwnLwuD1e5n4aP6k/cuZOE8YFn9HOhHoYhtJm+lZI8vfJlRCCTozQmjKELDgakc3+OixJUKZTbIYIZIWq0RZ15tXf9Vn9v70OGFCB/FqsiLRt+7Y1/lO6crx/iYZ08ZRr2uYBx80aq/8EBNcjpc6R00/n0mYR9bxh5mENMUJSgE4Ef5rfmH1n7WoPJS5WyHUJgk4tPAFT+7MsQeQ3qxOK5RvrS7xA3Hw3+KeBGCVhCXu8cU9Zvl2CMIkKTmdG5CAcyscO6UuK8CqXGXpOj8MeppYCba7xazwOZ9PJomKVm3NIBkK6hqErNg3zrxT6/uhDVB7mVOEigevLTeTAFXbRxkCKaPwqx7ZIe5UaN4I7s4IGm1xNhvXwTfHuSHxFETObE+yBP+wHO/rigupOUhU5XyCx6qq6y5z5Od5FahS6HvJdHZ55gWXJfcPEyif/8NbUAWMdKyDh+K5reyt0hY8= root@unNAS"
+        - name: RSYNC_MAX_CONNECTIONS
+          value: "1"
+        - name: APPDATA_NAME
+          value: appdata
+        - name: APPDATA_VOLUME
+          value: /appdata
+        - name: APPDATA_READ_ONLY
+          value: "no"
+        - name: APPDATA_ALLOW
+          value: "192.168.15.0/24"
+        volumeMounts:
+        - name: appdata
+          mountPath: /appdata
+        ports:
+          - containerPort: 22
+          - containerPort: 873
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: "${PV_CLAIM}"
