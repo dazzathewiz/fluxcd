@@ -43,7 +43,7 @@ spec:
           value: Main Org.
         volumeMounts:
         - name: data
-          mountPath: /var/lib/grafana
+          mountPath: /var/lib/grafana/
         ports:
           - containerPort: 3000
       volumes:
