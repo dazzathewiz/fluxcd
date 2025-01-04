@@ -6,6 +6,8 @@ metadata:
   name: solar-iot
   labels:
     app: solar-iot
+  annotations:
+    reloader.stakater.com/auto: "true"
 spec:
   replicas: 1
   selector:

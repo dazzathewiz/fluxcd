@@ -11,3 +11,4 @@ resources:
   - longhorn.yaml
   - intel.yaml
   # - rook-ceph-external
+  - reloader-helmrelease.yaml
