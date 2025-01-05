@@ -21,6 +21,9 @@ spec:
       containers:
       - name: solariot
         image: dazzathewiz/solariot
+        env:
+        - name: TZ
+          value: "${TIMEZONE}"
         volumeMounts:
         - name: config
           mountPath: /config/
