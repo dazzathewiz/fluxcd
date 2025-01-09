@@ -18,10 +18,6 @@ spec:
       labels:
         app: organizr
     spec:
-      securityContext:
-        runAsUser: 99
-        runAsGroup: 100
-        fsGroup: 100
       containers:
       - name: organizr
         image: lsiocommunity/organizr
