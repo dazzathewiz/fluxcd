@@ -1,0 +1,39 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: web
+  name: organizr
+  labels:
+    app: organizr
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
+  selector:
+    matchLabels:
+      app: organizr
+  template:
+    metadata:
+      labels:
+        app: organizr
+    spec:
+      securityContext:
+        runAsUser: 99
+        runAsGroup: 100
+        fsGroup: 100
+      containers:
+      - name: organizr
+        image: lsiocommunity/organizr
+        env:
+        - name: TZ
+          value: "${TIMEZONE}"
+        volumeMounts:
+        - name: config
+          mountPath: /config/
+        ports:
+          - containerPort: 8084
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: organizr-data

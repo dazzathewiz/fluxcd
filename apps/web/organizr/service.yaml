@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: organizr-metallb
+  namespace: web
+  annotations:
+    metallb.universe.tf/allow-shared-ip: web-lb
+spec:
+  selector:
+    app: "organizr"
+  ports:
+  - name: webui
+    protocol: TCP
+    port: 8084
+    targetPort: 8084
+  type: LoadBalancer
+  loadBalancerIP: "${LB_WEB}"
