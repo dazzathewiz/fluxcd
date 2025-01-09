@@ -6,5 +6,6 @@ resources:
   - home-automation
   - nginx.yaml
   - monitoring
+  - web
   #- plex.yaml
   # - pvc-test.yaml

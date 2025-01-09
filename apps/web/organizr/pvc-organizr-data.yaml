@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: organizr-data
+  namespace: web
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-diskencrypt-global
+  persistentVolumeReclaimPolicy: Retain
+  resources:
+    requests:
+      storage: 1Gi
