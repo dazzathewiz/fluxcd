@@ -13,6 +13,6 @@ spec:
   - name: webui
     protocol: TCP
     port: 8084
-    targetPort: 8084
+    targetPort: 80
   type: LoadBalancer
   loadBalancerIP: "${LB_WEB}"
