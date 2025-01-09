@@ -12,7 +12,7 @@ spec:
   ports:
   - name: webui
     protocol: TCP
-    port: 8084
-    targetPort: 80
+    port: 8181
+    targetPort: 8181
   type: LoadBalancer
   loadBalancerIP: "${LB_MEDIA}"
