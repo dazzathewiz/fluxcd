@@ -1,0 +1,40 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: media
+  name: tautulli
+  labels:
+    app: tautulli
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
+  selector:
+    matchLabels:
+      app: tautulli
+  template:
+    metadata:
+      labels:
+        app: tautulli
+    spec:
+      containers:
+      - name: tautulli
+        image: linuxserver/tautulli
+        env:
+        - name: TZ
+          value: "${TIMEZONE}"
+        livenessProbe:
+          failureThreshold: 10000
+          httpGet:
+            path: /
+            port: 8181
+        volumeMounts:
+        - name: config
+          mountPath: /config/
+        ports:
+          - containerPort: 8181
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: tautulli-config
