@@ -32,18 +32,7 @@ spec:
     service:
       type: ClusterIP
 
-    ingress:
-      enabled: true
-      ingressClassName: traefik-external
-      annotations:
-        kubernetes.io/ingress.class: traefik-external
-      hosts:
-        - host: portainer.inf.${PERSONAL_DOMAIN}
-          paths:
-            path: /
-            port: 9443
-      tls:
-        secretName: inf-personal-domain-tls
+    # ingress: managed separately
           
     persistence:
       enabled: true
