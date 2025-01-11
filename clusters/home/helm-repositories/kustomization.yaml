@@ -3,3 +3,4 @@ kind: Kustomization
 resources:
 - influxdata-charts.yaml
 - skater-charts.yaml
+- portainer-charts.yaml
