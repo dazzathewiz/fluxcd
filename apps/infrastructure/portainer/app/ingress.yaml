@@ -32,8 +32,5 @@ spec:
       #   - name: default-headers
       services:
         - name: portainer
-          port: 9443
-          scheme: https
-          passHostHeader: true
-  tls:
+          port: 9000
     secretName: inf-personal-domain-tls
