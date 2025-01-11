@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - pvc-portainer-data.yaml
   - helmrelease-portainer.yaml
+  - ingress.yaml
