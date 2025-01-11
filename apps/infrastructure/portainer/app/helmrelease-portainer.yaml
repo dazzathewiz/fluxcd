@@ -40,10 +40,12 @@ spec:
       hosts:
         - host: portainer.inf.${PERSONAL_DOMAIN}
           paths:
-            path: /
-            port: 9443
+            - path: /
+              port: 9443
       tls:
         secretName: inf-personal-domain-tls
+        hosts:
+          - portainer.inf.${PERSONAL_DOMAIN}
           
     persistence:
       enabled: true
