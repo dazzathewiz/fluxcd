@@ -1,0 +1,67 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: infrastructure
+  name: unifi-controller
+  labels:
+    app: unifi-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
+  selector:
+    matchLabels:
+      app: unifi-controller
+  template:
+    metadata:
+      labels:
+        app: unifi-controller
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: unifi-controller
+        image: linuxserver/unifi-controller:latest
+        resources:
+          requests:
+            # cpu: 500m
+            memory: 3Gi
+          limits:
+            # cpu: 1000m
+            memory: 5Gi
+        env:
+        - name: TZ
+          value: "${TIMEZONE}"
+        volumeMounts:
+        - name: config
+          mountPath: /config/
+        ports:
+          - protocol: UDP
+            containerPort: 3478
+            name: stun
+          - containerPort: 8080
+            name: inform
+          - containerPort: 8443
+            name: webgui-https
+          - containerPort: 8880
+            name: portal-http
+          - containerPort: 8843
+            name: portal-https
+          # - protocol: UDP
+          #   containerPort: 10001
+          #   name: ap-discovery
+          - protocol: UDP
+            containerPort: 5514
+            name: syslog
+          - containerPort: 6789
+            name: speedtest
+          # - protocol: UDP
+          #   containerPort: 1900
+          #   name: l2-discovery
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: unifi-controller-config
