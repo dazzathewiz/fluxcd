@@ -1,0 +1,45 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: infrastructure
+  name: ubiquiti-uisp
+  labels:
+    app: ubiquiti-uisp
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
+  selector:
+    matchLabels:
+      app: ubiquiti-uisp
+  template:
+    metadata:
+      labels:
+        app: ubiquiti-uisp
+    spec:
+      containers:
+      - name: ubiquiti-uisp
+        image: nico640/docker-unms
+        resources:
+          requests:
+            # cpu: 500m
+            memory: 5Gi
+        env:
+        - name: TZ
+          value: "${TIMEZONE}"
+        volumeMounts:
+        - name: config
+          mountPath: /config/
+        ports:
+          - containerPort: 80
+            name: web-http
+          - containerPort: 443
+            name: web-https
+          - protocol: UDP
+            containerPort: 2055
+            name: netflows
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: uisp-config
