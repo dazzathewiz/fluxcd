@@ -10,13 +10,16 @@ spec:
   selector:
     app: unifi-controller
   ports:
-    - protocol: TCP
+    - name: inform
+      protocol: TCP
       port: 8080
       targetPort: 8080
-    - protocol: UDP
+    - name: stun
+      protocol: UDP
       port: 3478
       targetPort: 3478
-    - protocol: TCP
+    - name: webgui-https
+      protocol: TCP
       port: 8443
       targetPort: 8443
   type: LoadBalancer
