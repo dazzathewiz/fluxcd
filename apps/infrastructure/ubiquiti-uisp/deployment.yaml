@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: ubiquiti-uisp
-        image: nico640/docker-unms
+        image: nico640/docker-unms:2.4.155.1
         resources:
           requests:
             # cpu: 500m
