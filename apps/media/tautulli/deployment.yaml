@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: tautulli
-        image: linuxserver/tautulli:2.15.1
+        image: linuxserver/tautulli:2021.12.16
         env:
         - name: TZ
           value: "${TIMEZONE}"
