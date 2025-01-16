@@ -21,6 +21,12 @@ spec:
       containers:
       - name: solariot
         image: dazzathewiz/solariot
+        livenessProbe:
+          exec:
+            command:
+            - find . -mmin -2 | grep -c telemetry
+          initialDelaySeconds: 30
+          periodSeconds: 15
         env:
         - name: TZ
           value: "${TIMEZONE}"
