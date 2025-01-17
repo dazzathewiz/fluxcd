@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: influx-v2-data
+  namespace: databases
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "${PV_STORAGECLASS}"
+  persistentVolumeReclaimPolicy: Retain
+  resources:
+    requests:
+      storage: "${PV_CAPACITY}"
