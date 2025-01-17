@@ -24,7 +24,7 @@ spec:
         livenessProbe:
           exec:
             command:
-            - find . -mmin -2 | grep -c telemetry
+            - /usr/bin/find . -mmin -2 | /bin/grep -c telemetry
           initialDelaySeconds: 30
           periodSeconds: 15
         env:
