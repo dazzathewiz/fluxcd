@@ -12,8 +12,13 @@ Note: External references are manage by DNS outside of the Kubernetes cluster (E
 
 |  App Name  |  Internal Ref  |  External Ref  |
 | ---------- | -------------- | -------------- |
-| influx-v1 | influx-v1-influxdb.databases | influxdbv1.inf.${PERSONAL_DOMAIN} |
+| influx-v1 | influx-v1-influxdb.databases | influxdb.inf.${PERSONAL_DOMAIN} |
 | mosquitto | mosquitto.home-automation | mqtt.home.${PERSONAL_DOMAIN} |
+| portainer | portainer.infrastructure | portainer.inf.${PERSONAL_DOMAIN} |
+| ubiquiti-uisp | ubiquiti-uisp.infrastructure | unms.${PERSONAL_DOMAIN} |
+| unifi-controller | unifi-controller.infrastructure | _external proxy_ |
+| grafana | grafana.monitoring | _external proxy_ |
+| organizr | organizr.web | _external proxy_ |
 
 ### App Pod Recreate
 Some pods need an [update strategy](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy) set to "Recreate". By default, 
