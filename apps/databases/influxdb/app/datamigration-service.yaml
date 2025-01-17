@@ -1,0 +1,20 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsync-server-metallb
+  namespace: databases
+spec:
+  selector:
+    app: rsync-server
+  ports:
+  - name: ssh
+    protocol: TCP
+    port: 22
+    targetPort: 22
+  - name: rsync
+    protocol: TCP
+    port: 873
+    targetPort: 873
+  type: LoadBalancer
+  loadBalancerIP: 10.10.1.140

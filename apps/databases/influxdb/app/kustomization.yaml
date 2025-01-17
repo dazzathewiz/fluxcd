@@ -7,5 +7,7 @@ resources:
   - pvc-influx-v2-data.yaml
   - pvc-influx-v1-data.yaml
   - influx-v1-helmrelease.yaml
-  - influx-v2-helmrelease.yaml
-  - influxdb-v2-service.yaml
+  - datamigration-deployment.yaml
+  - datamigration-service.yaml
+  # - influx-v2-helmrelease.yaml
+  # - influxdb-v2-service.yaml
