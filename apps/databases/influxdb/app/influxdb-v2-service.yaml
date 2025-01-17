@@ -1,0 +1,23 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: influx-v2-influxdb
+  namespace: databases
+  annotations:
+    metallb.universe.tf/allow-shared-ip: databases-lb
+spec:
+  selector:
+    app.kubernetes.io/instance: influx-v2
+    app.kubernetes.io/name: influxdb
+  ports:
+    - name: api
+      protocol: TCP
+      port: 8096
+      targetPort: api
+    - name: rpc
+      protocol: TCP
+      port: 8098
+      targetPort: rpc
+  type: LoadBalancer
+  loadBalancerIP: "${LB_INFLUXDB}"

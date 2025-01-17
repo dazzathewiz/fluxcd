@@ -30,6 +30,7 @@ spec:
       APP: *appname
       APP_UID: "568"
       APP_GID: "568"
+      APP_ORDID: "homelab.local"
       PV_CLAIM: influx-v1-data
       PV_CAPACITY: 50Gi
       PV_STORAGECLASS: longhorn-diskencrypt-global
