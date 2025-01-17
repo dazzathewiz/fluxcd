@@ -9,3 +9,4 @@ resources:
   - influx-v1-helmrelease.yaml
   - influx-v2-helmrelease.yaml
   - influxdb-v2-service.yaml
+  - influxdb-v2-ingress.yaml

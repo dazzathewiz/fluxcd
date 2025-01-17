@@ -11,13 +11,8 @@ spec:
     app.kubernetes.io/instance: influx-v2
     app.kubernetes.io/name: influxdb2
   ports:
-    - name: api
-      protocol: TCP
-      port: 8096
-      targetPort: api
-    - name: rpc
-      protocol: TCP
-      port: 8098
-      targetPort: rpc
+    - name: http
+      port: 80
+      targetPort: 8086
   type: LoadBalancer
   loadBalancerIP: "${LB_INFLUXDB}"

@@ -1,0 +1,38 @@
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: default-headers
+  namespace: databases
+spec:
+  headers:
+    browserXssFilter: true
+    contentTypeNosniff: true
+    forceSTSHeader: true
+    stsIncludeSubdomains: true
+    stsSeconds: 15552000
+    customFrameOptionsValue: SAMEORIGIN
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: influxdb-webui
+  namespace: databases
+  annotations: 
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`influxdb.inf.${PERSONAL_DOMAIN}`)
+      kind: Rule
+      middlewares:
+        - name: default-headers
+      services:
+        - name: influx-v2-influxdb2
+          port: 80
+          passHostHeader: true
+  tls:
+    secretName: inf-personal-domain-tls
