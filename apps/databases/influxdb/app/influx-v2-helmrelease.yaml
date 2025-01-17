@@ -75,9 +75,6 @@ spec:
           
     persistence:
       enabled: true
-      useExisting: true
-      name: influx-v2-data
+      existingClaim: influx-v2-data
       storageClass: "${PV_STORAGECLASS}"
       size: "${PV_CAPACITY}"
-      mountPath: /var/lib/influxdb2
-      subPath: db2
