@@ -13,6 +13,7 @@ Note: External references are manage by DNS outside of the Kubernetes cluster (E
 |  App Name  |  Internal Ref  |  External Ref  |
 | ---------- | -------------- | -------------- |
 | influx-v1 | influx-v1-influxdb.databases | influxdb.inf.${PERSONAL_DOMAIN} |
+| influx-v2 | influx-v2-influxdb2.databases | influxdb.inf.${PERSONAL_DOMAIN} |
 | mosquitto | mosquitto.home-automation | mqtt.home.${PERSONAL_DOMAIN} |
 | portainer | portainer.infrastructure | portainer.inf.${PERSONAL_DOMAIN} |
 | ubiquiti-uisp | ubiquiti-uisp.infrastructure | unms.${PERSONAL_DOMAIN} |
