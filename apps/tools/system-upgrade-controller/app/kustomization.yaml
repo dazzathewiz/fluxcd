@@ -18,6 +18,6 @@ images:
 #       name: tools
 labels:
   - pairs:
-      app.kubernetes.io/name: ${APP}
-      app.kubernetes.io/instance: ${APP}
+      app.kubernetes.io/name: "${APP}"
+      app.kubernetes.io/instance: "${APP}"
     includeSelectors: true
