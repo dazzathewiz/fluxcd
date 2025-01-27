@@ -19,6 +19,9 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substitute:
+      APP: *appname
 
 # ---
 # yaml-language-server: $schema=https://github.com/fluxcd-community/flux2-schemas/raw/main/kustomization-kustomize-v1.json
@@ -42,3 +45,6 @@ spec:
 #   wait: false
 #   interval: 30m
 #   timeout: 5m
+#   postBuild:
+#     substitute:
+#       APP: *appname
