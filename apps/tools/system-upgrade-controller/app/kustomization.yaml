@@ -15,7 +15,7 @@ patchesStrategicMerge:
     apiVersion: v1
     kind: Namespace
     metadata:
-      name: tools
+      name: system-upgrade
 labels:
   - pairs:
       app.kubernetes.io/name: "${APP}"
