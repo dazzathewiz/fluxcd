@@ -4,6 +4,12 @@
     "config:recommended"
   ],
   "kubernetes": {
-    "fileMatch": ["\\.yml$","\\.yaml$"]
+    "fileMatch": ["\\.yml$","\\.ya?ml$"]
+  },
+  "flux": {
+    "fileMatch": ["cluster/.+\\.ya?ml$"]
+  },
+  "helm-values": {
+    "fileMatch": ["cluster/.+\\.ya?ml$"]
   }
 }
