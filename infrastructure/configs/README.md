@@ -111,7 +111,7 @@ See: [Creating a Backup Target](https://fredrickb.com/2022/07/24/introducing-lon
     1. Take a `snapshot` locally every 12 hours and keep 4 versions (IE: 2 days)
     ```
     ---
-    apiVersion: longhorn.io/v1beta1
+    apiVersion: longhorn.io/v1beta2
     kind: RecurringJob
     metadata:
     name: 12-hour-snapshots
@@ -129,7 +129,7 @@ See: [Creating a Backup Target](https://fredrickb.com/2022/07/24/introducing-lon
     2. Take a daily `backup` to remove backup store at 11am and keep 3 versions (IE: 3 days)
     ```
     ---
-    apiVersion: longhorn.io/v1beta1
+    apiVersion: longhorn.io/v1beta2
     kind: RecurringJob
     metadata:
     name: daily-backups

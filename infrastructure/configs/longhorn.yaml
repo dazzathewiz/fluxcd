@@ -102,7 +102,7 @@ spec:
       key: linode-k3s-bucket
       property: AWS_SECRET_ACCESS_KEY
 ---
-apiVersion: longhorn.io/v1beta1
+apiVersion: longhorn.io/v1beta2
 kind: RecurringJob
 metadata:
   name: 12-hour-snapshots
@@ -117,7 +117,7 @@ spec:
   labels:
     job: 12-hour-snapshots
 ---
-apiVersion: longhorn.io/v1beta1
+apiVersion: longhorn.io/v1beta2
 kind: RecurringJob
 metadata:
   name: daily-backups
@@ -132,7 +132,7 @@ spec:
   labels:
     job: daily-backups
 ---
-apiVersion: longhorn.io/v1beta1
+apiVersion: longhorn.io/v1beta2
 kind: RecurringJob
 metadata:
   name: weekly-backups
