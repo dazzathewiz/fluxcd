@@ -4,7 +4,7 @@ kind: Namespace
 metadata:
   name: plex-beta
 ---
-apiVersion: external-secrets.io/v1beta1
+apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: plex-claim
@@ -21,7 +21,7 @@ spec:
       key: plex-claim
       property: PLEX_CLAIM
 # ---
-# apiVersion: external-secrets.io/v1beta1
+# apiVersion: external-secrets.io/v1
 # kind: ExternalSecret
 # metadata:
 #   name: ceph-secret-admin

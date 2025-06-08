@@ -133,7 +133,7 @@ These are automatically setup in the environment by ansible [dazzathewiz/infrast
     * Translate in an `external-secrets.io` manifest, note the `target.template.type: kubernetes.io/rook` to specify the secret type.
     ```
     ---
-    apiVersion: external-secrets.io/v1beta1
+    apiVersion: external-secrets.io/v1
     kind: ExternalSecret
     metadata:
     name: rook-ceph-mon

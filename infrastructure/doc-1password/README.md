@@ -42,7 +42,7 @@ Install the helm chart on the cluster using `1password-credentials.json`
     - See: [1Password Secrets Automation][1password-externalsecrets]
     SecretStore:
     ```
-    apiVersion: external-secrets.io/v1beta1
+    apiVersion: external-secrets.io/v1
     kind: SecretStore
     metadata:
         name: onepassword-k3s
@@ -61,7 +61,7 @@ Install the helm chart on the cluster using `1password-credentials.json`
     ```
     ClusterSecretStore:
     ```
-    apiVersion: external-secrets.io/v1beta1
+    apiVersion: external-secrets.io/v1
     kind: ClusterSecretStore
     metadata:
         name: onepassword-k3s
