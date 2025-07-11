@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: tautulli
-        image: linuxserver/tautulli@sha256:899245206017f6874e32a499a7cd305526ffa3440252cbfee6a175198c3453df
+        image: linuxserver/tautulli@sha256:73540c967731d36692cea9b8e8881c45e2734f47d5eac1ed6e5e1821f4801737
         env:
         - name: TZ
           value: "${TIMEZONE}"
