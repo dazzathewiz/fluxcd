@@ -35,4 +35,4 @@ spec:
       backupTargetCredentialSecret: longhorn-s3bucket-secret
       createDefaultDiskLabeledNodes: true
       defaultDataPath: /mnt/longhorn/
-      storageReservedPercentageForDefaultDisk: 0
+      storageReservedPercentageForDefaultDisk: "0"
