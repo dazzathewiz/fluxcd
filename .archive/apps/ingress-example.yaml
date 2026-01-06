@@ -1,0 +1,19 @@
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ${APP}-ingress
+  namespace: monitoring
+  annotations: 
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`inf.${PERSONAL_DOMAIN}`) && PathPrefix(`/grafana`)
+    kind: Rule
+    services:
+    - name: "${APP}"
+      port: 3000
+  tls:
+    secretName: inf-personal-domain-tls
