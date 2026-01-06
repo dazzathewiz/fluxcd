@@ -1,8 +1,29 @@
+# ---
+# apiVersion: external-secrets.io/v1
+# kind: ExternalSecret
+# metadata:
+#   name: aws-r53-key-secret
+#   namespace: cert-manager
+# spec:
+#   secretStoreRef:
+#     kind: ClusterSecretStore
+#     name: onepassword-k3s
+#   target:
+#     creationPolicy: Owner
+#   data:
+#   - secretKey: accessKeyID
+#     remoteRef:
+#       key: k3s-certmanager
+#       property: accessKeyID
+#   - secretKey: secret-access-key
+#     remoteRef:
+#       key: k3s-certmanager
+#       property: secret-access-key
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
-  name: aws-r53-key-secret
+  name: cloudflare-api-token-secret
   namespace: cert-manager
 spec:
   secretStoreRef:
@@ -11,14 +32,10 @@ spec:
   target:
     creationPolicy: Owner
   data:
-  - secretKey: accessKeyID
+  - secretKey: credential
     remoteRef:
-      key: k3s-certmanager
-      property: accessKeyID
-  - secretKey: secret-access-key
-    remoteRef:
-      key: k3s-certmanager
-      property: secret-access-key
+      key: cloudflare-dns-apitoken
+      property: credential
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -32,14 +49,18 @@ spec:
       name: letsencrypt-staging
     solvers:
       - dns01:
-          route53:
-            region: ap-southeast-2
-            accessKeyIDSecretRef:
-              name: aws-r53-key-secret
-              key: accessKeyID
-            secretAccessKeySecretRef:
-              name: aws-r53-key-secret
-              key: secret-access-key
+          # route53:
+          #   region: ap-southeast-2
+          #   accessKeyIDSecretRef:
+          #     name: aws-r53-key-secret
+          #     key: accessKeyID
+          #   secretAccessKeySecretRef:
+          #     name: aws-r53-key-secret
+          #     key: secret-access-key
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token-secret
+              key: credential
         selector:
           dnsZones:
             - "${PERSONAL_DOMAIN}"
@@ -56,14 +77,10 @@ spec:
       name: letsencrypt-production
     solvers:
       - dns01:
-          route53:
-            region: ap-southeast-2
-            accessKeyIDSecretRef:
-              name: aws-r53-key-secret
-              key: accessKeyID
-            secretAccessKeySecretRef:
-              name: aws-r53-key-secret
-              key: secret-access-key
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token-secret
+              key: credential
         selector:
           dnsZones:
             - "${PERSONAL_DOMAIN}"
