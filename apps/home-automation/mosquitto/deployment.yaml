@@ -25,6 +25,7 @@ spec:
         runAsGroup: 1883
         fsGroup: 1883
       initContainers:
+      # https://github.com/eclipse-mosquitto/mosquitto/issues/3017
       - name: init-auth   # *workaround*: This container copies the password file from the secret with correct permissions, which doesn't otherwise work using the mosquitto container config
         image: busybox
         command: ['sh', '-c', 'cp /tmp/secret/passwordfile.txt /mosquitto/auth/passwordfile.txt && chown 1883:1883 /mosquitto/auth/passwordfile.txt && chmod 0600 /mosquitto/auth/passwordfile.txt']
