@@ -24,13 +24,22 @@ spec:
         runAsUser: 1883
         runAsGroup: 1883
         fsGroup: 1883
+      initContainers:
+      - name: init-auth
+        image: busybox
+        command: ['sh', '-c', 'cp /tmp/secret/passwordfile.txt /mosquitto/auth/passwordfile.txt && chown 1883:1883 /mosquitto/auth/passwordfile.txt && chmod 0600 /mosquitto/auth/passwordfile.txt']
+        volumeMounts:
+        - name: password
+          mountPath: /tmp/secret
+        - name: password-writable
+          mountPath: /mosquitto/auth
       containers:
       - name: mosquitto
         image: eclipse-mosquitto:2
         volumeMounts:
         - name: config
           mountPath: /mosquitto/config/
-        - name: password
+        - name: password-writable
           mountPath: /mosquitto/auth/
         - name: data
           mountPath: /mosquitto/data/
@@ -44,6 +53,8 @@ spec:
         secret:
           secretName: mosquitto-secret
           defaultMode: 0600
+      - name: password-writable
+        emptyDir: {}
       - name: data
         persistentVolumeClaim:
           claimName: mosquitto-pvc
