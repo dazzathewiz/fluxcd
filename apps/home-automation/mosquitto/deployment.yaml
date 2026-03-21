@@ -25,7 +25,7 @@ spec:
         runAsGroup: 1883
         fsGroup: 1883
       initContainers:
-      - name: init-auth
+      - name: init-auth   # *workaround*: This container copies the password file from the secret with correct permissions, which doesn't otherwise work using the mosquitto container config
         image: busybox
         command: ['sh', '-c', 'cp /tmp/secret/passwordfile.txt /mosquitto/auth/passwordfile.txt && chown 1883:1883 /mosquitto/auth/passwordfile.txt && chmod 0600 /mosquitto/auth/passwordfile.txt']
         volumeMounts:
@@ -53,7 +53,7 @@ spec:
         secret:
           secretName: mosquitto-secret
           defaultMode: 0600
-      - name: password-writable
+      - name: password-writable   # *workaround*: This emptyDir volume is used to provide a writable mount for the password file, which is copied from the secret by the init container
         emptyDir: {}
       - name: data
         persistentVolumeClaim:
