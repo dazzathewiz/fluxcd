@@ -43,7 +43,7 @@ spec:
       - name: password
         secret:
           secretName: mosquitto-secret
-          defaultMode: 0644
+          defaultMode: 0600
       - name: data
         persistentVolumeClaim:
           claimName: mosquitto-pvc
