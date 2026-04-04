@@ -29,6 +29,10 @@ spec:
     keepHistory: false
   values:
 
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
+
     # image:
     #   tag: 1.8.0-alpine
 
