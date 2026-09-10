@@ -22,10 +22,8 @@ would be lost with it.
 - TLS: the wildcard cert is only reflected into namespaces listed in
   [infrastructure/configs/certificates/inf-personal-domain.yaml](../infrastructure/configs/certificates/inf-personal-domain.yaml)'s
   `reflection-allowed-namespaces` annotation — `tools` was added there for this app.
-  Skipping that step is a real, silent failure mode: grafana's IngressRoute in
-  `monitoring` (not on that list) has been failing TLS config the same way, falling
-  back to Traefik's default cert instead of erroring loudly — a pre-existing issue,
-  left for a separate fix.
+  Skipping that step is a real, silent failure mode: the IngressRoute would fall back to
+  Traefik's default cert instead of erroring loudly.
 - Auth: a Traefik `basicAuth` Middleware in front of the IngressRoute
   ([apps/tools/changedetection/ingress.yaml](../apps/tools/changedetection/ingress.yaml)),
   credentials sourced from 1Password via
