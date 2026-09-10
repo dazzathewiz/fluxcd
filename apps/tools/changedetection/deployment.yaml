@@ -1,0 +1,57 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: tools
+  name: changedetection
+  labels:
+    app: changedetection
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Don't use RollingUpdate because PVC can only be mounted by one pod at a time
+  selector:
+    matchLabels:
+      app: changedetection
+  template:
+    metadata:
+      labels:
+        app: changedetection
+    spec:
+      containers:
+      - name: changedetection
+        image: dgtlmoon/changedetection.io:0.60.3
+        env:
+        - name: PORT
+          value: "5000"
+        - name: BASE_URL
+          value: "https://changedetection.inf.${PERSONAL_DOMAIN}"
+        - name: TZ
+          value: "${TIMEZONE}"
+        volumeMounts:
+        - name: datastore
+          mountPath: /datastore
+        ports:
+          - containerPort: 5000
+        startupProbe:
+          httpGet:
+            path: /
+            port: 5000
+          failureThreshold: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5000
+          failureThreshold: 6
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: datastore
+        persistentVolumeClaim:
+          claimName: changedetection-data
