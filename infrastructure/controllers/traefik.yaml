@@ -38,6 +38,29 @@ data:
       websecure:
         tls:
           enabled: true
+      # Second HTTPS entrypoint, for the *.app zone only.
+      #
+      # `expose: false` keeps it OFF Traefik's own LoadBalancer Service. It is
+      # published instead by the standalone `traefik-app` Service
+      # (traefik-app-service.yaml), which holds its own MetalLB address.
+      #
+      # Why: every .inf route answers on Traefik's single address, so any client
+      # permitted to reach that address can reach every app behind it just by
+      # sending a different Host header -- app-level auth is the only thing in
+      # the way. Routes bound to `appsecure` answer on a different address that
+      # has no .inf route attached, so a client restricted to it cannot reach
+      # .inf at all, forged Host header or not.
+      #
+      # NOTE on chart upgrades: `expose` is a boolean in chart 2x (pinned below).
+      # Traefik chart 26+ changes it to a map (`expose: {default: false}`). This
+      # block must be revisited as part of any chart major bump, not after.
+      appsecure:
+        port: 8443
+        expose: false
+        exposedPort: 8443
+        protocol: TCP
+        tls:
+          enabled: true
           
     ingressRoute:
       dashboard:

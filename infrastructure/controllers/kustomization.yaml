@@ -6,6 +6,7 @@ resources:
   - external-secrets.yaml
   - cert-manager.yaml
   - traefik.yaml
+  - traefik-app-service.yaml
   - emberstack.yaml
   - rancher.yaml
   - longhorn.yaml
