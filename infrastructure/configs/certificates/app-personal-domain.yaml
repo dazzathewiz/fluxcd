@@ -9,7 +9,7 @@
 # .app IngressRoute. Forgetting one is a SILENT failure -- Traefik falls back to
 # its own default certificate and the page still loads. Check the served issuer,
 # not the page:
-#   openssl s_client -connect 10.10.1.103:443 -servername <host> </dev/null 2>/dev/null \
+#   openssl s_client -connect ${LB_TRAEFIK_APP}:443 -servername <host> </dev/null 2>/dev/null \
 #     | openssl x509 -noout -issuer -subject
 apiVersion: cert-manager.io/v1
 kind: Certificate

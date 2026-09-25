@@ -7,19 +7,14 @@
 # one Service per release. It selects the same Traefik pods; only the target port
 # differs, so nothing about the existing address changes.
 #
-# The address is a literal rather than a ${LB_*} SOPS var on purpose: internal
-# 10.10.x addressing is knowingly public in this repo (see AGENTS.md), and a SOPS
-# edit carries cluster-wide blast radius for every Kustomization that reads those
-# var files.
+# The address is LB_TRAEFIK_APP from cluster-config (a plain ConfigMap, like the
+# other LB_* addresses). It must not be shared with any other Service: a client
+# confined to this address should reach the appsecure entrypoint and nothing else.
 #
-# BEFORE MERGE, verify both of these against the live cluster:
-#   1. 10.10.1.103 is inside the MetalLB pool and unclaimed:
-#        kubectl get svc -A -o wide | grep LoadBalancer
-#   2. the selector below matches Traefik's own Service exactly:
-#        kubectl -n traefik get svc traefik -o jsonpath='{.spec.selector}'
-#      If it differs, copy what that prints. A selector that matches nothing
-#      produces a Service with no endpoints and an address that silently
-#      blackholes -- it does not error.
+# The selector must match Traefik's own Service exactly:
+#   kubectl -n traefik get svc traefik -o jsonpath='{.spec.selector}'
+# A selector that matches nothing produces a Service with no endpoints and an
+# address that silently blackholes -- it does not error.
 apiVersion: v1
 kind: Service
 metadata:
@@ -30,7 +25,7 @@ metadata:
     app.kubernetes.io/component: app-zone-entrypoint
 spec:
   type: LoadBalancer
-  loadBalancerIP: 10.10.1.103
+  loadBalancerIP: "${LB_TRAEFIK_APP}"
   externalTrafficPolicy: Cluster
   selector:
     app.kubernetes.io/name: traefik
@@ -39,4 +34,4 @@ spec:
     - name: appsecure
       protocol: TCP
       port: 443
-      targetPort: 8443
+      targetPort: appsecure

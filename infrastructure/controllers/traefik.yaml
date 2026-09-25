@@ -54,10 +54,13 @@ data:
       # NOTE on chart upgrades: `expose` is a boolean in chart 2x (pinned below).
       # Traefik chart 26+ changes it to a map (`expose: {default: false}`). This
       # block must be revisited as part of any chart major bump, not after.
+      #
+      # Port 8444, not 8443: 8443 is already websecure's container port, and two
+      # entrypoints on one address means only one of them binds.
       appsecure:
-        port: 8443
+        port: 8444
         expose: false
-        exposedPort: 8443
+        exposedPort: 8444
         protocol: TCP
         tls:
           enabled: true

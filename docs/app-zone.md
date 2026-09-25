@@ -7,7 +7,7 @@ Traefik serves two HTTPS entrypoints on two MetalLB addresses:
 | Entrypoint  | Address       | Zone                       | Certificate               |
 |-------------|---------------|----------------------------|---------------------------|
 | `websecure` | `10.10.1.100` | `*.inf.${PERSONAL_DOMAIN}` | `inf-personal-domain-tls` |
-| `appsecure` | `10.10.1.103` | `*.app.${PERSONAL_DOMAIN}` | `app-personal-domain-tls` |
+| `appsecure` | `10.10.1.108` | `*.app.${PERSONAL_DOMAIN}` | `app-personal-domain-tls` |
 
 Same Traefik pods, same middlewares, same chart. Only the listening port and the
 published Service differ.
@@ -27,7 +27,7 @@ the network layer, but restricting it to `10.10.1.100` restricts it to nothing
 useful -- that address is the front door to everything.
 
 `appsecure` exists so that restriction means something. It carries only `.app`
-routes, so a client confined to `10.10.1.103` cannot reach a `.inf` application
+routes, so a client confined to `10.10.1.108` cannot reach a `.inf` application
 at all, with or without a forged `Host` header. That is a network-layer
 boundary rather than an application-layer one, and it holds even if one of the
 `.inf` applications has an authentication bypass.
@@ -53,7 +53,7 @@ boundary rather than an application-layer one, and it holds even if one of the
 ## What is not in Git
 
 - **DNS.** Each `*.app` hostname needs its own A record pointing at
-  `10.10.1.103`, added by hand on **both** resolvers. There is no wildcard, for
+  `10.10.1.108`, added by hand on **both** resolvers. There is no wildcard, for
   the same reason there is no `*.inf` wildcard: the zones do not map one-to-one
   onto a single address.
 - **The overlay-network policy.** The access-control rules that decide which
@@ -63,6 +63,17 @@ boundary rather than an application-layer one, and it holds even if one of the
 
 ## Gotchas
 
+- **A route that names no entrypoint joins every entrypoint, `appsecure`
+  included.** Traefik v2 has no way to exclude an entrypoint from the default
+  set (`asDefault` arrived in v3). Every `.inf` IngressRoute must keep
+  `entryPoints: [websecure]`, and a plain `Ingress` needs the
+  `traefik.ingress.kubernetes.io/router.entrypoints: websecure` annotation --
+  otherwise it answers on the `.app` address to anyone who sends its `Host`
+  header. Check with:
+  `kubectl get ingress -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.annotations.traefik\.ingress\.kubernetes\.io/router\.entrypoints}{"\n"}{end}'`
+- **The port must differ from `websecure`'s.** `appsecure` listens on 8444
+  because 8443 is `websecure`'s container port; two entrypoints on one address
+  means only one binds, and the other fails without failing the pod.
 - **`expose` changes shape on a chart major bump.** It is a boolean in chart 2x
   and a map in chart 26+ (`expose: {default: false}`). Revisit this block as
   part of any chart upgrade, not afterwards.
