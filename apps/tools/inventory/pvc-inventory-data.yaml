@@ -1,0 +1,25 @@
+---
+# InvenTree's external data volume: media/ (item photos and attachments),
+# static/, config.yaml, secret_key.txt, plugins/.
+#
+# Sized for the photo load rather than the database: roughly 500 item condition
+# photos plus container photos at phone-camera sizes, with thumbnails. Longhorn
+# volumes expand in place, so this is a starting point, not a ceiling.
+#
+# Backed up automatically -- the Longhorn RecurringJobs target `groups: [default]`
+# and the implicit default group covers any volume that doesn't opt out. No label
+# needed. Given the reclaim-policy gap documented in AGENTS.md, those backups are
+# the real protection for these photos, not anything in this manifest -- which is
+# why the cargo-culted `persistentVolumeReclaimPolicy: Retain` line is absent.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inventory-data
+  namespace: tools
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-diskencrypt-global
+  resources:
+    requests:
+      storage: 20Gi

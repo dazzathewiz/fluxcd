@@ -1,0 +1,46 @@
+---
+# Shared non-secret configuration for the server and worker containers.
+#
+# Both consume this via envFrom rather than repeating an env: block, because the
+# two processes MUST agree on database and site settings -- a silent divergence
+# between them is the kind of fault that shows up weeks later as half-working
+# background tasks.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventory-env
+  namespace: tools
+data:
+  INVENTREE_SITE_URL: "https://inventory.app.${PERSONAL_DOMAIN}"
+  TZ: "${TIMEZONE}"
+
+  # Database
+  INVENTREE_DB_ENGINE: "postgresql"
+  INVENTREE_DB_NAME: "inventree"
+  INVENTREE_DB_HOST: "inventory-db"
+  INVENTREE_DB_PORT: "5432"
+  INVENTREE_DB_USER: "inventree"
+
+  # Redis is deliberately NOT deployed. The cache buys nothing at two users and
+  # a few thousand rows, and it would be a fourth workload to patch for a decade.
+  INVENTREE_CACHE_ENABLED: "False"
+
+  # Run migrations on container start. This is what makes an image-tag bump a
+  # complete upgrade rather than a two-step one.
+  INVENTREE_AUTO_UPDATE: "True"
+
+  # No third-party plugins are installed, and leaving the loader off keeps the
+  # runtime from pip-installing anything at boot. Flip to True only alongside a
+  # declarative plugins list, never as a quick fix.
+  INVENTREE_PLUGINS_ENABLED: "False"
+
+  INVENTREE_LOG_LEVEL: "WARNING"
+  INVENTREE_GUNICORN_TIMEOUT: "90"
+
+  # Traefik terminates TLS and forwards; without these Django builds absolute
+  # URLs as http:// and the CSRF path breaks in ways that look like app bugs
+  # rather than proxy config.
+  INVENTREE_USE_X_FORWARDED_HOST: "True"
+  INVENTREE_USE_X_FORWARDED_PORT: "True"
+  INVENTREE_USE_X_FORWARDED_PROTO: "True"
+  INVENTREE_TRUSTED_ORIGINS: "https://inventory.app.${PERSONAL_DOMAIN}"
