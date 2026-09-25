@@ -57,13 +57,28 @@ data:
       #
       # Port 8444, not 8443: 8443 is already websecure's container port, and two
       # entrypoints on one address means only one of them binds.
+      #
+      # exposedPort is 443 even though the chart doesn't publish this port: it's
+      # what the traefik-app Service publishes, and it's the port appweb's
+      # redirectTo sends clients to (the chart builds the redirect from the
+      # target entrypoint's exposedPort).
       appsecure:
         port: 8444
         expose: false
-        exposedPort: 8444
+        exposedPort: 443
         protocol: TCP
         tls:
           enabled: true
+      # Plain-HTTP companion to appsecure: redirects http://*.app to https on the
+      # same address. Its own entrypoint rather than `web` so the .app address
+      # still shares no entrypoint with .inf -- anything later bound to `web`
+      # stays off it. Published by traefik-app on port 80.
+      appweb:
+        port: 8001
+        expose: false
+        exposedPort: 80
+        protocol: TCP
+        redirectTo: appsecure
           
     ingressRoute:
       dashboard:

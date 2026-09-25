@@ -12,6 +12,11 @@ Traefik serves two HTTPS entrypoints on two MetalLB addresses:
 Same Traefik pods, same middlewares, same chart. Only the listening port and the
 published Service differ.
 
+Each address also answers plain HTTP on port 80 with a redirect to HTTPS: `web`
+on `.100`, and its own `appweb` entrypoint on `.108`. `appweb` exists so the
+`.app` address shares no entrypoint with `.inf` at all -- reusing `web` would
+put anything later bound to `web` on the restricted address.
+
 ## Why, specifically
 
 Every `.inf` route answers on one address. Anything permitted to reach that
@@ -34,11 +39,12 @@ boundary rather than an application-layer one, and it holds even if one of the
 
 ## How it is wired
 
-- The entrypoint is declared in the Traefik chart values
+- The entrypoints (`appsecure`, and `appweb` for the redirect) are declared in
+  the Traefik chart values
   ([infrastructure/controllers/traefik.yaml](../infrastructure/controllers/traefik.yaml))
-  with `expose: false`, which creates the listener and the container port but
-  keeps it off Traefik's own Service.
-- It is published by a standalone Service
+  with `expose: false`, which creates the listeners and container ports but
+  keeps them off Traefik's own Service.
+- They are published by a standalone Service
   ([infrastructure/controllers/traefik-app-service.yaml](../infrastructure/controllers/traefik-app-service.yaml))
   selecting the same pods. The pinned chart (`>=22.1.0 <24.0.0`) supports only
   one Service per release, which is why this is a hand-written object rather
@@ -71,9 +77,13 @@ boundary rather than an application-layer one, and it holds even if one of the
   otherwise it answers on the `.app` address to anyone who sends its `Host`
   header. Check with:
   `kubectl get ingress -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.annotations.traefik\.ingress\.kubernetes\.io/router\.entrypoints}{"\n"}{end}'`
-- **The port must differ from `websecure`'s.** `appsecure` listens on 8444
-  because 8443 is `websecure`'s container port; two entrypoints on one address
-  means only one binds, and the other fails without failing the pod.
+- **The ports must differ from `web`/`websecure`'s.** `appsecure` listens on
+  8444 and `appweb` on 8001 because 8443 and 8000 are taken; two entrypoints on
+  one address means only one binds, and the other fails without failing the pod.
+- **`appsecure.exposedPort` must stay 443** even though the chart never
+  publishes it. The chart builds `appweb`'s redirect as `:<exposedPort>` of the
+  target entrypoint, so any other value redirects clients to a port the
+  `traefik-app` Service doesn't serve.
 - **`expose` changes shape on a chart major bump.** It is a boolean in chart 2x
   and a map in chart 26+ (`expose: {default: false}`). Revisit this block as
   part of any chart upgrade, not afterwards.

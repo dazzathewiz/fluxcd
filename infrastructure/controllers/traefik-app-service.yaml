@@ -1,6 +1,6 @@
 ---
 # Second LoadBalancer address for Traefik, serving the `appsecure` entrypoint
-# and nothing else.
+# (443) and its HTTP-to-HTTPS redirect `appweb` (80), and nothing else.
 #
 # This is a standalone Service rather than a second entry in the Traefik chart's
 # own `service:` block, because the pinned chart (>=22.1.0 <24.0.0) supports only
@@ -31,6 +31,10 @@ spec:
     app.kubernetes.io/name: traefik
     app.kubernetes.io/instance: traefik-traefik
   ports:
+    - name: appweb
+      protocol: TCP
+      port: 80
+      targetPort: appweb
     - name: appsecure
       protocol: TCP
       port: 443
