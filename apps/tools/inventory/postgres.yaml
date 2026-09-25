@@ -1,0 +1,91 @@
+---
+# Dedicated Postgres for this app, colocated with it rather than in the
+# `databases` group, so the database and the application share one lifecycle:
+# a revert removes both, and neither can be left orphaned by a change to the
+# other.
+#
+# MAJOR VERSION WARNING: InvenTree supports Postgres up to 17 and states that
+# newer versions are not guaranteed. A Postgres major upgrade also requires a
+# dump and restore regardless -- the data directory is NOT forward-compatible
+# and the container will refuse to start against a directory written by an older
+# major. Renovate will eventually offer `18-alpine` here. That PR is not a
+# routine bump and must not be merged like one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: tools
+  name: inventory-db
+  labels:
+    app: inventory-db
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # RWO PVC -- RollingUpdate deadlocks mounting the same volume twice
+  selector:
+    matchLabels:
+      app: inventory-db
+  template:
+    metadata:
+      labels:
+        app: inventory-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "inventree"
+        - name: POSTGRES_USER
+          value: "inventree"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: inventory-secrets
+              key: POSTGRES_PASSWORD
+        # A subdirectory, not the mount root: Longhorn presents a filesystem whose
+        # root contains lost+found, and initdb refuses a non-empty directory.
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        startupProbe:
+          exec:
+            command: ["pg_isready", "-U", "inventree", "-d", "inventree"]
+          failureThreshold: 30
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "inventree", "-d", "inventree"]
+          periodSeconds: 30
+          failureThreshold: 6
+        resources:
+          requests:
+            cpu: 50m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: inventory-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: tools
+  name: inventory-db
+  labels:
+    app: inventory-db
+spec:
+  type: ClusterIP
+  selector:
+    app: inventory-db
+  ports:
+  - name: postgres
+    protocol: TCP
+    port: 5432
+    targetPort: 5432
