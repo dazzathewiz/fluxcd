@@ -1,0 +1,150 @@
+---
+# Three containers in one pod, deliberately.
+#
+# The server, the background worker and the static/media file server all need
+# read or write access to the SAME data volume. The cluster's storage class is
+# ReadWriteOnce, so they cannot be separate Deployments without either an RWX
+# class or node-affinity glue. One pod makes the shared mount trivially correct
+# and has the useful side effect that the server and worker can never run
+# mismatched versions across an upgrade.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: tools
+  name: inventory
+  labels:
+    app: inventory
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # RWO PVC -- RollingUpdate deadlocks mounting the same volume twice
+  selector:
+    matchLabels:
+      app: inventory
+  template:
+    metadata:
+      labels:
+        app: inventory
+    spec:
+      initContainers:
+      # Gate the app on the database actually accepting connections. Without
+      # this, first boot races migrations against a Postgres that is still
+      # running initdb, and the failure mode is a CrashLoopBackOff that looks
+      # like a config error.
+      - name: wait-for-db
+        image: postgres:17-alpine
+        command:
+          - sh
+          - -c
+          - |
+            until pg_isready -h inventory-db -p 5432 -U inventree; do
+              echo "waiting for inventory-db"
+              sleep 2
+            done
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+
+      containers:
+      - name: server
+        image: inventree/inventree:1.5.5
+        envFrom:
+        - configMapRef:
+            name: inventory-env
+        - secretRef:
+            name: inventory-secrets
+        ports:
+        - containerPort: 8000
+          name: http
+        volumeMounts:
+        - name: data
+          mountPath: /home/inventree/data
+        # First boot runs migrations and collects static files, which takes
+        # minutes, not seconds. A short startup budget here reads as a broken
+        # deploy when it is just a slow one.
+        startupProbe:
+          httpGet:
+            path: /api/
+            port: 8000
+          failureThreshold: 60
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/
+            port: 8000
+          periodSeconds: 30
+          failureThreshold: 6
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: 1536Mi
+
+      - name: worker
+        image: inventree/inventree:1.5.5
+        # Compose's `command:` maps to k8s `args:`, not `command:` -- the image's
+        # ENTRYPOINT must still run. Using `command:` here would bypass it and
+        # the worker would never start.
+        args: ["invoke", "worker"]
+        envFrom:
+        - configMapRef:
+            name: inventory-env
+        - secretRef:
+            name: inventory-secrets
+        volumeMounts:
+        - name: data
+          mountPath: /home/inventree/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 384Mi
+          limits:
+            memory: 1Gi
+
+      - name: caddy
+        image: caddy:2.10-alpine
+        ports:
+        - containerPort: 8080
+          name: web
+        volumeMounts:
+        - name: caddyfile
+          mountPath: /etc/caddy/Caddyfile
+          subPath: Caddyfile
+          readOnly: true
+        - name: data
+          mountPath: /var/www/static
+          subPath: static
+          readOnly: true
+        - name: data
+          mountPath: /var/www/media
+          subPath: media
+          readOnly: true
+        # Readiness is measured through Caddy to the server, so the pod is only
+        # marked ready when the whole stack answers. Otherwise Traefik starts
+        # sending traffic to a Caddy that is up in front of a server that isn't,
+        # and the first thing seen is a 502.
+        readinessProbe:
+          httpGet:
+            path: /api/
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 60
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: inventory-data
+      - name: caddyfile
+        configMap:
+          name: inventory-caddy

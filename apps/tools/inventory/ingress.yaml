@@ -1,0 +1,36 @@
+---
+# Bound to `appsecure`, NOT `websecure`. That is the whole point of the .app
+# zone: this route answers only on Traefik's second address, and that address
+# carries no .inf route, so a client restricted to it at the network layer
+# cannot reach Grafana, Longhorn, Portainer or anything else by changing the
+# Host header.
+#
+# The `default-headers` Middleware already exists in this namespace -- it is
+# defined in apps/tools/changedetection/ingress.yaml. Defining it again here
+# would be a duplicate resource ID and would fail the whole `apps` kustomize
+# build, taking every app in the tree off reconciliation with it.
+#
+# No basicAuth middleware: unlike changedetection, this app has real user
+# accounts with per-user roles, and a proxy-level prompt in front of it would
+# break the mobile client's token authentication.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: inventory
+  namespace: tools
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - appsecure
+  routes:
+    - match: Host(`inventory.app.${PERSONAL_DOMAIN}`)
+      kind: Rule
+      middlewares:
+        - name: default-headers
+      services:
+        - name: inventory
+          port: 8080
+          passHostHeader: true
+  tls:
+    secretName: app-personal-domain-tls
