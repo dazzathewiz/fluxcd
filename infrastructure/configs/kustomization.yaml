@@ -12,3 +12,4 @@ resources:
   - intel.yaml
   # - rook-ceph-external
   - reloader-helmrelease.yaml
+  - claude-mcp-view.yaml

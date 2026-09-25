@@ -1,0 +1,69 @@
+# Read-only identity for the Kubernetes MCP server on the workstation
+# (provisioned by the mac-dev-playbook repo). See docs/claude-mcp-view.md.
+#
+# Bound to the built-in `view` ClusterRole: get/list/watch on most namespaced
+# resources and, by design, NOT Secrets or RBAC objects. `view` doesn't cover
+# core `nodes` (only metrics.k8s.io), so a second, nodes-only read role is
+# bound alongside it. This is one of two independent layers; the other is
+# --read-only on the MCP server itself.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-mcp-view
+  namespace: mcp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: claude-mcp-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: claude-mcp-view
+    namespace: mcp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: claude-mcp-view-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: claude-mcp-view-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: claude-mcp-view-nodes
+subjects:
+  - kind: ServiceAccount
+    name: claude-mcp-view
+    namespace: mcp
+---
+# Long-lived token for the SA. Since 1.24 SAs don't mint one on their own, and
+# `kubectl create token` issues an expiring token — wrong behind a desktop
+# wrapper that nobody refreshes. This stub carries NO token material: the
+# token controller fills in `token`, `ca.crt` and `namespace` in-cluster, and
+# Flux's server-side apply doesn't own (so doesn't strip) those fields.
+# Revoke by deleting the Secret; Flux recreates it and a new token is minted.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: claude-mcp-view-token
+  namespace: mcp
+  annotations:
+    kubernetes.io/service-account.name: claude-mcp-view
+type: kubernetes.io/service-account-token
