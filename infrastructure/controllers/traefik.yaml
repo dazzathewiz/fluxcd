@@ -38,6 +38,47 @@ data:
       websecure:
         tls:
           enabled: true
+      # Second HTTPS entrypoint, for the *.app zone only.
+      #
+      # `expose: false` keeps it OFF Traefik's own LoadBalancer Service. It is
+      # published instead by the standalone `traefik-app` Service
+      # (traefik-app-service.yaml), which holds its own MetalLB address.
+      #
+      # Why: every .inf route answers on Traefik's single address, so any client
+      # permitted to reach that address can reach every app behind it just by
+      # sending a different Host header -- app-level auth is the only thing in
+      # the way. Routes bound to `appsecure` answer on a different address that
+      # has no .inf route attached, so a client restricted to it cannot reach
+      # .inf at all, forged Host header or not.
+      #
+      # NOTE on chart upgrades: `expose` is a boolean in chart 2x (pinned below).
+      # Traefik chart 26+ changes it to a map (`expose: {default: false}`). This
+      # block must be revisited as part of any chart major bump, not after.
+      #
+      # Port 8444, not 8443: 8443 is already websecure's container port, and two
+      # entrypoints on one address means only one of them binds.
+      #
+      # exposedPort is 443 even though the chart doesn't publish this port: it's
+      # what the traefik-app Service publishes, and it's the port appweb's
+      # redirectTo sends clients to (the chart builds the redirect from the
+      # target entrypoint's exposedPort).
+      appsecure:
+        port: 8444
+        expose: false
+        exposedPort: 443
+        protocol: TCP
+        tls:
+          enabled: true
+      # Plain-HTTP companion to appsecure: redirects http://*.app to https on the
+      # same address. Its own entrypoint rather than `web` so the .app address
+      # still shares no entrypoint with .inf -- anything later bound to `web`
+      # stays off it. Published by traefik-app on port 80.
+      appweb:
+        port: 8001
+        expose: false
+        exposedPort: 80
+        protocol: TCP
+        redirectTo: appsecure
           
     ingressRoute:
       dashboard:

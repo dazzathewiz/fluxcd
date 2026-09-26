@@ -1,0 +1,33 @@
+---
+# Wildcard certificate for the *.app zone.
+#
+# Separate from inf-personal-domain so the two zones are independent: the .app
+# zone is reachable from restricted clients (see traefik-app-service.yaml) and
+# .inf is not, so they should not share a key.
+#
+# The reflection-allowed-namespaces list must name every namespace that runs a
+# .app IngressRoute. Forgetting one is a SILENT failure -- Traefik falls back to
+# its own default certificate and the page still loads. Check the served issuer,
+# not the page:
+#   openssl s_client -connect ${LB_TRAEFIK_APP}:443 -servername <host> </dev/null 2>/dev/null \
+#     | openssl x509 -noout -issuer -subject
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: app-personal-domain
+  namespace: cert-manager
+spec:
+  secretName: app-personal-domain-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  commonName: "*.app.${PERSONAL_DOMAIN}"
+  dnsNames:
+  - "app.${PERSONAL_DOMAIN}"
+  - "*.app.${PERSONAL_DOMAIN}"
+  secretTemplate:
+    annotations:
+      reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+      reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: "traefik,tools"
+      reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: ""
