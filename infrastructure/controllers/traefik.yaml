@@ -167,6 +167,38 @@ data:
       rollingUpdate:
         maxUnavailable: 1
         maxSurge: 0
+
+    # Cap how much ingress a VOLUNTARY disruption may remove at once -- in
+    # practice, a manual `kubectl drain`.
+    #
+    # The spread constraint above protects against a node FAILING. It does
+    # nothing about a node being drained on purpose. With the pods on three
+    # different workers, nothing else stops a drain of one node being followed
+    # straight away by a drain of the next, before the first evicted pod is
+    # Ready again elsewhere.
+    #
+    # NOT a guard on automated k3s upgrades as things stand: the
+    # system-upgrade-controller `agent` Plan
+    # (apps/tools/system-upgrade-controller/plans/agent.yaml) sets no `drain:`,
+    # so it upgrades workers in place and never evicts anything. If a `drain:`
+    # step is ever added there, this budget starts applying to it too.
+    #
+    # Chart-generated rather than a hand-written PodDisruptionBudget, on
+    # purpose: the chart's PDB template reuses the same `traefik.labelselector`
+    # helper as the Deployment's own selector, so the selector is right by
+    # construction. Hand-writing one means choosing those labels by hand a
+    # second time -- which is precisely what left the spread constraint above
+    # silently doing nothing.
+    #
+    # maxUnavailable, not minAvailable. At three replicas they are equivalent,
+    # but they diverge if `replicas` ever changes: minAvailable: 2 would permit
+    # three simultaneous evictions at five replicas, and block every eviction
+    # at two. maxUnavailable: 1 always means one. Set exactly ONE of the two --
+    # the chart emits whichever are set, and Kubernetes rejects a PDB holding
+    # both.
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
