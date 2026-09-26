@@ -108,15 +108,35 @@ data:
       loadBalancerSourceRanges: []
       externalIPs: []
     
+    # Spread the replicas across nodes, so losing one node does not take every
+    # ingress route in the cluster with it.
+    #
+    # THE SELECTOR MUST MATCH THE PODS' REAL LABELS. It previously read
+    # `app: {{ template "traefik.name" . }}`, which renders to `app: traefik` --
+    # a label these pods do not carry. A spread constraint whose selector matches
+    # nothing is vacuous: every domain counts zero matching pods, the skew is
+    # always zero, and the scheduler is free to pile every replica onto one node.
+    # It did exactly that. Nothing errors and nothing warns; the only symptom is
+    # `kubectl -n traefik get pods -o wide` showing one NODE value.
+    #
+    # The two labels below are the same pair the Traefik Services select on.
+    # Check them, don't assume them:
+    #   kubectl -n traefik get svc traefik -o jsonpath='{.spec.selector}'
+    #
+    # whenUnsatisfiable is ScheduleAnyway rather than DoNotSchedule, for two
+    # reasons. It has to be: starting from three pods on one node the skew is
+    # already 3, so under DoNotSchedule the rolling update's surge pod satisfies
+    # no node at all and the rollout deadlocks with a Pending pod. And it should
+    # be: for the cluster's only ingress, an unbalanced Traefik is better than a
+    # Pending one -- a hard constraint converts "cannot spread" into "no pod".
     topologySpreadConstraints:
-    # # This example topologySpreadConstraints forces the scheduler to put traefik pods
-    # # on nodes where no other traefik pods are scheduled.
       - labelSelector:
           matchLabels:
-            app: '{{ template "traefik.name" . }}'
+            app.kubernetes.io/name: traefik
+            app.kubernetes.io/instance: traefik-traefik
         maxSkew: 1
         topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: DoNotSchedule
+        whenUnsatisfiable: ScheduleAnyway
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
