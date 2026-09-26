@@ -124,11 +124,24 @@ data:
     #   kubectl -n traefik get svc traefik -o jsonpath='{.spec.selector}'
     #
     # whenUnsatisfiable is ScheduleAnyway rather than DoNotSchedule, for two
-    # reasons. It has to be: starting from three pods on one node the skew is
-    # already 3, so under DoNotSchedule the rolling update's surge pod satisfies
-    # no node at all and the rollout deadlocks with a Pending pod. And it should
-    # be: for the cluster's only ingress, an unbalanced Traefik is better than a
-    # Pending one -- a hard constraint converts "cannot spread" into "no pod".
+    # reasons.
+    #
+    # It has to be, because of the masters. Skew is measured as (pods on the
+    # target node + 1) minus the pod count on the emptiest eligible node. The
+    # default nodeTaintsPolicy is Ignore, so the three tainted k3smaster nodes
+    # count as eligible domains -- and Traefik does not tolerate their taint,
+    # so they hold 0 pods forever. The global minimum is therefore always 0,
+    # and under DoNotSchedule no worker may ever hold more than one pod. With
+    # three replicas on three workers, any pod beyond 1/1/1 -- including a
+    # rolling-update surge pod -- has nowhere to go and sits Pending. The
+    # HelmRelease upgrade then times out, which stalls infra-configs and the
+    # whole apps tree behind it. This holds from a balanced state too, so
+    # "balance first, then switch to DoNotSchedule" does NOT make it safe. A
+    # hard constraint would additionally need `nodeTaintsPolicy: Honor`.
+    #
+    # And it should be: for the cluster's only ingress, an unbalanced Traefik
+    # is better than a Pending one -- a hard constraint converts "cannot
+    # spread" into "no pod".
     topologySpreadConstraints:
       - labelSelector:
           matchLabels:
@@ -137,6 +150,23 @@ data:
         maxSkew: 1
         topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
+
+    # Take a pod down before bringing its replacement up, instead of the
+    # chart's default surge-first (maxSurge: 1, maxUnavailable: 0).
+    #
+    # ScheduleAnyway is only a scoring preference, and with surge-first and
+    # exactly as many replicas as workers, the last surge pod of every rollout
+    # is created while each worker already holds one pod. All three score
+    # equally, it lands anywhere, and when the last old pod goes the result is
+    # often 2/1/0 rather than 1/1/1. Removing a pod first always leaves one
+    # worker empty, so the replacement's preference has a clear winner and the
+    # rollout ends 1/1/1. The cost is running two of three replicas while a
+    # rollout is in progress.
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+        maxSurge: 0
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
