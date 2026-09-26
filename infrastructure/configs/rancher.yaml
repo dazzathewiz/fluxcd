@@ -23,6 +23,11 @@ spec:
   values:
     hostname: rancher.inf.${PERSONAL_DOMAIN}
     ingress:
+      # Pin to websecure. In Traefik v2 an Ingress naming no entrypoint attaches
+      # to every entrypoint, including appsecure -- which would put Rancher on
+      # the .app address (see docs/app-zone.md).
+      extraAnnotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
       tls:
         source: secret
         secretName: inf-personal-domain-tls
