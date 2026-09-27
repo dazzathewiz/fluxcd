@@ -8,11 +8,12 @@ story below is the point of the deployment rather than an afterthought.
 
 ## Shape
 
-`apps/tools/inventory/`, in the `tools` namespace, 10 resources.
+`apps/tools/inventory/`, in the `tools` namespace, 11 resources.
 
 | Resource | Notes |
 |---|---|
-| `inventory-secrets` (ExternalSecret) | database password and first-boot superuser, from the credential store |
+| `inventory-secrets` (ExternalSecret) | database password and first-boot superuser name and password, from the credential store |
+| `inventory-admin-email` (Secret) | first-boot superuser email, substituted from the cluster's global secrets -- a Secret rather than a ConfigMap key so read-only identities can't see the resolved value |
 | `inventory-env` (ConfigMap) | shared configuration for the server and worker |
 | `inventory-caddy` (ConfigMap) | static/media file server config |
 | `inventory-data` (PVC, 20Gi) | media (item photos), static, config, secret key |

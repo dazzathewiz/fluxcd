@@ -56,6 +56,8 @@ spec:
             name: inventory-env
         - secretRef:
             name: inventory-secrets
+        - secretRef:
+            name: inventory-admin-email
         ports:
         - containerPort: 8000
           name: http
@@ -95,6 +97,8 @@ spec:
             name: inventory-env
         - secretRef:
             name: inventory-secrets
+        - secretRef:
+            name: inventory-admin-email
         volumeMounts:
         - name: data
           mountPath: /home/inventree/data
