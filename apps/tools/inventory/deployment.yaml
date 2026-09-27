@@ -1,3 +1,4 @@
+---
 # Three containers in one pod, deliberately.
 #
 # The server, the background worker and the static/media file server all need
@@ -64,15 +65,20 @@ spec:
       # Migrations, before either long-running container exists.
       #
       # Doing this in-process via INVENTREE_AUTO_UPDATE (the previous
-      # arrangement) starts the worker at the same instant as the server, and
-      # the worker reads django_q_schedule before the server has created it:
+      # arrangement) runs the migration check in BOTH long-running containers,
+      # because the server and the worker each boot the full Django app. They
+      # start at the same instant and both try to apply the same migrations:
       #
-      #   ProgrammingError: column django_q_schedule.cron does not exist
+      #   ProgrammingError: relation "plugin_notificationusersetting" already exists
       #
-      # Three crash-restarts on first boot, self-resolving, and recurring on
-      # every image bump that carries migrations. Moving migrate here removes
-      # the race rather than tolerating it, and a genuine migration failure now
-      # holds the pod in Init instead of surfacing as a confusing 502.
+      # Three worker crash-restarts on first boot, self-resolving, and recurring
+      # on every image bump that carries migrations. Moving migrate here gives it
+      # exactly one owner, and a genuine migration failure now holds the pod in
+      # Init instead of surfacing as a confusing 502.
+      #
+      # `invoke migrate` also runs `rebuild_models` (MPTT trees) and
+      # `rebuild_thumbnails` (missing ones only) afterwards, on every pod start.
+      # Cheap at this data size; worth knowing if boot ever gets slow.
       - name: db-migrate
         image: inventree/inventree:1.5.5
         # `args:`, not `command:` -- the image's ENTRYPOINT must still run, as
@@ -98,11 +104,18 @@ spec:
       # Collect static files into STATIC_ROOT (/home/inventree/data/static).
       #
       # THIS IS WHAT SERVES THE WEB UI. The compiled frontend ships inside the
-      # image but lives under the source tree; until it is collected onto the
-      # data volume, STATIC_ROOT is an empty directory and /web returns
-      # InvenTree's INVE-E1 "no frontend included" page -- a 200, with no
-      # asset requests behind it, so nothing in the logs or the probes looks
-      # wrong. The admin site renders unstyled for the same reason.
+      # image but lives under the source tree. /web is rendered by Django from
+      # that tree's manifest, so it returns a 200 with the right <script> tags
+      # regardless -- but the scripts point at /static/web/assets/, which Caddy
+      # serves from STATIC_ROOT. Until the files are collected there, every
+      # script 404s, the SPA never mounts, and the page shows only its built-in
+      # "issue with your update ... INVE-E1" fallback text. (Not the separate
+      # "No frontend included" heading: that one means the image itself lacks
+      # the bundle.)
+      #
+      # Nothing flags this: the probes hit /api/, which has no static
+      # dependency, and the Caddyfile has no `log` directive, so the asset 404s
+      # are not logged anywhere.
       #
       # `invoke static`, not `invoke update`: update also runs `install` (pip
       # at container boot) and `backup`, neither of which belongs in a startup

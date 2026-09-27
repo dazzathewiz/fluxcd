@@ -2,7 +2,7 @@
 # Shared non-secret configuration for the server and worker containers.
 #
 # Both consume this via envFrom rather than repeating an env: block, because the
-# two processes MUST agree on database and site settings — a silent divergence
+# two processes MUST agree on database and site settings -- a silent divergence
 # between them is the kind of fault that shows up weeks later as half-working
 # background tasks.
 apiVersion: v1
@@ -26,10 +26,10 @@ data:
   INVENTREE_CACHE_ENABLED: "False"
 
   # OFF deliberately. This flag does not run the `invoke update` path, despite
-  # the name -- it only gates an in-process `call_command('migrate')` inside the
-  # running server. That races the worker, which reads the schema at the same
-  # instant and crashes until the server catches up, and it leaves collectstatic
-  # with no owner at all.
+  # the name -- it only gates an in-process `call_command('migrate')`, and it
+  # does so in every process that boots Django. Server and worker both run it
+  # at the same instant and race each other on the same migrations, and it
+  # leaves collectstatic with no owner at all.
   #
   # Migrations and static collection are initContainers in deployment.yaml
   # instead, so both complete before the server and worker start. An image-tag
@@ -46,8 +46,8 @@ data:
   INVENTREE_GUNICORN_TIMEOUT: "90"
 
   # Traefik terminates TLS and forwards; without these Django builds absolute
-  # URLs as http:// and the OAuth/CSRF paths break in ways that look like app
-  # bugs rather than proxy config.
+  # URLs as http:// and the CSRF path breaks in ways that look like app bugs
+  # rather than proxy config.
   INVENTREE_USE_X_FORWARDED_HOST: "True"
   INVENTREE_USE_X_FORWARDED_PORT: "True"
   INVENTREE_USE_X_FORWARDED_PROTO: "True"

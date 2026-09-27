@@ -1,4 +1,4 @@
-# inventory — InvenTree
+# inventory -- InvenTree
 
 A self-hosted catalogue of physical items held in an offsite storage location:
 what is stored, which container it is in, what condition it was in when it was
@@ -8,11 +8,12 @@ story below is the point of the deployment rather than an afterthought.
 
 ## Shape
 
-`apps/tools/inventory/`, in the `tools` namespace, 10 resources.
+`apps/tools/inventory/`, in the `tools` namespace, 11 resources.
 
 | Resource | Notes |
 |---|---|
-| `inventory-secrets` (ExternalSecret) | database password and first-boot superuser, from the credential store |
+| `inventory-secrets` (ExternalSecret) | database password and first-boot superuser name and password, from the credential store |
+| `inventory-admin-email` (Secret) | first-boot superuser email, substituted from the cluster's global secrets -- a Secret rather than a ConfigMap key so read-only identities can't see the resolved value |
 | `inventory-env` (ConfigMap) | shared configuration for the server and worker |
 | `inventory-caddy` (ConfigMap) | static/media file server config |
 | `inventory-data` (PVC, 20Gi) | media (item photos), static, config, secret key |
@@ -36,7 +37,7 @@ across an upgrade.
 The application server does not serve its own static assets or uploaded media in
 a production configuration. Without the file server the interface loads unstyled
 and every attachment 404s. The config is upstream's, with TLS removed because
-Traefik terminates it — Caddy listens plain inside the pod and never sees the
+Traefik terminates it -- Caddy listens plain inside the pod and never sees the
 network.
 
 One line in that config is load-bearing beyond convention: media requests are
@@ -45,16 +46,19 @@ served. Attachments here are photographs of the items and of where they are
 kept, so an unauthenticated read of the media path would be a meaningful
 disclosure rather than a cosmetic one.
 
+The Caddyfile has no access log. Requests Caddy answers itself -- including
+404s on `/static/` -- leave no trace in any container log.
+
 ### The boot sequence is ours, not the image's
 
 The image does less on start than its documentation implies, and the gap is
 invisible in a manifest. Its entrypoint creates the empty `static`, `media` and
 `backup` directories and then execs the command; its command is the WSGI server
 and nothing else. The environment flag that looks like it runs the vendor's
-update task does not — it gates an in-process schema migration inside the
-running server, and that is all it does. Upstream closes the gap with a manual
-update command run by hand after every image pull, which is not a thing a
-GitOps deployment can rely on.
+update task does not -- it gates an in-process schema migration, in every
+process that boots the application, and that is all it does. Upstream closes
+the gap with a manual update command run by hand after every image pull, which
+is not a thing a GitOps deployment can rely on.
 
 So the steps that matter own an initContainer each, in order, and all of them
 complete before any long-running container starts:
@@ -62,23 +66,27 @@ complete before any long-running container starts:
 | initContainer | Why |
 |---|---|
 | `wait-for-db` | first boot otherwise races a database still running `initdb` |
-| `db-migrate` | schema current before the server and worker exist |
-| `collect-static` | **this is what serves the web UI** |
+| `db-migrate` | schema current before the server and worker exist; also rebuilds tree structures and any missing thumbnails |
+| `collect-static` | **this is what makes the web UI work** |
 
 `collect-static` is the load-bearing one. The compiled frontend ships inside
-the image but lives under the source tree; until it is collected onto the data
-volume the static root is an empty directory, the web route returns the
-vendor's "no frontend included" placeholder page, and the admin site renders
-unstyled. That placeholder is served as a **200** with no asset requests behind
-it, so the logs are clean, the probes are green and the deployment looks
-healthy. Nothing short of opening the page in a browser detects it.
+the image but lives under the source tree. The web route is rendered from that
+tree, so it returns a 200 with the right script tags whether or not anything
+has been collected -- but those scripts are served by Caddy from the static
+root on the data volume. Until they are collected there, every script 404s,
+the frontend never mounts, and the page shows only its built-in "there might be
+an issue with your update" fallback text. The probes are green (they hit the
+API, which has no static dependency) and, with no Caddy access log, the 404s
+are recorded nowhere. Nothing short of opening the page in a browser detects
+it.
 
 Moving the migration into its own initContainer also removed a real fault
-rather than a cosmetic one: previously the worker started at the same instant
-as the server, read a table the server had not yet migrated, and crash-looped
-until it caught up — three restarts on first boot, and again on every image
-bump carrying migrations. A genuine migration failure now holds the pod in
-`Init` instead of surfacing later as a 502.
+rather than a cosmetic one: with in-process migration, the server and the
+worker each ran the same migrations at the same instant, and the loser
+crash-looped on "relation already exists" until the other finished -- three
+worker restarts on first boot, and again on every image bump carrying
+migrations. A genuine migration failure now holds the pod in `Init` instead of
+surfacing later as a 502.
 
 The vendor's own update task is deliberately **not** used for this. It also
 runs a package install and a backup, neither of which belongs in a container
@@ -92,7 +100,7 @@ to keep patched for the life of the deployment.
 
 ## Access
 
-Reached on the `.app` zone only — see [app-zone.md](app-zone.md). The
+Reached on the `.app` zone only -- see [app-zone.md](app-zone.md). The
 application is not published to the internet; it is reachable across the overlay
 network, and the device used at the storage location is restricted at the
 network layer to that zone's address alone.
@@ -100,7 +108,7 @@ network layer to that zone's address alone.
 Authentication is the application's own: local accounts with WebAuthn, and
 role-based permissions per group. No proxy-level basic auth, because the mobile
 client authenticates with a token and a proxy prompt would break it. The
-first-boot superuser is the break-glass account — it is the way back in if the
+first-boot superuser is the break-glass account -- it is the way back in if the
 passkey flow fails, and it is not for daily use.
 
 ## Storage and backup
@@ -112,18 +120,18 @@ in object storage. Given the reclaim-policy behaviour described in `AGENTS.md`,
 they are the actual protection for this data.
 
 **A logical database dump is a separate, still-outstanding piece of work.** A
-Longhorn volume backup of a running Postgres is crash-consistent — recoverable,
+Longhorn volume backup of a running Postgres is crash-consistent -- recoverable,
 because the write-ahead log replays, but not the same thing as a dump you can
 restore onto any Postgres anywhere. For a dataset whose purpose includes being
 producible as an itemised record after a loss, the portable form matters. That
 job is tracked separately and is not in this deployment.
 
-### ⚠️ This app stops being safe to revert once data entry begins
+### This app stops being safe to revert once data entry begins
 
 `AGENTS.md` records that `persistentVolumeReclaimPolicy: Retain` in a PVC spec
 does nothing, and that the backing volumes are actually deleted on prune. That
 is acceptable for a new app whose PVC only ever held its own freshly generated
-data — which is true of this app on day one, and false of it a week later.
+data -- which is true of this app on day one, and false of it a week later.
 
 Once real records exist, a `git revert` that prunes these PVCs destroys them
 with no Released volume to recover from. From that point the rollback path is
@@ -142,10 +150,11 @@ protection that is not there.
   probe green.
 - **The Postgres major version is not a routine bump.** The application supports
   Postgres 17 and states newer versions are not guaranteed, and a Postgres major
-  upgrade needs a dump and restore regardless — the data directory is not
+  upgrade needs a dump and restore regardless -- the data directory is not
   forward-compatible and the container refuses to start against one written by
-  an older major. Dependency automation will eventually offer `18-alpine` here.
-  That PR must not be merged like an ordinary one.
+  an older major. Dependency automation holds Postgres majors for explicit
+  approval rather than opening a PR, so `18-alpine` won't arrive as an ordinary
+  bump. Approving it is the start of a migration, not a routine upgrade.
 
 ## Not declarative
 
@@ -153,8 +162,8 @@ protection that is not there.
   `.app` zone address, on both resolvers, added by hand.
 - **The overlay-network access policy**, including which devices are confined to
   the `.app` zone.
-- **Application configuration** — categories, parameter templates, custom
-  states, location types, users and roles — is datastore state, not Git. It is
+- **Application configuration** -- categories, parameter templates, custom
+  states, location types, users and roles -- is datastore state, not Git. It is
   protected by the volume backups, not by version control. A private record
   documents the intended configuration so it can be rebuilt.
 - **The intake tooling** that creates records from the mobile client lives
