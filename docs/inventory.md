@@ -101,8 +101,9 @@ protection that is not there.
   Postgres 17 and states newer versions are not guaranteed, and a Postgres major
   upgrade needs a dump and restore regardless -- the data directory is not
   forward-compatible and the container refuses to start against one written by
-  an older major. Dependency automation will eventually offer `18-alpine` here.
-  That PR must not be merged like an ordinary one.
+  an older major. Dependency automation holds Postgres majors for explicit
+  approval rather than opening a PR, so `18-alpine` won't arrive as an ordinary
+  bump. Approving it is the start of a migration, not a routine upgrade.
 
 ## Not declarative
 

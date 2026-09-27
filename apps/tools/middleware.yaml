@@ -1,0 +1,23 @@
+---
+# Shared by every IngressRoute in the tools namespace (changedetection,
+# inventory). Defined here rather than in any one app's directory so removing an
+# app can't take the Middleware with it -- Traefik disables a router whose
+# middleware is missing, so every other route in the namespace would go down.
+#
+# Define it only here. A second copy under an app is a duplicate resource ID and
+# fails the whole `apps` kustomize build.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: default-headers
+  namespace: tools
+spec:
+  headers:
+    browserXssFilter: true
+    contentTypeNosniff: true
+    forceSTSHeader: true
+    stsIncludeSubdomains: true
+    stsSeconds: 15552000
+    customFrameOptionsValue: SAMEORIGIN
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"

@@ -18,5 +18,14 @@
     "managerFilePatterns": [
       "/cluster/.+\\.ya?ml$/"
     ]
-  }
+  },
+  "packageRules": [
+    {
+      "description": "A Postgres major needs a dump and restore; the data directory isn't forward-compatible. Hold for approval on the Dependency Dashboard rather than opening a routine PR.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
 }

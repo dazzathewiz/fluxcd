@@ -105,16 +105,26 @@ it's cargo-culted from the existing apps.
   decision made for this repo, not an oversight to "fix."
 - Grep the branch diff for the above before every push, not just once at the end.
 
-## Exposure — HTTP apps share one Traefik IP
+## Exposure — HTTP apps share Traefik's two zone IPs
 
-- Traefik holds a single `loadBalancerIP`. Confirmed live: `grafana.inf`,
-  `influxdb.inf`, `longhorn.inf`, `nginx.inf`, and `portainer.inf` all resolve to the
-  same address — Traefik's, not each app's own.
+- Traefik serves two zones, each on its own address: `.inf` on `websecure`
+  (`LB_TRAEFIK`) and `.app` on `appsecure` (`LB_TRAEFIK_APP`). Confirmed live:
+  `grafana.inf`, `influxdb.inf`, `longhorn.inf`, `nginx.inf`, and `portainer.inf`
+  all resolve to the same address — Traefik's, not each app's own.
+- **Default to `.inf`.** Use `.app` only for an app that must be reachable by a
+  client deliberately confined to that address — see
+  [docs/app-zone.md](docs/app-zone.md) for why the zone exists, how an app joins
+  it, and its silent failure modes.
 - Every HTTP UI is a Traefik **`IngressRoute` CRD** (`traefik.io/v1alpha1`, not
   `networking.k8s.io/Ingress`, not Gateway API), host
   `<app>.inf.${PERSONAL_DOMAIN}`, entrypoint `websecure`, TLS from the wildcard
-  secret `inf-personal-domain-tls`, plus a per-namespace `default-headers`
-  Middleware.
+  secret `inf-personal-domain-tls` (or the `.app` equivalents: `appsecure`,
+  `app-personal-domain-tls`), plus a per-namespace `default-headers`
+  Middleware. Define that Middleware once per namespace, not inside one app's
+  directory (e.g. `apps/tools/middleware.yaml`), so removing an app can't take
+  it away from the others.
+- **Always name the entrypoint.** A route with no `entryPoints` joins every
+  entrypoint, `appsecure` included, and answers on the `.app` address.
 - **A new web app needs a ClusterIP Service only.** Don't allocate a new `LB_<NS>`
   var or a MetalLB Service for it — that pattern is reserved for non-HTTP / raw-TCP
   services (e.g. InfluxDB v1, MQTT), which do get their own dedicated LB IP because
@@ -122,6 +132,7 @@ it's cargo-culted from the existing apps.
 - The wildcard TLS secret must be reflected into the app's namespace before its
   IngressRoute will get real TLS — see
   [infrastructure/configs/certificates/inf-personal-domain.yaml](infrastructure/configs/certificates/inf-personal-domain.yaml)'s
+  (or `app-personal-domain.yaml`'s, for `.app`)
   `reflection-allowed-namespaces` annotation. Skipping this is a **silent** failure:
   Traefik falls back to its own default cert rather than erroring loudly, and the
   page still loads — check with `kubectl -n <ns> get secret inf-personal-domain-tls`
@@ -131,7 +142,10 @@ it's cargo-culted from the existing apps.
 ## DNS is manual, on both Pi-holes
 
 - Traefik cannot route until DNS delivers the packet to it. Every new `*.inf`
-  hostname needs its own Pi-hole A record pointing at Traefik's IP.
+  hostname needs its own Pi-hole A record pointing at Traefik's IP; every new
+  `*.app` hostname points at the `.app` address instead. Take the value from
+  `LB_TRAEFIK` / `LB_TRAEFIK_APP` in `cluster-config/cluster-config.yaml`, not
+  from a PR description or doc that may have gone stale.
 - **No wildcard** covers `*.inf.${PERSONAL_DOMAIN}` — `influxdbv1.inf` points at a
   different, dedicated IP, so a `*.inf` wildcard would be wrong. This was considered
   and rejected 2026-09-10; don't re-propose it without a new reason.

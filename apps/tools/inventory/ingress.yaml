@@ -5,10 +5,10 @@
 # cannot reach Grafana, Longhorn, Portainer or anything else by changing the
 # Host header.
 #
-# The `default-headers` Middleware already exists in this namespace -- it is
-# defined in apps/tools/changedetection/ingress.yaml. Defining it again here
-# would be a duplicate resource ID and would fail the whole `apps` kustomize
-# build, taking every app in the tree off reconciliation with it.
+# The `default-headers` Middleware is shared across the namespace and defined in
+# apps/tools/middleware.yaml. Defining it again here would be a duplicate
+# resource ID and would fail the whole `apps` kustomize build, taking every app
+# in the tree off reconciliation with it.
 #
 # No basicAuth middleware: unlike changedetection, this app has real user
 # accounts with per-user roles, and a proxy-level prompt in front of it would

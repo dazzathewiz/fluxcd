@@ -8,8 +8,9 @@
 # newer versions are not guaranteed. A Postgres major upgrade also requires a
 # dump and restore regardless -- the data directory is NOT forward-compatible
 # and the container will refuse to start against a directory written by an older
-# major. Renovate will eventually offer `18-alpine` here. That PR is not a
-# routine bump and must not be merged like one.
+# major. A packageRule in renovate.json holds Postgres majors for approval on
+# the Dependency Dashboard, so `18-alpine` won't arrive as an ordinary PR.
+# Approving it there is the start of a migration, not a routine bump.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,7 +32,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17-alpine
+        image: postgres:17.11-alpine
         env:
         - name: POSTGRES_DB
           value: "inventree"

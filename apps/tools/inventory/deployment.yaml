@@ -32,7 +32,7 @@ spec:
       # running initdb, and the failure mode is a CrashLoopBackOff that looks
       # like a config error.
       - name: wait-for-db
-        image: postgres:17-alpine
+        image: postgres:17.11-alpine
         command:
           - sh
           - -c
@@ -106,7 +106,7 @@ spec:
             memory: 1Gi
 
       - name: caddy
-        image: caddy:2.10-alpine
+        image: caddy:2.10.2-alpine
         ports:
         - containerPort: 8080
           name: web
