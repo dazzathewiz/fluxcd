@@ -1,0 +1,20 @@
+---
+# ClusterIP only. HTTP apps are fronted by Traefik; this app reaches the network
+# through the `appsecure` entrypoint and its dedicated address, not through a
+# MetalLB Service of its own.
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: tools
+  name: inventory
+  labels:
+    app: inventory
+spec:
+  type: ClusterIP
+  selector:
+    app: inventory
+  ports:
+  - name: web
+    protocol: TCP
+    port: 8080
+    targetPort: 8080

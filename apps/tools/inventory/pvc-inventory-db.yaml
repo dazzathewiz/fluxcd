@@ -1,0 +1,16 @@
+---
+# Postgres data directory. Small by nature -- a few thousand rows of text.
+# Separate from inventory-data so the database and the photo store can be
+# restored independently.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inventory-db
+  namespace: tools
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-diskencrypt-global
+  resources:
+    requests:
+      storage: 5Gi
