@@ -1,0 +1,55 @@
+---
+# Caddy serves /static/ and /media/ from disk and proxies everything else to
+# gunicorn. It is not optional: InvenTree's application server does not serve
+# these itself in a production configuration, so without it the UI loads
+# unstyled and every photo 404s.
+#
+# Adapted from upstream's contrib/container/Caddyfile, with TLS and the site
+# address removed -- Traefik terminates TLS here, so Caddy listens plain on 8080
+# inside the pod and never sees the network.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventory-caddy
+  namespace: tools
+data:
+  Caddyfile: |
+    {
+        admin off
+        auto_https off
+    }
+
+    :8080 {
+        encode gzip
+
+        # Item condition photos off a phone are several MB each.
+        request_body {
+            max_size 100MB
+        }
+
+        handle_path /static/* {
+            header Access-Control-Allow-Origin *
+            root * /var/www/static
+            file_server
+        }
+
+        handle_path /media/* {
+            root * /var/www/media
+            file_server
+
+            # Upstream default. Remove this line if inline thumbnails in the UI
+            # download instead of displaying.
+            header Content-Disposition attachment
+
+            # This is the control that stops an unauthenticated request pulling
+            # condition photos straight off the media path. For a database whose
+            # attachments are pictures of valuable items and where they are kept,
+            # it matters more here than in a typical parts inventory.
+            # Do not remove it.
+            forward_auth http://127.0.0.1:8000 {
+                uri /auth/
+            }
+        }
+
+        reverse_proxy http://127.0.0.1:8000
+    }
