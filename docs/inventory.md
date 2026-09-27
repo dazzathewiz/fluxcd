@@ -46,6 +46,52 @@ served. Attachments here are photographs of the items and of where they are
 kept, so an unauthenticated read of the media path would be a meaningful
 disclosure rather than a cosmetic one.
 
+The Caddyfile has no access log. Requests Caddy answers itself -- including
+404s on `/static/` -- leave no trace in any container log.
+
+### The boot sequence is ours, not the image's
+
+The image does less on start than its documentation implies, and the gap is
+invisible in a manifest. Its entrypoint creates the empty `static`, `media` and
+`backup` directories and then execs the command; its command is the WSGI server
+and nothing else. The environment flag that looks like it runs the vendor's
+update task does not -- it gates an in-process schema migration, in every
+process that boots the application, and that is all it does. Upstream closes
+the gap with a manual update command run by hand after every image pull, which
+is not a thing a GitOps deployment can rely on.
+
+So the steps that matter own an initContainer each, in order, and all of them
+complete before any long-running container starts:
+
+| initContainer | Why |
+|---|---|
+| `wait-for-db` | first boot otherwise races a database still running `initdb` |
+| `db-migrate` | schema current before the server and worker exist; also rebuilds tree structures and any missing thumbnails |
+| `collect-static` | **this is what makes the web UI work** |
+
+`collect-static` is the load-bearing one. The compiled frontend ships inside
+the image but lives under the source tree. The web route is rendered from that
+tree, so it returns a 200 with the right script tags whether or not anything
+has been collected -- but those scripts are served by Caddy from the static
+root on the data volume. Until they are collected there, every script 404s,
+the frontend never mounts, and the page shows only its built-in "there might be
+an issue with your update" fallback text. The probes are green (they hit the
+API, which has no static dependency) and, with no Caddy access log, the 404s
+are recorded nowhere. Nothing short of opening the page in a browser detects
+it.
+
+Moving the migration into its own initContainer also removed a real fault
+rather than a cosmetic one: with in-process migration, the server and the
+worker each ran the same migrations at the same instant, and the loser
+crash-looped on "relation already exists" until the other finished -- three
+worker restarts on first boot, and again on every image bump carrying
+migrations. A genuine migration failure now holds the pod in `Init` instead of
+surfacing later as a 502.
+
+The vendor's own update task is deliberately **not** used for this. It also
+runs a package install and a backup, neither of which belongs in a container
+start path.
+
 ### Why no cache container
 
 Upstream's compose includes Redis. It is omitted: at two users and a few
@@ -95,9 +141,13 @@ protection that is not there.
 
 ## Upgrades
 
-- The application image carries a readable semver tag and runs its own
-  migrations on start, so a tag bump is a complete upgrade. Server and worker
-  share the pod and therefore the version.
+- The application image carries a readable semver tag, and the initContainers
+  above re-run migrations and re-collect static files on every pod start, so a
+  tag bump is a complete upgrade with no manual step. Server and worker share
+  the pod and therefore the version.
+- **Verify an upgrade by loading the web UI, not by reading the pod status.**
+  A tag bump that changes the frontend but fails to collect it leaves every
+  probe green.
 - **The Postgres major version is not a routine bump.** The application supports
   Postgres 17 and states newer versions are not guaranteed, and a Postgres major
   upgrade needs a dump and restore regardless -- the data directory is not
