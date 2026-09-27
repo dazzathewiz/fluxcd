@@ -1,4 +1,3 @@
----
 # Three containers in one pod, deliberately.
 #
 # The server, the background worker and the static/media file server all need
@@ -26,6 +25,20 @@ spec:
       labels:
         app: inventory
     spec:
+      # The image does LESS on boot than it looks like it does.
+      #
+      # Its ENTRYPOINT (contrib/container/init.sh) creates data/static,
+      # data/media and data/backup and then `exec "$@"`. Its CMD is bare
+      # gunicorn. Neither collects static files, and neither is the `invoke
+      # update` path. INVENTREE_AUTO_UPDATE is not that path either: it is read
+      # by src/backend/InvenTree/InvenTree/tasks.py, where it gates
+      # `call_command('migrate')` in-process and nothing else.
+      #
+      # So on a stock deployment the schema migrates itself and nothing else
+      # happens. Upstream's compose workflow covers the gap with a documented
+      # manual `invoke update` after every image pull. That is not available to
+      # a GitOps deployment, so the two steps that matter own a container each
+      # here and run to completion before anything long-lived starts.
       initContainers:
       # Gate the app on the database actually accepting connections. Without
       # this, first boot races migrations against a Postgres that is still
@@ -48,6 +61,77 @@ spec:
           limits:
             memory: 64Mi
 
+      # Migrations, before either long-running container exists.
+      #
+      # Doing this in-process via INVENTREE_AUTO_UPDATE (the previous
+      # arrangement) starts the worker at the same instant as the server, and
+      # the worker reads django_q_schedule before the server has created it:
+      #
+      #   ProgrammingError: column django_q_schedule.cron does not exist
+      #
+      # Three crash-restarts on first boot, self-resolving, and recurring on
+      # every image bump that carries migrations. Moving migrate here removes
+      # the race rather than tolerating it, and a genuine migration failure now
+      # holds the pod in Init instead of surfacing as a confusing 502.
+      - name: db-migrate
+        image: inventree/inventree:1.5.5
+        # `args:`, not `command:` -- the image's ENTRYPOINT must still run, as
+        # it is what prepares the venv and the data directory.
+        args: ["invoke", "migrate"]
+        envFrom:
+        - configMapRef:
+            name: inventory-env
+        - secretRef:
+            name: inventory-secrets
+        - secretRef:
+            name: inventory-admin-email
+        volumeMounts:
+        - name: data
+          mountPath: /home/inventree/data
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: 1536Mi
+
+      # Collect static files into STATIC_ROOT (/home/inventree/data/static).
+      #
+      # THIS IS WHAT SERVES THE WEB UI. The compiled frontend ships inside the
+      # image but lives under the source tree; until it is collected onto the
+      # data volume, STATIC_ROOT is an empty directory and /web returns
+      # InvenTree's INVE-E1 "no frontend included" page -- a 200, with no
+      # asset requests behind it, so nothing in the logs or the probes looks
+      # wrong. The admin site renders unstyled for the same reason.
+      #
+      # `invoke static`, not `invoke update`: update also runs `install` (pip
+      # at container boot) and `backup`, neither of which belongs in a startup
+      # path. It runs `collectstatic --no-input --clear`, which empties the
+      # contents of STATIC_ROOT but not the directory itself, so Caddy's
+      # `subPath: static` bind mount stays valid across restarts.
+      #
+      # Ordered after db-migrate because `manage.py` boots the full Django app,
+      # which touches the database.
+      - name: collect-static
+        image: inventree/inventree:1.5.5
+        args: ["invoke", "static"]
+        envFrom:
+        - configMapRef:
+            name: inventory-env
+        - secretRef:
+            name: inventory-secrets
+        - secretRef:
+            name: inventory-admin-email
+        volumeMounts:
+        - name: data
+          mountPath: /home/inventree/data
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: 1536Mi
+
       containers:
       - name: server
         image: inventree/inventree:1.5.5
@@ -64,9 +148,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /home/inventree/data
-        # First boot runs migrations and collects static files, which takes
-        # minutes, not seconds. A short startup budget here reads as a broken
-        # deploy when it is just a slow one.
+        # Migrations and static collection have already run in initContainers,
+        # so this is now only gunicorn's own boot. The budget stays generous
+        # anyway: Django app-ready work still runs here, and a tight budget on
+        # the one route into this app buys nothing.
         startupProbe:
           httpGet:
             path: /api/
