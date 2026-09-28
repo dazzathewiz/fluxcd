@@ -80,7 +80,7 @@ spec:
       # `rebuild_thumbnails` (missing ones only) afterwards, on every pod start.
       # Cheap at this data size; worth knowing if boot ever gets slow.
       - name: db-migrate
-        image: inventree/inventree:1.5.5
+        image: inventree/inventree:1.5.6
         # `args:`, not `command:` -- the image's ENTRYPOINT must still run, as
         # it is what prepares the venv and the data directory.
         args: ["invoke", "migrate"]
@@ -126,7 +126,7 @@ spec:
       # Ordered after db-migrate because `manage.py` boots the full Django app,
       # which touches the database.
       - name: collect-static
-        image: inventree/inventree:1.5.5
+        image: inventree/inventree:1.5.6
         args: ["invoke", "static"]
         envFrom:
         - configMapRef:
@@ -147,7 +147,7 @@ spec:
 
       containers:
       - name: server
-        image: inventree/inventree:1.5.5
+        image: inventree/inventree:1.5.6
         envFrom:
         - configMapRef:
             name: inventory-env
@@ -185,7 +185,7 @@ spec:
             memory: 1536Mi
 
       - name: worker
-        image: inventree/inventree:1.5.5
+        image: inventree/inventree:1.5.6
         # Compose's `command:` maps to k8s `args:`, not `command:` -- the image's
         # ENTRYPOINT must still run. Using `command:` here would bypass it and
         # the worker would never start.
