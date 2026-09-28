@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: changedetection
-        image: dgtlmoon/changedetection.io:0.60.6
+        image: dgtlmoon/changedetection.io:0.60.8
         env:
         - name: PORT
           value: "5000"
