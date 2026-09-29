@@ -1,0 +1,79 @@
+---
+# Inlined here rather than added to clusters/home/helm-repositories/ so that
+# removing this experiment is one directory, not two edits. Both placements exist
+# in this repo already (traefik inlines its own; influxdata/portainer/skater are
+# collected).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: tailscale
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://pkgs.tailscale.com/helmcharts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tailscale-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: tailscale-operator
+  targetNamespace: tailscale
+  # No install.createNamespace: the namespace is declared in ../probe, which runs
+  # first, so there is exactly one owner of it.
+  chart:
+    spec:
+      chart: tailscale-operator
+      # Pinned exactly, not a range. The chart version tracks the client version
+      # and a bump changes what runs on the overlay network, which is not a thing
+      # to inherit silently. Renovate is switched off for this path
+      # (renovate.json) because the whole directory is meant to be deleted.
+      version: 1.102.4
+      sourceRef:
+        kind: HelmRepository
+        name: tailscale
+        namespace: flux-system
+      interval: 1h
+  timeout: 5m
+  values:
+    # The Connector CRD comes from here. Without it the third Kustomization has
+    # nothing to apply.
+    installCRDs: true
+
+    operatorConfig:
+      logging: info
+      # Names the controller's own device on the overlay network. Says where it
+      # lives, so it is identifiable in the device list next to the hypervisor
+      # routers.
+      hostname: k3s-tailscale-operator
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+
+    # OFF. The controller can publish a workload as its own node on the overlay
+    # network, on a name it owns, which is the other way to solve this problem.
+    # It is not this experiment: that name replaces the app's hostname, and a
+    # device credential registered against the current hostname is bound to it
+    # and would stop working. Enabling this by accident would claim an
+    # IngressClass cluster-wide.
+    ingressClass:
+      enabled: false
+
+    # OFF, explicitly, even though "false" is already the chart default.
+    # This feature exposes THIS CLUSTER'S API SERVER over the overlay network.
+    # The reason for moving the router into k3s is to narrow what an offsite
+    # device can reach, so the one switch that would widen it to the control
+    # plane is stated rather than inherited.
+    apiServerProxyConfig:
+      mode: "false"
+      allowImpersonation: "false"
+
+    proxyConfig:
+      # Tag applied to the router device the Connector creates. Must be a tag the
+      # controller's own tag is permitted to own, in the overlay access policy.
+      defaultTags: "tag:k8s"

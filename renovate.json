@@ -26,6 +26,11 @@
       "matchPackageNames": ["postgres"],
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "infrastructure/experiments/ holds time-boxed spikes that are expected to be deleted, not maintained. Pinned versions there are part of the experiment's record of what was tested, so bumping them is noise. Remove this rule when the last experiment goes.",
+      "matchFileNames": ["infrastructure/experiments/**"],
+      "enabled": false
     }
   ]
 }

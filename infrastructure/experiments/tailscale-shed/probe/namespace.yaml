@@ -1,0 +1,13 @@
+---
+# Declared here, in the FIRST of the three Kustomizations, and nowhere else.
+#
+# The chart would create it via install.createNamespace, but then the namespace
+# would be owned by the HelmRelease while the probe that runs before the chart
+# also needs it. Declaring it once, in the Kustomization that runs first, keeps a
+# single owner and a single delete.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale
+  labels:
+    app.kubernetes.io/part-of: experiment-tailscale-shed

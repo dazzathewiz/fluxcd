@@ -1,0 +1,33 @@
+---
+# The route itself: one address, /32.
+#
+# This is the only thing the offsite device is meant to be able to reach, and it
+# is deliberately a host route rather than the MetalLB pool or the 10.10.1.0/24
+# subnet. A wider route would put the whole LAN behind the overlay for anything
+# holding the offsite tag, which is exactly what running this in k3s instead of
+# on a hypervisor is supposed to avoid.
+#
+# Note what this does and does not control. The route decides what the DEVICE can
+# address. It does not constrain the router pod, which sits on the pod network and
+# can reach the rest of the cluster like any pod -- the probe in ../probe records
+# that plainly rather than leaving it implied. Confinement of the device is the
+# /32 plus the overlay access rule, both of which are stated, neither of which is
+# in this repo in full.
+#
+# The route still needs approving on the overlay side. With an auto-approver for
+# this exact prefix it is automatic; without one the router comes up, reports the
+# route, and it silently carries no traffic until somebody clicks approve --
+# `kubectl get connector` shows a healthy object either way.
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: app-zone-route
+  labels:
+    app.kubernetes.io/part-of: experiment-tailscale-shed
+spec:
+  hostnamePrefix: k3s-app-zone-route
+  tags:
+    - "tag:k8s"
+  subnetRouter:
+    advertiseRoutes:
+      - "${LB_TRAEFIK_APP}/32"
