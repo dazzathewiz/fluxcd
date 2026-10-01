@@ -79,8 +79,9 @@ silently. If C ever returns `200`, this experiment is the least of the problems.
   broken one from the client side);
 - whether the router pod actually **forwards** tailnet traffic onto the LAN.
   That needs the router, so it cannot be tested before installing it;
-- whether the device can **resolve the hostname** — see the name-resolution
-  item below, which is the gap most likely to make a working route look broken.
+- whether the device can **resolve the hostname** — the access rule has to
+  permit `53` to the resolvers, not just `443` to the zone address; see the
+  name-resolution item below.
 
 So the probe gates the operator, and the operator Kustomization `dependsOn` it:
 if A fails, **the operator is never installed** — no tailnet device registered,
@@ -133,27 +134,27 @@ rendered into the release and a release is not a `Secret`.
    for the `/32` listing both `tag:k8s` and the hypervisor routers' tag, so
    either route source is approved without a console click and the two can
    coexist as failover; and one rule letting `tag:personal-device` reach the
-   zone address on `443`. Concrete values are in the private runbook.
-3. **Name resolution — decide this before writing the access rule.** The two are
-   coupled, and getting it wrong produces a working route that looks broken.
+   zone address on `443` and `53` to the two resolvers. Concrete values are in
+   the private runbook.
+3. **Name resolution.** The device resolves the hostname through the tailnet's
+   DNS config: split DNS for the domain pointing at the two resolvers, whose
+   `/32` routes the hypervisor routers already advertise, plus the existing
+   local records on both of them.
 
-   A device whose access rule permits only the zone address on `443` **cannot
-   reach a resolver**, so a local-only DNS record never resolves for it. There
-   are two ways out, and they are not equivalent:
+   So the access rule has **three** destinations, not one — the zone address on
+   `443`, and `53` to each resolver. Stating it as "one address and nothing
+   else" is wrong, and a rule written that way gives a working route that the
+   device cannot resolve a name through, which looks exactly like a broken
+   route. No `proto`, deliberately: DNS needs udp/53 and sometimes tcp/53.
 
-   - **A public `A` record** for the hostname pointing at the zone address.
-     The device needs no resolver on the network at all, and the access rule
-     stays exactly one address and one port. Internal `10.10.x` addressing is
-     already knowingly public in this repo, so the only new disclosure is the
-     subdomain name itself. **This is the simpler and tighter option.**
-   - **Tailnet split DNS** for the domain, pointing at the two resolvers, with
-     the access rule widened to allow `53` to both. This works, but note what
-     it costs: the resolver routes are advertised by the **hypervisor** routers,
-     so the device's DNS would still depend on them — which means this option
-     does *not* deliver the decoupling from hypervisor routing that is the whole
-     point of the experiment. Only the app route moves into the cluster.
-
-   The local record on both resolvers stays either way, for devices at home.
+   Worth knowing, not worth changing: those resolver routes come from the
+   **hypervisor** routers, so the device's DNS still depends on them even when
+   the app route is served from this cluster. This experiment moves the app
+   route, not the whole path. A public `A` record for the hostname would remove
+   the resolver hop and shrink the rule to one address and one port, at the cost
+   of publishing the subdomain name — noted only because it is the one way to
+   make the device's path independent of the hypervisors entirely. It is not
+   needed and not recommended.
 
 ## Operating notes
 
