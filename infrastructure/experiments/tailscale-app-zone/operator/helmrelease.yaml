@@ -46,9 +46,8 @@ spec:
       logging: info
       # Set explicitly to rename it. The chart default is tag:k8s-operator;
       # this is a k3s cluster and the tag is read by humans in the device list,
-      # so it says k3s. The OAuth client must be scoped to the SAME string --
-      # they are matched as strings, and a mismatch surfaces as the operator
-      # reporting no credentials rather than as anything that names the tag.
+      # so it says k3s. The OAuth client must be scoped to this exact tag, and
+      # the tailnet policy must define it -- they are matched as strings.
       defaultTags: ["tag:k3s-operator"]
       # Names the operator's own device on the tailnet. Says where it lives, so
       # it is identifiable in the device list next to the hypervisor routers.
@@ -79,8 +78,8 @@ spec:
       allowImpersonation: "false"
 
     proxyConfig:
-      # Tag applied to the router device the Connector creates. Must be a tag
-      # the operator's own tag is permitted to own, in the tailnet policy, and
-      # must match the Connector's spec.tags. tag:k3s, not the chart's default
-      # tag:k8s: this is a k3s cluster.
+      # Fallback tag for proxies that don't set their own. The Connector sets
+      # spec.tags itself, so this doesn't apply to it; it's set to tag:k3s
+      # (not the chart's tag:k8s) only so nothing here carries the k8s name.
+      # Must be a tag the operator's tag owns in the tailnet policy.
       defaultTags: "tag:k3s"
