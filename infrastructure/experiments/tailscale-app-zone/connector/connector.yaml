@@ -33,7 +33,7 @@ metadata:
 spec:
   hostnamePrefix: k3s-app-zone-route
   tags:
-    - "tag:k8s"
+    - "tag:k3s"
   subnetRouter:
     advertiseRoutes:
       - "${LB_TRAEFIK_APP}/32"

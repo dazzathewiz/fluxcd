@@ -82,17 +82,20 @@ never appears in the HelmRelease.
 In this order:
 
 1. **Tailnet policy.**
-   - `tagOwners` for `tag:k8s-operator`, `tag:k8s` (owned by the operator tag)
-     and `tag:personal-device`.
-   - An `autoApprovers.routes` entry for the `/32` naming only `tag:k8s`. Leave
+   - `tagOwners` for `tag:k3s-operator`, `tag:k3s` (owned by the operator tag)
+     and `tag:personal-device`. These are renamed from the chart's defaults
+     `tag:k8s-operator` / `tag:k8s`; the chart values here are set to match.
+   - An `autoApprovers.routes` entry for the `/32` naming only `tag:k3s`. Leave
      the hypervisor routers' tag out until this graduates. If both advertise the
-     route, a working device doesn't show which router carried the traffic.
+     route, a working device doesn't show which router carried the traffic — and
+     check no hypervisor advertises a prefix that *covers* the `/32` either, or
+     traffic falls back to it whenever the k3s router is down.
    - A rule letting `tag:personal-device` reach the `.app` address on 443, and
      the two resolvers on 53.
 
    Concrete values are in the private runbook.
 2. **1Password item** `tailscale-operator`, with `client-id` and
-   `client-secret`, from an OAuth client that owns `tag:k8s-operator`. A client
+   `client-secret`, from an OAuth client that owns `tag:k3s-operator`. A client
    can only be scoped to a tag that already exists, which is why the policy
    comes first. Until the item exists, the operator Kustomization waits. Nothing
    else is affected.
