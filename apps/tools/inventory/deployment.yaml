@@ -208,7 +208,7 @@ spec:
             memory: 1Gi
 
       - name: caddy
-        image: caddy:2.11.4-alpine
+        image: caddy:2.11.6-alpine
         ports:
         - containerPort: 8080
           name: web
