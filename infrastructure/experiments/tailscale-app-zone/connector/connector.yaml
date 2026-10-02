@@ -1,0 +1,39 @@
+---
+# The route itself: one address, /32.
+#
+# This is the only thing a personal device is meant to reach, and it is
+# deliberately a host route rather than the MetalLB pool or 10.10.1.0/24. A
+# wider route would put the whole LAN on the tailnet for anything holding
+# tag:personal-device, which is what running this in k3s is supposed to avoid.
+#
+# One /32 covers every future .app app -- they all share this address.
+#
+# Note what this does and does not control. The route decides what the DEVICE
+# can address. It does not constrain the router pod, which sits on the pod
+# network and reaches the rest of the cluster like any pod -- the probe in
+# ../probe records that plainly rather than leaving it implied. The device is
+# confined by the /32 plus the tailnet access rule, neither of which is in this
+# repo in full.
+#
+# replicas is left at the default of 1. The hypervisor routers give three with
+# failover; this gives one. That is deliberate -- the app behind this route is a
+# single-replica Deployment on a ReadWriteOnce volume, so route redundancy in
+# front of a workload with none buys nothing.
+#
+# The route still needs APPROVING on the tailnet. With an autoApprovers entry
+# for this exact prefix it is automatic; without one the router comes up,
+# reports the route, and silently carries no traffic until somebody clicks
+# approve -- `kubectl get connector` shows a healthy object either way.
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: app-zone-route
+  labels:
+    app.kubernetes.io/part-of: experiment-tailscale-app-zone
+spec:
+  hostnamePrefix: k3s-app-zone-route
+  tags:
+    - "tag:k3s"
+  subnetRouter:
+    advertiseRoutes:
+      - "${LB_TRAEFIK_APP}/32"
