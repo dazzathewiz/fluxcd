@@ -193,11 +193,10 @@ it until the pod reschedules. The app behind it is a single-replica Deployment
 on an RWO volume, so this doesn't make anything worse today, but it is a single
 point of failure.
 
-The policy already auto-approves the route from the hypervisor routers as well
-as from this cluster's router, so adding the `/32` to the hypervisor routers
-would give failover with no policy edit.
-That runs against the reason for this design, which was to get the route off
-hand-maintained host lists on three hosts. Not done; decide deliberately. Check
+Adding the `/32` to the hypervisor routers would give failover. Whether that
+needs a policy edit is in the private record. It runs against the reason for
+this design, which was to get the route off hand-maintained host lists on three
+hosts. Not done; decide deliberately. Check
 that no hypervisor advertises a prefix that *covers* the `/32` either, or
 traffic silently falls back to it.
 
