@@ -37,6 +37,35 @@ picked up by the single top-level `apps` Kustomization
 ([orchestration/apps.yaml](orchestration/apps.yaml)) — no per-app Flux Kustomization
 needed unless you actually need per-app `postBuild.substitute` values.
 
+### The Flux Kustomization chain
+
+```text
+cluster-config (wait) → infra-controllers (wait) → infra-configs → apps (wait), cluster-orchestration (wait)
+```
+
+`infra-configs` has no `wait`. A Kustomization in the `dependsOn` of any of these,
+or in the tree `apps` renders, can hold every app back if it never becomes Ready.
+
+**Anything that can fail on its own goes in a side branch.** That means anything
+that needs an outside service to come up, or a CRD from a chart outside the
+chain. It gets its own Flux Kustomization in `clusters/home/`, depending on the
+end of the chain, with **nothing depending on it**. Reference:
+[clusters/home/tailscale.yaml](clusters/home/tailscale.yaml)
+(`tailscale-operator` → `tailscale-connector`, both after `infra-configs`). Two
+rules follow from it:
+
+- **A manifest can live under `apps/` without `apps` applying it.**
+  `apps/tools/inventory/app-zone-route/` sits next to the app it serves, but
+  inventory's `kustomization.yaml` deliberately doesn't list it. Its CRD comes
+  from the Tailscale operator, and an unknown kind in the `apps` render fails
+  every app. Don't "fix" it by adding it to the list.
+- **The side branch's Flux Kustomization lives in `clusters/home/`, never in
+  `apps/`.** The grafana `app.yaml` shape works only for things that can't fail
+  independently. `apps` has `wait: true` and would wait on a child Kustomization
+  that depends on something outside the chain.
+
+`docs/app-zone.md` walks through the cold-rebuild order for the Tailscale pair.
+
 ## No CI
 
 There are no GitHub Actions workflows in this repo. The PR is the only review gate.
@@ -49,7 +78,12 @@ Validation is local and manual — see below.
 - Pre-push validation: `kubectl kustomize apps/<group>` (pure local render, touches
   nothing) and `flux diff kustomization apps --path ./apps` (read-only server-side
   dry run against the live cluster — queries, doesn't apply). **The diff is the
-  review gate, not a running pod.**
+  review gate, not a running pod.** Run the diff on a branch rebased onto current
+  `main`; otherwise anything merged since shows up as a spurious revert.
+- `clusters/home/` has no `kustomization.yaml` (Flux generates one), so
+  `kubectl kustomize` can't build it. Use
+  `flux build kustomization flux-system --path ./clusters/home --kustomization-file ./clusters/home/flux-system/gotk-sync.yaml --dry-run`.
+  Without `--kustomization-file`, dry-run mode fails.
 - Then: push → PR → merge → the `apps` Kustomization polls every 5 minutes
   (`interval: 5m`, `orchestration/apps.yaml`) and picks it up on its own.
 - **A bad deploy is fixed by `git revert`, never by `kubectl apply -k` or
@@ -58,6 +92,23 @@ Validation is local and manual — see below.
   apply/delete creates or removes state Flux doesn't know about — the exact drift
   this cluster exists to avoid.
 - Revert the commit, not the repo.
+- **Moving objects between Flux Kustomizations is the one approved manual step.**
+  For example, graduating an experiment. When a Kustomization is deleted, it
+  garbage-collects whatever still carries its owner labels, and that races the
+  new owner adopting the same objects. It can delete a namespace, or uninstall a
+  release, that the new Kustomization is about to take over. The accepted
+  procedure, an approved exception to the `kubectl delete` rule above:
+  1. Before merging, `flux suspend kustomization <old>...`. A suspended
+     Kustomization skips garbage collection when it's deleted (checked in
+     kustomize-controller's finalizer).
+  2. Merge. The new Kustomizations adopt the objects. `flux-system` prunes the
+     suspended ones without collecting anything.
+  3. `kubectl delete` exactly the objects that were in the old inventory but not
+     the new one. Nothing owns them now, so this is cleanup, not repair. Name
+     them in the PR before merging.
+
+  First used in PR #193 (the `hairpin-probe` Job and Secret). This doesn't extend
+  to deleting objects Flux still owns. Those are still fixed by `git revert`.
 - **Every commit on a PR branch lands on `main` as-is.** PRs merge with merge
   commits, not squashes, so each commit must build on its own
   (`kubectl kustomize apps`) and its message must describe what it actually
@@ -188,6 +239,12 @@ it's cargo-culted from the existing apps.
 
 - App secrets: **1Password + External Secrets Operator**
   (`ClusterSecretStore onepassword-k3s`).
+- **No ExternalSecret under `infrastructure/controllers/`.** `infra-configs`
+  creates the store and depends on `infra-controllers`, which has `wait: true`.
+  A controller that needs an ExternalSecret would wait on a credential that only
+  arrives after it is healthy, which deadlocks a rebuild from an empty cluster. A
+  controller that needs a credential goes in a side branch after `infra-configs`
+  (see the Flux Kustomization chain above). Example: `infrastructure/tailscale/`.
 - **SOPS is only for the `cluster-config/` and `global/` var files.** Editing those
   needs the age key and has cluster-wide blast radius — every Kustomization that
   reads them via `postBuild.substituteFrom`.
@@ -228,6 +285,14 @@ it's cargo-culted from the existing apps.
   couldn't detect a version scheme for that image. Don't generalize from it.
 - Renovate needs no per-image annotation for a standard tag — its generic
   `kubernetes` manager autodetects `image:` fields in any `*.yaml` under scope.
+- **Renovate doesn't manage HelmRelease chart versions by default.** The `flux`
+  manager's pattern `/cluster/.+\.ya?ml$/` matches neither `clusters/` nor
+  `infrastructure/`, so it only sees `gotk-components.yaml`. A chart is managed
+  only if its file's path is added to `flux.managerFilePatterns` in
+  `renovate.json`. Today that's only `infrastructure/tailscale/`. Most charts here
+  use ranges or caps (e.g. Longhorn `<1.13.0`), so review those before widening the
+  pattern. Check what Renovate actually extracts with a local
+  `renovate --platform=local --dry-run=extract` (needs Node 24).
 
 ## Documentation
 

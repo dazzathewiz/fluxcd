@@ -1,0 +1,13 @@
+---
+# Host route to the .app zone address only. Approved by the tailnet policy.
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: app-zone-route
+spec:
+  hostnamePrefix: k3s-app-zone-route
+  tags:
+    - "tag:k3s"
+  subnetRouter:
+    advertiseRoutes:
+      - "${LB_TRAEFIK_APP}/32"

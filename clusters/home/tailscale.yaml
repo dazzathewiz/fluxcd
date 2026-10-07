@@ -1,0 +1,63 @@
+# Tailscale route into the .app zone. Nothing may depend on these.
+# Ordering and placement: docs/app-zone.md.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tailscale-operator
+  namespace: flux-system
+spec:
+  # infra-configs provides ClusterSecretStore onepassword-k3s.
+  dependsOn:
+    - name: infra-configs
+  interval: 1h
+  retryInterval: 5m
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/tailscale
+  postBuild:
+    substitute: {}
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
+  prune: true
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tailscale-connector
+  namespace: flux-system
+spec:
+  # The operator chart installs the Connector CRD.
+  dependsOn:
+    - name: tailscale-operator
+  interval: 1h
+  retryInterval: 5m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/tools/inventory/app-zone-route
+  postBuild:
+    substitute: {}
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
+  prune: true
+  # kstatus ignores the Connector's ConnectorReady condition, so waiting proves nothing.
+  wait: false
