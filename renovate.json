@@ -11,7 +11,8 @@
   },
   "flux": {
     "managerFilePatterns": [
-      "/cluster/.+\\.ya?ml$/"
+      "/cluster/.+\\.ya?ml$/",
+      "/^infrastructure/tailscale/.+\\.ya?ml$/"
     ]
   },
   "helm-values": {
@@ -28,7 +29,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "infrastructure/experiments/ holds time-boxed spikes that are expected to be deleted, not maintained. Pinned versions there are part of the experiment's record of what was tested, so bumping them is noise. Remove this rule when the last experiment goes.",
+      "description": "infrastructure/experiments/ holds time-boxed spikes that are expected to be deleted, not maintained. Pinned versions there are part of the experiment's record of what was tested, so bumping them is noise. Kept when no experiment is open, so the next one is excluded without anyone remembering to add it.",
       "matchFileNames": ["infrastructure/experiments/**"],
       "enabled": false
     }
