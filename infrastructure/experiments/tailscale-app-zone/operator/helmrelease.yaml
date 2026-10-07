@@ -1,0 +1,85 @@
+---
+# Inlined here rather than added to clusters/home/helm-repositories/ so that
+# removing this experiment is one directory, not two edits. Both placements exist
+# in this repo already (traefik inlines its own; influxdata/portainer/skater are
+# collected).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: tailscale
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://pkgs.tailscale.com/helmcharts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tailscale-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: tailscale-operator
+  targetNamespace: tailscale
+  # No install.createNamespace: the namespace is declared in ../probe, which runs
+  # first, so there is exactly one owner of it.
+  chart:
+    spec:
+      chart: tailscale-operator
+      # Pinned exactly, not a range. The chart version tracks the client version
+      # and a bump changes what runs on the tailnet, which is not a thing to
+      # inherit silently. Renovate is switched off for this path
+      # (renovate.json) because the whole directory is meant to be deleted.
+      version: 1.102.4
+      sourceRef:
+        kind: HelmRepository
+        name: tailscale
+        namespace: flux-system
+      interval: 1h
+  timeout: 5m
+  values:
+    # The Connector CRD comes from here. Without it the third Kustomization has
+    # nothing to apply.
+    installCRDs: true
+
+    operatorConfig:
+      logging: info
+      # Set explicitly to rename it. The chart default is tag:k8s-operator;
+      # this is a k3s cluster and the tag is read by humans in the device list,
+      # so it says k3s. The OAuth client must be scoped to this exact tag, and
+      # the tailnet policy must define it -- they are matched as strings.
+      defaultTags: ["tag:k3s-operator"]
+      # Names the operator's own device on the tailnet. Says where it lives, so
+      # it is identifiable in the device list next to the hypervisor routers.
+      hostname: k3s-tailscale-operator
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+
+    # OFF. The operator can instead publish a workload as its own tailnet node
+    # on a ts.net name it owns, which is the other way to solve this problem.
+    # Not this experiment, and not a free alternative: WebAuthn relying-party
+    # IDs are domain-bound, so a passkey enrolled on the app's current hostname
+    # does not work on a ts.net name. Enabling this by accident would also claim
+    # an IngressClass cluster-wide.
+    ingressClass:
+      enabled: false
+
+    # OFF, explicitly, even though "false" is already the chart default.
+    # This feature exposes THIS CLUSTER'S API SERVER over the tailnet. The
+    # reason for moving the router into k3s is to narrow what a personal device
+    # can reach, so the one switch that would widen it to the control plane is
+    # stated rather than inherited.
+    apiServerProxyConfig:
+      mode: "false"
+      allowImpersonation: "false"
+
+    proxyConfig:
+      # Fallback tag for proxies that don't set their own. The Connector sets
+      # spec.tags itself, so this doesn't apply to it; it's set to tag:k3s
+      # (not the chart's tag:k8s) only so nothing here carries the k8s name.
+      # Must be a tag the operator's tag owns in the tailnet policy.
+      defaultTags: "tag:k3s"
