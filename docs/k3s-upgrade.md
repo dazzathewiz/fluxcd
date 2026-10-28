@@ -73,19 +73,31 @@ decision.
 ## Before every step
 
 1. **Open Renovate and chart PRs are reconciled first.** Merge, close or
-   explicitly defer them, so a step's PR is the only moving part. Two groups
-   are **deferred until after this work**. Each PR has a comment saying so,
-   and none should be merged before then:
+   explicitly defer them, so a step's PR is the only moving part. Three
+   groups are **deferred until after this work**. Each PR has a comment
+   saying so, and none should be merged before then. None of them is needed
+   by the upgrade, and the upgrade doesn't break anything they'd replace:
+   - **InvenTree** (#203, image 1.5.8 → 1.6.3). No dependency on the
+     Kubernetes version either way. It's deferred because it needs
+     preparatory work first. The app holds hand-entered records, so take a
+     Longhorn backup before merging (`docs/inventory.md`).
    - **Flux** (#88, #92, #95, #101, #103, #104, #115, #153). Each bumps one
      controller image, or the Flux version, in `gotk-components.yaml`
      without the matching CRDs, so merging any of them alone leaves Flux
      half-upgraded. The current Flux CLI (2.9) also reports needing
      Kubernetes 1.33 or newer. Upgrade Flux once the cluster is on 1.33 or
-     later, as one regenerated install that supersedes all eight.
+     later, as one regenerated install that supersedes all eight. The
+     installed Flux (2.7.5) is fine to keep through the upgrade: its release
+     notes list 1.32 to 1.34 as supported (1.34.1 or newer), so it's below
+     its supported floor today and the upgrade brings it inside.
    - **system-upgrade-controller** (#98, v0.16.3 → v0.20.2). This is the
      controller running the upgrade, so it doesn't change mid-way. The PR
      also moves only the image tag, leaving the controller manifests at
      v0.16.3 and the CRD at v0.15.2. Bump all three together after 1.34.
+     The installed v0.16.3 is built against the Kubernetes 1.33 client
+     libraries and uses only stable APIs (Nodes, Jobs, Secrets, its own
+     Plan CRD). Upstream doesn't publish a supported range, so running it
+     through 1.34 is assumed, not documented.
 2. **Free disk.** Each node needs room for the new k3s binary and re-pulled
    system images. On 2026-10-28 the masters had 15-21G free and the workers
    10-14G. Stop if any node is under about 5G.
@@ -278,6 +290,8 @@ Assumed, not verified:
 - Rancher won't act on the stale `v1.25.12` desired version (inferred from
   it not having done so at 1.30).
 - Existing nodes keep the `master` label after 1.34.
+- system-upgrade-controller v0.16.3 works on 1.31 to 1.34 (no published
+  support range).
 - No custom containerd config template on any node (matters at 1.33).
 - The etcd restore procedure above. It has never been exercised here.
 
@@ -293,7 +307,7 @@ between the two:
 | Backlog item | Where it's handled |
 |---|---|
 | Upgrade controller and Plans "Ready but not advancing" | Investigated first, see Mechanism. They're idle at their own target version, not broken. |
-| Reconcile open Renovate PRs before starting | Before every step, item 1. Exception: the eight Flux PRs and the system-upgrade-controller PR are deliberately deferred until after this work, with a comment on each saying why. |
+| Reconcile open Renovate PRs before starting | Before every step, item 1. Exception: the InvenTree PR, the eight Flux PRs and the system-upgrade-controller PR are deliberately deferred until after this work, with a comment on each saying why. |
 | Watch the upgrade as it runs, no fire-and-forget | Mechanism ("merge only when someone can watch") and "During and after every step". |
 | No skipping minors; check API removals and chart support at each step | Four steps, one PR each. Per-step notes, and the removed-API check in "Before every step". |
 | Renovate has never tracked the Helm charts | Every chart's supported Kubernetes range was checked by hand for 1.31 to 1.34 (Verified). Widening Renovate's `flux` manager is separate work. |
