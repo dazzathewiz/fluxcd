@@ -12,7 +12,11 @@
   "flux": {
     "managerFilePatterns": [
       "/cluster/.+\\.ya?ml$/",
-      "/^infrastructure/tailscale/.+\\.ya?ml$/"
+      "/^infrastructure/tailscale/.+\\.ya?ml$/",
+      "/^infrastructure/controllers/longhorn\\.yaml$/",
+      "/^infrastructure/controllers/rook-ceph\\.yaml$/",
+      "/^infrastructure/controllers/rancher\\.yaml$/",
+      "/^infrastructure/configs/rancher\\.yaml$/"
     ]
   },
   "helm-values": {
@@ -49,6 +53,19 @@
       "matchPackageNames": ["k3s-io/k3s"],
       "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\+k3s(?<build>\\d+)$",
       "separateMultipleMinor": true,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Longhorn, Rook and Rancher each support upgrading one minor at a time, so offer one PR per minor instead of jumping to the newest. These charts used to float and each outran the cluster's Kubernetes; exact pins plus PRs make every upgrade visible.",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["longhorn", "rook-ceph", "rancher"],
+      "separateMultipleMinor": true
+    },
+    {
+      "description": "A Longhorn or Rook minor (or major) upgrade changes the storage system and can't be rolled back, so it waits on the Dependency Dashboard until someone is ready to watch it. Patches still open PRs directly.",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["longhorn", "rook-ceph"],
+      "matchUpdateTypes": ["minor", "major"],
       "dependencyDashboardApproval": true
     }
   ]
