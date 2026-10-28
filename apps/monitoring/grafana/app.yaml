@@ -27,3 +27,15 @@ spec:
       PV_CLAIM: grafana-legacy-data
       PV_CAPACITY: 1Gi
       PV_STORAGECLASS: longhorn-diskencrypt-global
+    # Same sources the apps Kustomization uses. Without them LB_MONITORING and
+    # PERSONAL_DOMAIN were unset; kustomize-controller 1.9 rejects that (strict
+    # post-build substitutions), where older versions silently substituted "".
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
