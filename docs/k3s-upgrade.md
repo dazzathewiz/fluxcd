@@ -269,6 +269,33 @@ Assumed, not verified:
 Handed off to a human: the pre-step etcd snapshot and off-host copy, merging
 each step, and watching each rollout.
 
+## From the homelab backlog
+
+The homelab project's backlog had hazards and requirements for this upgrade
+written down before this plan. Here's where each one landed, so none is lost
+between the two:
+
+| Backlog item | Where it's handled |
+|---|---|
+| Upgrade controller and Plans "Ready but not advancing" | Investigated first, see Mechanism. They're idle at their own target version, not broken. |
+| Reconcile open Renovate PRs before starting | Before every step, item 1. |
+| Watch the upgrade as it runs, no fire-and-forget | Mechanism ("merge only when someone can watch") and "During and after every step". |
+| No skipping minors; check API removals and chart support at each step | Four steps, one PR each. Per-step notes, and the removed-API check in "Before every step". |
+| Renovate has never tracked the Helm charts | Every chart's supported Kubernetes range was checked by hand for 1.31 to 1.34 (Verified). Widening Renovate's `flux` manager is separate work. |
+| Rancher on a floating range, not to be pinned | Rancher is currently capped `<2.16.0` (PR #206), a stopgap until 1.34. Removing the cap is part of the exit condition at the top. Rancher 2.15 supports 1.34 to 1.36. |
+| Traefik v3 migration kept separate | No step through 1.34 forces it (1.33 note). |
+| `infra-controllers` `wait: true` cascades a chart failure | Mechanism, and the HelmRelease check after each step. |
+| Frozen HelmRelease conditions after a fix | Post-step checks: trust the helm-controller log and use `flux reconcile hr --force`. |
+| Longhorn HelmRelease has no retry | PR #209 (`RetryOnFailure`, not remediation retries, because a remediation rolls back). |
+| Admin kubeconfig may go stale after master restarts | Expiry checked (2027-08, CA-signed). Re-checking `kubectl` access is a post-step check. |
+| VM CPU type `x86-64-v2-AES` | Verified on all six VMs. |
+| Master disks filled by log flooding | Free disk checked before each step (threshold about 5G). The journald cap itself is host config and wasn't checked from here. |
+| Worker memory ballooning | Verified per VM (see Verified). k3sworker2 is effectively static. k3sworker1 and k3sworker3 can still balloon. |
+| k3sworker2 hard-pinned to its host | Nothing is drained, so its pods stay where they are through its upgrade. |
+| Transient `unexpected EOF` on Flux applies | "During and after every step": one `flux reconcile ks flux-system --with-source`. |
+| Optional `--tls-san` for a tailnet address | Not part of this work. The Plans swap the binary and keep the server flags, so a step's restart doesn't apply new args. Adding it is a change in the provisioning repo with its own restart. |
+| Provisioning may pin the k3s version for new nodes | The `infrastructure` repo has no pin. k3s itself is installed by the separate k3s-ansible repo, which **hasn't been checked**. A node built from it after this upgrade must not come up on 1.30. |
+
 ## Known gaps
 
 - The SUC CRD comes from release v0.15.2 while the controller runs v0.16.3
@@ -276,7 +303,9 @@ each step, and watching each rollout.
   controller updates its embedded CRD at startup (it logs this), so it works.
   Aligning the two is still worth doing.
 - Renovate doesn't propose k3s bumps: the Plans' `# renovate:` comments have
-  no matching custom manager.
-- The Longhorn HelmRelease has no `upgrade.remediation`, so one failed
-  upgrade leaves it failed until someone intervenes. Worth adding before
-  Longhorn 1.13 arrives at the end of this work.
+  no matching custom manager. PR #208 adds one.
+- The Longhorn HelmRelease has no upgrade policy, so one failed upgrade
+  leaves it failed until someone intervenes. PR #209 adds `RetryOnFailure`,
+  which retries forward and never rolls back (Longhorn doesn't support
+  downgrades). It should be merged before Longhorn 1.13 arrives at the end
+  of this work.
