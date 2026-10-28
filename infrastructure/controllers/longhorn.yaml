@@ -19,6 +19,12 @@ spec:
   targetNamespace: longhorn-system
   install:
     createNamespace: true
+  upgrade:
+    # Retry a failed upgrade forward instead of rolling back: Longhorn doesn't
+    # support downgrades, so a Helm rollback mid-upgrade can leave it worse off.
+    strategy:
+      name: RetryOnFailure
+      retryInterval: 10m
   chart:
     spec:
       chart: longhorn
