@@ -72,8 +72,20 @@ decision.
 
 ## Before every step
 
-1. **Open Renovate and chart PRs are reconciled first.** Merge or close
-   them, so a step's PR is the only moving part.
+1. **Open Renovate and chart PRs are reconciled first.** Merge, close or
+   explicitly defer them, so a step's PR is the only moving part. Two groups
+   are **deferred until after this work**. Each PR has a comment saying so,
+   and none should be merged before then:
+   - **Flux** (#88, #92, #95, #101, #103, #104, #115, #153). Each bumps one
+     controller image, or the Flux version, in `gotk-components.yaml`
+     without the matching CRDs, so merging any of them alone leaves Flux
+     half-upgraded. The current Flux CLI (2.9) also reports needing
+     Kubernetes 1.33 or newer. Upgrade Flux once the cluster is on 1.33 or
+     later, as one regenerated install that supersedes all eight.
+   - **system-upgrade-controller** (#98, v0.16.3 → v0.20.2). This is the
+     controller running the upgrade, so it doesn't change mid-way. The PR
+     also moves only the image tag, leaving the controller manifests at
+     v0.16.3 and the CRD at v0.15.2. Bump all three together after 1.34.
 2. **Free disk.** Each node needs room for the new k3s binary and re-pulled
    system images. On 2026-10-28 the masters had 15-21G free and the workers
    10-14G. Stop if any node is under about 5G.
@@ -194,7 +206,10 @@ cluster declares a `kubeVersion` that excludes 1.31.
 - kube-vip (deployed from the servers' auto-deploy manifests, not this repo)
   selects nodes by `master` **or** `control-plane`, so it's unaffected.
 - After this step: remove the three pins (separate PRs), unlock
-  `rancher-turtles`, and let Renovate offer Longhorn 1.13.
+  `rancher-turtles`, and let Renovate offer Longhorn 1.13. Then pick up the
+  deferred PRs (see "Before every step", item 1): a full Flux upgrade, which
+  can happen as early as after the 1.33 step, and the system-upgrade-controller
+  bump with its manifests and CRD.
 
 ## Rollback
 
@@ -278,7 +293,7 @@ between the two:
 | Backlog item | Where it's handled |
 |---|---|
 | Upgrade controller and Plans "Ready but not advancing" | Investigated first, see Mechanism. They're idle at their own target version, not broken. |
-| Reconcile open Renovate PRs before starting | Before every step, item 1. |
+| Reconcile open Renovate PRs before starting | Before every step, item 1. Exception: the eight Flux PRs and the system-upgrade-controller PR are deliberately deferred until after this work, with a comment on each saying why. |
 | Watch the upgrade as it runs, no fire-and-forget | Mechanism ("merge only when someone can watch") and "During and after every step". |
 | No skipping minors; check API removals and chart support at each step | Four steps, one PR each. Per-step notes, and the removed-API check in "Before every step". |
 | Renovate has never tracked the Helm charts | Every chart's supported Kubernetes range was checked by hand for 1.31 to 1.34 (Verified). Widening Renovate's `flux` manager is separate work. |
@@ -301,7 +316,7 @@ between the two:
 - The SUC CRD comes from release v0.15.2 while the controller runs v0.16.3
   (`apps/tools/system-upgrade-controller/app/kustomization.yaml`). The
   controller updates its embedded CRD at startup (it logs this), so it works.
-  Aligning the two is still worth doing.
+  Align them when #98 is picked up after 1.34.
 - Renovate doesn't propose k3s bumps: the Plans' `# renovate:` comments have
   no matching custom manager. PR #208 adds one.
 - The Longhorn HelmRelease has no upgrade policy, so one failed upgrade
