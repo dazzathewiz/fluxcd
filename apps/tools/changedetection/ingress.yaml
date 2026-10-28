@@ -10,6 +10,15 @@ spec:
     secret: changedetection-basicauth
 ---
 apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: changedetection-no-sw
+  namespace: tools
+spec:
+  replacePath:
+    path: /sw-disabled
+---
+apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: changedetection
@@ -29,5 +38,15 @@ spec:
         - name: changedetection
           port: 5000
           passHostHeader: true
+    # Disable the service worker; it breaks basic auth.
+    - match: Host(`changedetection.inf.${PERSONAL_DOMAIN}`) && Path(`/sw.js`)
+      kind: Rule
+      middlewares:
+        - name: default-headers
+        - name: changedetection-basicauth
+        - name: changedetection-no-sw
+      services:
+        - name: changedetection
+          port: 5000
   tls:
     secretName: inf-personal-domain-tls
