@@ -26,6 +26,15 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*version: (?<currentValue>\\S+)"
       ]
+    },
+    {
+      "description": "The system-upgrade-controller CRD is pulled from a release asset URL, which no built-in manager reads. Track it so it moves with the manifests ref and image (see the grouping rule below).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^apps/tools/system-upgrade-controller/app/kustomization\\.yaml$/"],
+      "matchStrings": [
+        "https://github\\.com/(?<depName>rancher/system-upgrade-controller)/releases/download/(?<currentValue>v[^/]+)/crd\\.yaml"
+      ],
+      "datasourceTemplate": "github-releases"
     }
   ],
   "packageRules": [
@@ -80,6 +89,12 @@
       "matchManagers": ["flux"],
       "matchPackageNames": ["fluxcd/flux2"],
       "matchUpdateTypes": ["minor", "major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The system-upgrade-controller CRD (release asset), manifests (?ref=) and image (images.newTag) must move together; split PRs left the CRD on v0.15.2 under a v0.16.3 controller. Group them into one PR. It runs the k3s upgrades, so it waits on the Dependency Dashboard.",
+      "matchPackageNames": ["rancher/system-upgrade-controller"],
+      "groupName": "system-upgrade-controller",
       "dependencyDashboardApproval": true
     }
   ]
