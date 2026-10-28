@@ -10,12 +10,13 @@ spec:
   serviceAccountName: system-upgrade
   concurrency: 1
   cordon: true
+  # Select on control-plane only: k3s 1.34 stops setting the `master` label.
   nodeSelector:
     matchExpressions:
       - { key: node-role.kubernetes.io/control-plane, operator: Exists }
-      - { key: node-role.kubernetes.io/master, operator: In, values: [ "true" ] }
   tolerations:
     - { key: node-role.kubernetes.io/control-plane, operator: Exists }
+    # The masters still carry a custom `master` NoSchedule taint (--node-taint).
     - { key: node-role.kubernetes.io/master, operator: Exists }
     - { key: node-role.kubernetes.io/etcd, operator: Exists }
   upgrade:
