@@ -36,9 +36,15 @@ spec:
       interval: 1m
   timeout: 15m
   values:
-    defaultSettings:
+    # Since Longhorn 1.8 the backup target is read from defaultBackupStore;
+    # under defaultSettings it was ignored and only survived from an older install.
+    defaultBackupStore:
       backupTarget: s3://${LONGHORN_S3_BUCKET_NAME}@${LONGHORN_S3_BUCKET_REGION}/
       backupTargetCredentialSecret: longhorn-s3bucket-secret
+    defaultSettings:
       createDefaultDiskLabeledNodes: true
       defaultDataPath: /mnt/longhorn/
       storageReservedPercentageForDefaultDisk: "0"
+      # Move volumes to the new engine automatically after a Longhorn upgrade,
+      # one live upgrade per node at a time. 0 leaves them on old engines.
+      concurrentAutomaticEngineUpgradePerNodeLimit: 1
