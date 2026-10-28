@@ -13,7 +13,7 @@ spec:
   chart:
     spec:
       chart: rancher
-      version: '>=2.10.0 <2.16.0' # 2.15 already needs k8s >=1.34; hold until k3s catches up
+      version: '>=2.10.0 <3.0.0'
       sourceRef:
         kind: HelmRepository
         name: rancher-stable
