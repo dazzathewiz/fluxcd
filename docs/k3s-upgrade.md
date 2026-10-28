@@ -19,7 +19,7 @@ steps, **one PR per step**:
 
 | Step | Target | Plan version |
 |---|---|---|
-| 1 | 1.31 | `v1.31.14+k3s1` |
+| 1 | 1.31 | `v1.31.14+k3s1` (done 2026-10-28) |
 | 2 | 1.32 | `v1.32.13+k3s1` (latest patch on 2026-10-28; re-check) |
 | 3 | 1.33 | `v1.33.13+k3s2` (re-check) |
 | 4 | 1.34 | `v1.34.12+k3s1` (re-check) |
@@ -38,10 +38,32 @@ Kustomization `system-upgrade-controller-plans` (not by `apps`):
   step waits for the `server` Plan to finish, so workers never run ahead of
   the control plane.
 
-A step is a change to `spec.version` in **both** Plans. Restarting the k3s
-agent does not stop running containers, so workloads (including the one pinned
-to k3sworker2 by its passthrough hardware) keep running through their node's
-upgrade. Nothing is evicted, so there is no drain order to plan.
+A step is a change to `spec.version` in **both** Plans. Nothing is evicted, so
+there is no drain order to plan, and pods (including the one pinned to
+k3sworker2 by its passthrough hardware) stay on their node. Whether their
+containers keep running depends on the containerd version the step brings:
+
+- **Same containerd, or a patch/minor bump:** restarting k3s leaves running
+  containers alone. A plain `k3s-node` restart during the 1.31 recovery caused
+  zero container restarts.
+- **A containerd major bump:** expect nearly every container to restart. The
+  1.31 step moved containerd 1.7 → 2.1 and restarted about 110 of 129
+  containers. Volumes detach and reattach with them, so Longhorn goes through
+  a degraded/rebuild cycle (see "During and after every step").
+
+| Step | containerd | Expected restarts |
+|---|---|---|
+| 1.31 (`v1.31.14+k3s1`) | 1.7.17 → 2.1.5 | nearly all (happened) |
+| 1.32 (`v1.32.13+k3s1`) | 2.1.5 → 2.1.5 | none expected |
+| 1.33 (`v1.33.13+k3s2`) | 2.1.5 → 2.2.5 | few or none expected |
+| 1.34 (`v1.34.12+k3s1`) | 2.2.5 → 2.2.7 | none expected |
+
+Versions are from each release's component table. Re-check them if the target
+patch changes.
+
+The nodes' k3s services are named by the k3s-ansible installer: workers run
+`k3s-node.service`, not `k3s-agent`. Confirm a node's unit with
+`systemctl list-units --type=service --all | grep -i k3s` before acting on it.
 
 **SUC "Ready but not advancing" is expected.** Both Plans report `Complete`
 with `latestVersion: v1.30.2-k3s2` because that is the version they ask for,
@@ -111,7 +133,15 @@ decision.
    the host. The scheduled snapshots (12-hourly, five kept per master) are
    **local only**: there is no S3 target, so they live on the disk of the
    node they protect. Also note which k3s binary version you came from. A
-   restore has to run on that version.
+   restore has to run on that version, so keep a copy on every node first
+   (repeat per node, with the version you're leaving):
+
+   ```bash
+   ssh <node> 'sudo cp /usr/local/bin/k3s /usr/local/bin/k3s-<current-version> && /usr/local/bin/k3s-<current-version> --version | head -1'
+   ```
+
+   Copy the token too, kept with the snapshot and out of both repos:
+   `/var/lib/rancher/k3s/server/token`.
 4. **Longhorn backup.** The `daily-backups` RecurringJob should have completed
    within the last 24h (`kubectl -n longhorn-system get backups.longhorn.io`,
    newest `Completed`), and every volume should be `healthy`.
@@ -149,6 +179,25 @@ go through the same cycle. Transient `dry-run failed ... unexpected EOF`
 errors on Flux applies are normal while apiservers restart. One
 `flux reconcile ks flux-system --with-source` clears them.
 
+Also expect, from the 1.31 step:
+
+- **Each upgrade Job shows one failed pod, then succeeds.** The first pod is
+  killed when k3s restarts underneath it on its own node, and the Job
+  retries. A pod in `Unknown` next to a `Completed` one is normal.
+- **The API address drops briefly** (under a minute) when the master holding
+  the kube-vip address restarts.
+- **On a containerd major bump, Longhorn goes degraded and recovers by itself.**
+  In 1.31, ten volumes went degraded, faulted or unknown, and auto-salvage
+  plus replica rebuilds had all twelve healthy about 12 minutes after the
+  last node. Don't intervene while rebuilds are progressing
+  (`kubectl -n longhorn-system get engines.longhorn.io` shows rebuild
+  percentages).
+- **A pod or two may not come back on its own.** Check every namespace, and
+  don't filter out `tools`: the 1.31 watcher did, and that hid InvenTree.
+  Look for pods stuck in `ContainerCreating` or `Terminating` more than ten
+  minutes after the last node finishes, then use "Recovering a stuck volume"
+  below.
+
 Done when all of these hold:
 
 - [ ] `kubectl get nodes` -- all six `Ready`, none `SchedulingDisabled`, all
@@ -167,16 +216,93 @@ Done when all of these hold:
       The admin client certificate is signed by the cluster CA, which an
       upgrade doesn't rotate. It was valid to 2027-08 on 2026-10-28.
 
+## Recovering a stuck volume
+
+Two failure shapes came up in the 1.31 step. In both, the Longhorn volume
+itself was healthy, and the node's view of it was stale. Diagnose with
+read-only commands first; each fix below is safe only when its check holds.
+
+### Pod stuck in `ContainerCreating`: `failed to close active crypto device ... still in use`
+
+The volume uses the encrypted StorageClass. A staging mount left on the node
+from before the restart still holds the LUKS device open, so the CSI driver
+can't close and reopen it. Seen on InvenTree's database in 1.31.
+
+On the node the pod is scheduled to (`<pvc>` is the `pvc-...` name from the
+event):
+
+```bash
+sudo dmsetup info <pvc> | grep "Open count"
+sudo findmnt -rn -S /dev/mapper/<pvc> -o TARGET
+sudo fuser -vm /dev/mapper/<pvc>
+```
+
+Proceed only if `findmnt` prints exactly one `.../globalmount` path and
+`fuser` shows nothing but `kernel mount` (no process). Then:
+
+```bash
+sudo umount <the globalmount path>
+sudo dmsetup info <pvc> | grep "Open count"
+```
+
+`Open count: 0` means it's free. kubelet's next mount retry (within a couple
+of minutes) reopens the device and starts the pod. A database starts with
+crash recovery, which is expected after the restart killed it.
+
+`fuser` showing a real process instead means something still runs against
+the volume. Stop there and investigate rather than unmounting.
+
+### Pod stuck `Terminating`, then `Multi-Attach error` on the replacement
+
+The old pod's phase is `Failed` with a deletion timestamp that never
+completes, so the StatefulSet can't replace it. Seen on InfluxDB v2 in 1.31.
+
+1. On the pod's node, confirm nothing is left:
+   `sudo findmnt -rn | grep <pvc>` (nothing) and no process for the app.
+2. Remove the API record:
+   `kubectl -n <ns> delete pod <pod> --grace-period=0 --force`.
+   This is safe only after step 1. The StatefulSet then creates a
+   replacement.
+3. If the replacement reports `Multi-Attach error` and the old node still
+   lists the volume
+   (`kubectl get node <node> -o json | jq '.status.volumesInUse'`),
+   kubelet's state is stale. Restart the agent on the old node:
+   `sudo systemctl restart k3s-node`. kubelet rebuilds its state from what's
+   actually mounted, releases the volume, and the replacement attaches. In
+   1.31 this caused no container restarts on that node.
+
+A force-deleted pod isn't Flux drift: the StatefulSet that owns it is
+unchanged.
+
+InfluxDB v2 has a PodDisruptionBudget allowing zero disruptions. It played no
+part here: a PDB only gates evictions (a drain), and these Plans don't drain.
+It matters only if `drain` is ever added to the Plans, because a drain would
+then block on InfluxDB v2's node indefinitely.
+
 ## Per-step notes
 
 What was checked against the live cluster on 2026-10-28 is in "Verified" at
 the end. Everything below that isn't there is from release notes and support
 matrices.
 
-### 1.30 → 1.31
+### 1.30 → 1.31 (done 2026-10-28)
 
-No Kubernetes API removals. k3s moves containerd within 1.7. No chart in the
-cluster declares a `kubeVersion` that excludes 1.31.
+No Kubernetes API removals, and no chart excluded 1.31. **containerd moved
+1.7.17 → 2.1.5.** The 1.33.0 release notes introduce containerd 2.0, so this
+doc originally placed the change at 1.33, but later 1.31 patches carry it.
+
+What happened, in UTC:
+
+- 06:38–06:52: rollout, masters then workers. About 110 container restarts.
+  The API address dropped for under a minute.
+- 07:04: Longhorn healed all twelve volumes by itself.
+- 07:18 and 07:21: InvenTree's database and InfluxDB v2 needed the two
+  recoveries in "Recovering a stuck volume". Postgres crash recovery was
+  clean.
+- 07:22: everything Ready.
+
+Any custom containerd config template would have broken at this step. None
+did: all six nodes came up on containerd 2.1.
 
 ### 1.31 → 1.32
 
@@ -190,10 +316,11 @@ cluster declares a `kubeVersion` that excludes 1.31.
 
 ### 1.32 → 1.33
 
-- **containerd 2.0.** A custom `config.toml.tmpl` on any node has to be
-  migrated to `config-v3.toml.tmpl` first. **Not verified.** Nodes are
-  provisioned by a separate k3s-ansible repo. Check each node for
-  `/var/lib/rancher/k3s/agent/etc/containerd/config*.tmpl` before this step.
+- **containerd 2.1 → 2.2.** The containerd 2 migration already happened at
+  1.31, and every node runs 2.1 with whatever config it has, so the
+  `config-v3.toml.tmpl` concern from the 1.33.0 release notes is settled.
+  This step is a minor containerd bump, so few or no container restarts are
+  expected.
 - The `Endpoints` API is deprecated, with warnings only and no removal
   scheduled. Traefik v2 (chart 23.x) still reads it. This doesn't force the
   Traefik v3 migration.
@@ -239,7 +366,9 @@ to this one change. In order of preference:
    human, and it hasn't been tested on this cluster:
    1. Stop SUC from re-applying the step:
       `flux suspend kustomization system-upgrade-controller-plans`.
-   2. Stop k3s on all three servers.
+   2. Stop k3s on all three servers. Workers run `k3s-node.service`.
+      Confirm the servers' unit name with
+      `systemctl list-units --type=service --all | grep -i k3s`.
    3. On one server, put back the k3s binary you came from, then run
       `k3s server --cluster-reset --cluster-reset-restore-path=<pre-step snapshot>`.
    4. Start k3s on it. On the other two servers, clear
@@ -292,11 +421,20 @@ Assumed, not verified:
 - Existing nodes keep the `master` label after 1.34.
 - system-upgrade-controller v0.16.3 works on 1.31 to 1.34 (no published
   support range).
-- No custom containerd config template on any node (matters at 1.33).
 - The etcd restore procedure above. It has never been exercised here.
 
 Handed off to a human: the pre-step etcd snapshot and off-host copy, merging
 each step, and watching each rollout.
+
+Verified by the 1.31 step itself (2026-10-28):
+
+- The Plans roll masters, then workers, one at a time, and the
+  admin kubeconfig keeps working through the masters' restarts.
+- Rancher didn't interfere: no Plans appeared outside `tools`.
+- The installed Flux, the system-upgrade-controller and every HelmRelease
+  ran on 1.31 without changes.
+- Longhorn recovers from a cluster-wide restart by itself, except for the
+  two stale-node-state cases in "Recovering a stuck volume".
 
 ## From the homelab backlog
 
