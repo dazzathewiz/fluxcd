@@ -20,6 +20,16 @@
       "/cluster/.+\\.ya?ml$/"
     ]
   },
+  "customManagers": [
+    {
+      "description": "k3s versions in the system-upgrade-controller Plans, marked by a `# renovate:` comment on the line above `version:`. Without this manager the comments were ignored and k3s was never bumped.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^apps/tools/system-upgrade-controller/plans/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*version: (?<currentValue>\\S+)"
+      ]
+    }
+  ],
   "packageRules": [
     {
       "description": "A Postgres major needs a dump and restore; the data directory isn't forward-compatible. Hold for approval on the Dependency Dashboard rather than opening a routine PR.",
@@ -32,6 +42,14 @@
       "description": "infrastructure/experiments/ holds time-boxed spikes that are expected to be deleted, not maintained. Pinned versions there are part of the experiment's record of what was tested, so bumping them is noise. Kept when no experiment is open, so the next one is excluded without anyone remembering to add it.",
       "matchFileNames": ["infrastructure/experiments/**"],
       "enabled": false
+    },
+    {
+      "description": "k3s can't skip a Kubernetes minor, so offer one PR per minor. The regex versioning keeps the +k3sN suffix significant (semver ignores build metadata, so a +k3s2 respin would be missed) and excludes release candidates. Merging starts a node-by-node rollout, so each bump waits on the Dependency Dashboard until someone is ready to watch it.",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["k3s-io/k3s"],
+      "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\+k3s(?<build>\\d+)$",
+      "separateMultipleMinor": true,
+      "dependencyDashboardApproval": true
     }
   ]
 }
