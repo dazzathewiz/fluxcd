@@ -11,17 +11,11 @@
   },
   "flux": {
     "managerFilePatterns": [
-      "/cluster/.+\\.ya?ml$/",
       "/^infrastructure/tailscale/.+\\.ya?ml$/",
       "/^infrastructure/controllers/longhorn\\.yaml$/",
       "/^infrastructure/controllers/rook-ceph\\.yaml$/",
       "/^infrastructure/controllers/rancher\\.yaml$/",
       "/^infrastructure/configs/rancher\\.yaml$/"
-    ]
-  },
-  "helm-values": {
-    "managerFilePatterns": [
-      "/cluster/.+\\.ya?ml$/"
     ]
   },
   "customManagers": [
