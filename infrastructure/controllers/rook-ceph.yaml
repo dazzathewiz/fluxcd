@@ -17,7 +17,8 @@ spec:
   chart:
     spec:
       chart: rook-ceph
-      version: 1.x.x
+      # 1.21.1+ CRDs use CEL format rules that k8s 1.30 rejects; unpin after the k3s upgrade.
+      version: 1.21.0
       sourceRef:
         kind: HelmRepository
         name: rook-release
