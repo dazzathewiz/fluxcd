@@ -19,7 +19,10 @@ spec:
         name: rancher-stable
         namespace: flux-system
       interval: 1m
-  timeout: 5m
+  # The 2.15.3 upgrade hit a 5m timeout with the 3-replica Deployment still
+  # InProgress. That left the release Stalled (RetriesExceeded) after the
+  # rollout finished, until a forced reconcile.
+  timeout: 15m
   values:
     hostname: rancher.inf.${PERSONAL_DOMAIN}
     ingress:
