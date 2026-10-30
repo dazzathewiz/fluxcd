@@ -333,9 +333,7 @@ it's cargo-culted from the existing apps.
   for a dated account of an incident too: "one worker had no blacklist" carries
   the lesson, and a hostname only ages. A fact that does depend on one node,
   such as hardware passed through to it, is stated as the property ("the node
-  with the passthrough device"), so it stays true after a rebuild. The
-  hostnames already in `docs/k3s-upgrade.md`'s 2026-10 record predate this
-  rule. Don't copy them as a pattern.
+  with the passthrough device"), so it stays true after a rebuild.
 
 ## Verification
 
