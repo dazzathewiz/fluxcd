@@ -11,10 +11,9 @@
   },
   "flux": {
     "managerFilePatterns": [
-      "/^infrastructure/tailscale/.+\\.ya?ml$/",
-      "/^infrastructure/controllers/longhorn\\.yaml$/",
-      "/^infrastructure/controllers/rancher\\.yaml$/",
-      "/^infrastructure/configs/rancher\\.yaml$/"
+      "/^infrastructure/.+\\.ya?ml$/",
+      "/^apps/.+\\.ya?ml$/",
+      "/^clusters/home/helm-repositories/.+\\.ya?ml$/"
     ]
   },
   "customManagers": [
@@ -67,6 +66,18 @@
       "matchDatasources": ["helm"],
       "matchPackageNames": ["longhorn", "rancher"],
       "separateMultipleMinor": true
+    },
+    {
+      "description": "Every Helm chart is pinned to the version it runs. A chart major usually changes values, CRDs or behaviour, so it waits on the Dependency Dashboard until someone has read its upgrade notes. Minors and patches open PRs directly (Longhorn's minors are held by the next rule).",
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Traefik 24+ is Traefik v3, a separate planned migration (middleware and CRD changes). Hold the chart on 23.x until that migration lifts this cap.",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["traefik"],
+      "allowedVersions": "<24.0.0"
     },
     {
       "description": "A Longhorn minor (or major) upgrade changes the storage system and can't be rolled back, so it waits on the Dependency Dashboard until someone is ready to watch it. Patches still open PRs directly.",
