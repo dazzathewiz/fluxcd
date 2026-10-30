@@ -306,14 +306,17 @@ it's cargo-culted from the existing apps.
   couldn't detect a version scheme for that image. Don't generalize from it.
 - Renovate needs no per-image annotation for a standard tag — its generic
   `kubernetes` manager autodetects `image:` fields in any `*.yaml` under scope.
-- **Renovate doesn't manage HelmRelease chart versions by default.** The `flux`
-  manager's pattern `/cluster/.+\.ya?ml$/` matches neither `clusters/` nor
-  `infrastructure/`, so it only sees `gotk-components.yaml`. A chart is managed
-  only if its file's path is added to `flux.managerFilePatterns` in
-  `renovate.json`. Today that's `infrastructure/tailscale/` plus the exact-pinned
-  Longhorn and Rancher files. The other charts use ranges or caps
-  (e.g. Traefik `<24.0.0`), so review those before widening the pattern. Check what Renovate actually extracts with a local
-  `renovate --platform=local --dry-run=extract` (needs Node 24).
+- **Pin every HelmRelease to an exact chart version** (`version: 1.2.3`, never a
+  range like `1.*` or `>=1.0.0`). A range upgrades the chart on its own the next
+  time the repository index changes, with no PR and no review. The `flux`
+  manager's `managerFilePatterns` in `renovate.json` cover `infrastructure/`,
+  `apps/` and `clusters/home/helm-repositories/`, so a pinned chart in any of
+  them gets Renovate PRs. Its HelmRepository must be in one of those paths too.
+  The default pattern (`/cluster/.+\.ya?ml$/`) matched none of them. Chart
+  majors wait on the Dependency Dashboard, and Traefik is held below 24 (v3)
+  until its migration. Check what Renovate actually extracts with a local
+  `renovate --platform=local --dry-run=extract` (needs Node 24; the report is
+  written even when it warns about the Node version).
 
 ## Documentation
 

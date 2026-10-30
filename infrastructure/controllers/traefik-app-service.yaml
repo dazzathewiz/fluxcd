@@ -3,8 +3,8 @@
 # (443) and its HTTP-to-HTTPS redirect `appweb` (80), and nothing else.
 #
 # This is a standalone Service rather than a second entry in the Traefik chart's
-# own `service:` block, because the pinned chart (>=22.1.0 <24.0.0) supports only
-# one Service per release. It selects the same Traefik pods; only the target port
+# own `service:` block, because the pinned chart (23.x, held below 24 until the
+# Traefik v3 migration) supports only one Service per release. It selects the same Traefik pods; only the target port
 # differs, so nothing about the existing address changes.
 #
 # The address is LB_TRAEFIK_APP from cluster-config (a plain ConfigMap, like the
