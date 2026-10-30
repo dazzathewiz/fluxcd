@@ -31,7 +31,7 @@ Three good references:
 
 ## Repo layout
 
-`apps/`, `cluster/`, `cluster-config/`, `clusters/`, `docs/`, `global/`,
+`apps/`, `cluster-config/`, `clusters/`, `docs/`, `global/`,
 `infrastructure/`, `orchestration/`. Simple apps live at `apps/<group>/<app>/` and are
 picked up by the single top-level `apps` Kustomization
 ([orchestration/apps.yaml](orchestration/apps.yaml)) — no per-app Flux Kustomization
@@ -92,6 +92,17 @@ Validation is local and manual — see below.
   apply/delete creates or removes state Flux doesn't know about — the exact drift
   this cluster exists to avoid.
 - Revert the commit, not the repo.
+- **Two upgrades are the exception: don't `git revert` them.**
+  - **A k3s version bump.** These change `spec.version` in the
+    system-upgrade-controller Plans and arrive as Renovate PRs held on the
+    Dependency Dashboard. Reverting one installs the older k3s binary over an
+    etcd datastore the newer apiserver has already written, which is an
+    unsupported downgrade.
+  - **A Longhorn chart upgrade.** Longhorn can't downgrade either.
+
+  Fix either one forward. If that fails, restore from an etcd snapshot or a
+  Longhorn backup. The procedure, the pre-step checks and the watch-it-run
+  requirement are in [docs/k3s-upgrade.md](docs/k3s-upgrade.md).
 - **Moving objects between Flux Kustomizations is the one approved manual step.**
   For example, graduating an experiment. When a Kustomization is deleted, it
   garbage-collects whatever still carries its owner labels, and that races the
@@ -234,6 +245,14 @@ it's cargo-culted from the existing apps.
   that doesn't explicitly opt out. A new PVC is backed up automatically — don't
   invent a labelling scheme. Given the reclaim-policy gap above, these backups are
   the actual safety net against data loss, not the PVC spec.
+- **Every node needs a multipath blacklist, and it isn't in Git.** Longhorn
+  attaches volumes as iSCSI `sd*` disks. Without a blacklist in
+  `/etc/multipath.conf`, `multipathd` claims them, and a pod stuck in
+  `ContainerCreating` with a `luksOpen` "in use" error is the symptom. It's set
+  by hand on each node today. A missing blacklist shows up only when a volume
+  first attaches to that node, for example during the cordon-and-reschedule
+  check under Verification. Diagnosis and fix:
+  [docs/k3s-upgrade.md](docs/k3s-upgrade.md), "Recovering a stuck volume".
 
 ## Secrets
 
@@ -289,9 +308,9 @@ it's cargo-culted from the existing apps.
   manager's pattern `/cluster/.+\.ya?ml$/` matches neither `clusters/` nor
   `infrastructure/`, so it only sees `gotk-components.yaml`. A chart is managed
   only if its file's path is added to `flux.managerFilePatterns` in
-  `renovate.json`. Today that's only `infrastructure/tailscale/`. Most charts here
-  use ranges or caps (e.g. Longhorn `<1.13.0`), so review those before widening the
-  pattern. Check what Renovate actually extracts with a local
+  `renovate.json`. Today that's `infrastructure/tailscale/` plus the exact-pinned
+  Longhorn, rook-ceph and Rancher files. The other charts use ranges or caps
+  (e.g. Traefik `<24.0.0`), so review those before widening the pattern. Check what Renovate actually extracts with a local
   `renovate --platform=local --dry-run=extract` (needs Node 24).
 
 ## Documentation
