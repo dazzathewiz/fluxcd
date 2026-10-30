@@ -54,17 +54,17 @@ end of the chain, with **nothing depending on it**. Reference:
 (`tailscale-operator` → `tailscale-connector`, both after `infra-configs`). Two
 rules follow from it:
 
-- **A manifest can live under `apps/` without `apps` applying it.**
-  `apps/tools/inventory/app-zone-route/` sits next to the app it serves, but
-  inventory's `kustomization.yaml` deliberately doesn't list it. Its CRD comes
-  from the Tailscale operator, and an unknown kind in the `apps` render fails
-  every app. Don't "fix" it by adding it to the list.
+- **Side-branch manifests live outside `apps/`.** The Tailscale Connectors are
+  in `infrastructure/tailscale-connectors/`, each applied by its own
+  Kustomization. Their CRD comes from the Tailscale operator, and an unknown
+  kind in the `apps` render fails every app. Don't put one under `apps/`, even
+  unlisted: one edit adding it to a `kustomization.yaml` wedges every app.
 - **The side branch's Flux Kustomization lives in `clusters/home/`, never in
   `apps/`.** The grafana `app.yaml` shape works only for things that can't fail
   independently. `apps` has `wait: true` and would wait on a child Kustomization
   that depends on something outside the chain.
 
-`docs/app-zone.md` walks through the cold-rebuild order for the Tailscale Kustomizations.
+`docs/tailscale.md` walks through the cold-rebuild order for the Tailscale Kustomizations.
 There are two Connectors, `app-zone-route` (`tag:k3s`) and `inf-zone-route`
 (`tag:k3s-inf`); never merge their tags, since route approval is scoped per tag.
 

@@ -1,5 +1,5 @@
 # Tailscale routes into the .app and .inf zones. Nothing may depend on these.
-# Ordering and placement: docs/app-zone.md.
+# Ordering and placement: docs/tailscale.md.
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -46,7 +46,7 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
-  path: ./apps/tools/inventory/app-zone-route
+  path: ./infrastructure/tailscale-connectors/app-zone-route
   postBuild:
     substitute: {}
     substituteFrom:

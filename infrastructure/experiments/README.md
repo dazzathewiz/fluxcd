@@ -22,4 +22,4 @@ Short-lived spikes that are meant to be deleted, not maintained. Rules:
 
 | Directory | Question | Status |
 |---|---|---|
-| `tailscale-app-zone/` | Can a personal device reach the `.app` zone through a Tailscale router running in k3s instead of on the hypervisors? | graduated: `docs/app-zone.md` |
+| `tailscale-app-zone/` | Can a personal device reach the `.app` zone through a Tailscale router running in k3s instead of on the hypervisors? | graduated: `docs/tailscale.md` |
