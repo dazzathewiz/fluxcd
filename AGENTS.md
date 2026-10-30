@@ -311,7 +311,7 @@ it's cargo-culted from the existing apps.
   `infrastructure/`, so it only sees `gotk-components.yaml`. A chart is managed
   only if its file's path is added to `flux.managerFilePatterns` in
   `renovate.json`. Today that's `infrastructure/tailscale/` plus the exact-pinned
-  Longhorn, rook-ceph and Rancher files. The other charts use ranges or caps
+  Longhorn and Rancher files. The other charts use ranges or caps
   (e.g. Traefik `<24.0.0`), so review those before widening the pattern. Check what Renovate actually extracts with a local
   `renovate --platform=local --dry-run=extract` (needs Node 24).
 

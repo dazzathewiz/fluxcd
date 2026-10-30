@@ -13,7 +13,6 @@
     "managerFilePatterns": [
       "/^infrastructure/tailscale/.+\\.ya?ml$/",
       "/^infrastructure/controllers/longhorn\\.yaml$/",
-      "/^infrastructure/controllers/rook-ceph\\.yaml$/",
       "/^infrastructure/controllers/rancher\\.yaml$/",
       "/^infrastructure/configs/rancher\\.yaml$/"
     ]
@@ -51,6 +50,11 @@
       "enabled": false
     },
     {
+      "description": ".archive/ holds configuration that's no longer deployed. Bumping versions there is noise (it produced a Ceph image PR after Rook itself was unused).",
+      "matchFileNames": [".archive/**"],
+      "enabled": false
+    },
+    {
       "description": "k3s can't skip a Kubernetes minor, so offer one PR per minor. The regex versioning keeps the +k3sN suffix significant (semver ignores build metadata, so a +k3s2 respin would be missed) and excludes release candidates. Merging starts a node-by-node rollout, so each bump waits on the Dependency Dashboard until someone is ready to watch it.",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["k3s-io/k3s"],
@@ -59,15 +63,15 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Longhorn, Rook and Rancher each support upgrading one minor at a time, so offer one PR per minor instead of jumping to the newest. These charts used to float and each outran the cluster's Kubernetes; exact pins plus PRs make every upgrade visible.",
+      "description": "Longhorn and Rancher each support upgrading one minor at a time, so offer one PR per minor instead of jumping to the newest. These charts used to float and each outran the cluster's Kubernetes; exact pins plus PRs make every upgrade visible.",
       "matchDatasources": ["helm"],
-      "matchPackageNames": ["longhorn", "rook-ceph", "rancher"],
+      "matchPackageNames": ["longhorn", "rancher"],
       "separateMultipleMinor": true
     },
     {
-      "description": "A Longhorn or Rook minor (or major) upgrade changes the storage system and can't be rolled back, so it waits on the Dependency Dashboard until someone is ready to watch it. Patches still open PRs directly.",
+      "description": "A Longhorn minor (or major) upgrade changes the storage system and can't be rolled back, so it waits on the Dependency Dashboard until someone is ready to watch it. Patches still open PRs directly.",
       "matchDatasources": ["helm"],
-      "matchPackageNames": ["longhorn", "rook-ceph"],
+      "matchPackageNames": ["longhorn"],
       "matchUpdateTypes": ["minor", "major"],
       "dependencyDashboardApproval": true
     },

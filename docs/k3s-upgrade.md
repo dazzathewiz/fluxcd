@@ -464,7 +464,8 @@ did: all six nodes came up on containerd 2.1.
   run on 1.34 before merge, and `infra-controllers` applied them (the step
   that failed on 1.30). Rook currently manages no `CephCluster` and backs no
   PV (the external-cluster config is commented out), so its 1.21.1 changes
-  had nothing to act on.
+  had nothing to act on. Rook was removed after the upgrade, since nothing
+  used it. The external-cluster guide moved to `.archive/`.
 - **Rancher (#217)** → range `<3.0.0`, which still resolves to 2.15.2: no 2.16
   is published in `stable` or `latest`. No new Helm revision.
 - **Longhorn (#215)** → 1.13.0, see below.

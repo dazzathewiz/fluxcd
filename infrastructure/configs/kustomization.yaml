@@ -10,6 +10,5 @@ resources:
   - rancher.yaml
   - longhorn.yaml
   - intel.yaml
-  # - rook-ceph-external
   - reloader-helmrelease.yaml
   - claude-mcp-view.yaml
