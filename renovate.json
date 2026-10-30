@@ -111,6 +111,17 @@
       "matchPackageNames": ["rancher/system-upgrade-controller"],
       "groupName": "system-upgrade-controller",
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Portainer agent must match the CE 2.x server.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["portainer/agent"],
+      "allowedVersions": "<3.0.0"
+    },
+    {
+      "description": "Upgrade Portainer server and agent together.",
+      "matchPackageNames": ["portainer", "portainer/agent"],
+      "groupName": "portainer"
     }
   ]
 }
