@@ -226,15 +226,19 @@ Done when all of these hold:
 - [ ] `kubectl -n longhorn-system get volumes.longhorn.io` -- every volume
       `healthy`, none `degraded` or `faulted`.
 - [ ] `kubectl get pods -A | grep -vE 'Running|Completed'` -- nothing.
+- [ ] No stale encrypted mappings on any node. See "Leftover encrypted
+      mappings" below. A step that restarts containerd moves volumes, and a
+      mapping left on the old node breaks the next pod scheduled there.
 - [ ] `kubectl` still works through the VIP after the masters restart.
       The admin client certificate is signed by the cluster CA, which an
       upgrade doesn't rotate. It was valid to 2027-08 on 2026-10-28.
 
 ## Recovering a stuck volume
 
-Two failure shapes came up in the 1.31 step. In both, the Longhorn volume
-itself was healthy, and the node's view of it was stale. Diagnose with
-read-only commands first; each fix below is safe only when its check holds.
+Four failure shapes came up. In each, the Longhorn volume itself was
+healthy, and the node's view of it was stale or claimed by something else.
+Diagnose with read-only commands first; each fix below is safe only when its
+check holds.
 
 ### Pod stuck in `ContainerCreating`: `failed to close active crypto device ... still in use`
 
@@ -292,6 +296,84 @@ InfluxDB v2 has a PodDisruptionBudget allowing zero disruptions. It played no
 part here: a PDB only gates evictions (a drain), and these Plans don't drain.
 It matters only if `drain` is ever added to the Plans, because a drain would
 then block on InfluxDB v2's node indefinitely.
+
+### Pod stuck in `ContainerCreating`: `luksOpen` says the device is in use
+
+`multipathd` has claimed the disk Longhorn attaches to the node. Longhorn
+presents each attached volume as an iSCSI disk (`/dev/sdX`, vendor
+`IET,VIRTUAL-DISK`). Without a blacklist, `multipathd` wraps it in an
+`mpathX` map, and `cryptsetup luksOpen` then can't open the disk underneath.
+There's no stale encrypted mapping for the volume on the node, which tells
+this apart from the case above.
+
+Seen on Tautulli and Grafana after the Longhorn 1.13 upgrade, not during a
+k3s step. Both were on the one worker whose `/etc/multipath.conf` had no
+blacklist. The other workers had one, set up by hand.
+
+On the node:
+
+```bash
+systemctl is-active multipathd
+sudo multipath -ll
+```
+
+Any `mpath*` map with vendor `IET,VIRTUAL-DISK` is a Longhorn volume. Compare
+its size with the stuck volumes. The node's root disk isn't multipathed on
+these VMs, so blacklisting every `sd*` device doesn't touch it. Check that
+with `multipath -ll` first on any new node type.
+
+Fix, as Longhorn's documentation recommends:
+
+```bash
+printf 'blacklist {\n    devnode "^sd[a-z0-9]+"\n}\n' | sudo tee -a /etc/multipath.conf
+sudo systemctl restart multipathd
+sudo multipath -f <mpathX>   # once per Longhorn map
+sudo multipath -ll           # nothing left
+```
+
+Flushing a map only removes the multipath layer. The data is on the disk
+underneath and isn't touched. kubelet's next mount retry starts the pod.
+
+**The blacklist isn't in Git.** Nothing in either repo puts it on a node,
+so a rebuilt or new node will hit this the first time a volume attaches to
+it. It belongs in node provisioning (see "Open follow-ups").
+
+### Leftover encrypted mappings
+
+When a volume moves to another node, the encrypted (`dm-crypt`) mapping can
+stay behind on the old one. It does no harm until the volume is scheduled
+back to that node. The CSI driver then can't open a mapping that already
+exists, and the pod sticks in `ContainerCreating`. After the 1.31 step, one
+worker still held mappings for three volumes (both InfluxDB volumes and
+Mosquitto) that had moved to other workers. They were found and closed after
+the upgrade was done, before any of those pods came back to that worker.
+
+After a step that restarts containerd, compare each node's mappings with
+what Longhorn has attached to it:
+
+```bash
+# on each node
+sudo dmsetup ls --target crypt
+# from a workstation
+kubectl -n longhorn-system get volumes.longhorn.io \
+  -o custom-columns=NAME:.metadata.name,NODE:.status.currentNodeID
+```
+
+Every `pvc-...` mapping on a node should belong to a volume attached to that
+node. For each one that doesn't:
+
+```bash
+sudo dmsetup info <pvc> | grep "Open count"
+sudo dmsetup deps <pvc>
+sudo findmnt -rn -S /dev/mapper/<pvc> -o TARGET
+sudo fuser -vm /dev/mapper/<pvc>
+```
+
+- **`Open count: 0`, no mount, no process:** close it with
+  `sudo cryptsetup luksClose <pvc>`.
+- **`Open count: 1`, a single `globalmount`, only `kernel mount` from
+  `fuser`:** unmount it first, as in the first case above, then close it.
+- **A real process in `fuser`:** stop and investigate.
 
 ## Per-step notes
 
@@ -571,6 +653,9 @@ written down before this plan. Here's where each one landed:
 - **Renovate coverage for the other infrastructure charts** (Traefik,
   cert-manager, external-secrets and others), after reviewing their ranges
   per `AGENTS.md`.
+- **Provisioning repo: the multipath blacklist.** Every k3s node needs the
+  `/etc/multipath.conf` blacklist from "Recovering a stuck volume". Today it's
+  set by hand on each node, so a rebuilt or new node comes up without it.
 - **Provisioning repo (k3s-ansible):** check whether it pins a k3s version
   for new nodes, and consider moving the masters' custom taint from
   `node-role.kubernetes.io/master` to `node-role.kubernetes.io/control-plane`.
