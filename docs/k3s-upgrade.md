@@ -306,10 +306,9 @@ presents each attached volume as an iSCSI disk (`/dev/sdX`, vendor
 There's no stale encrypted mapping for the volume on the node, which tells
 this apart from the case above.
 
-Seen on Tautulli and Grafana on k3sworker3 after the Longhorn 1.13 upgrade,
-not during a k3s step. k3sworker3 was the one node whose
-`/etc/multipath.conf` had no blacklist. The other two workers had one, set up
-by hand.
+Seen on Tautulli and Grafana after the Longhorn 1.13 upgrade, not during a
+k3s step. Both were on the one worker whose `/etc/multipath.conf` had no
+blacklist. The other workers had one, set up by hand.
 
 On the node:
 
@@ -344,10 +343,10 @@ it. It belongs in node provisioning (see "Open follow-ups").
 When a volume moves to another node, the encrypted (`dm-crypt`) mapping can
 stay behind on the old one. It does no harm until the volume is scheduled
 back to that node. The CSI driver then can't open a mapping that already
-exists, and the pod sticks in `ContainerCreating`. After the 1.31 step,
-k3sworker2 still held mappings for three volumes (both InfluxDB volumes and
+exists, and the pod sticks in `ContainerCreating`. After the 1.31 step, one
+worker still held mappings for three volumes (both InfluxDB volumes and
 Mosquitto) that had moved to other workers. They were found and closed after
-the upgrade was done, before any of those pods came back to k3sworker2.
+the upgrade was done, before any of those pods came back to that worker.
 
 After a step that restarts containerd, compare each node's mappings with
 what Longhorn has attached to it:
@@ -656,7 +655,7 @@ written down before this plan. Here's where each one landed:
   per `AGENTS.md`.
 - **Provisioning repo: the multipath blacklist.** Every k3s node needs the
   `/etc/multipath.conf` blacklist from "Recovering a stuck volume". Today it's
-  set by hand only, and k3sworker3 didn't have it.
+  set by hand on each node, so a rebuilt or new node comes up without it.
 - **Provisioning repo (k3s-ansible):** check whether it pins a k3s version
   for new nodes, and consider moving the masters' custom taint from
   `node-role.kubernetes.io/master` to `node-role.kubernetes.io/control-plane`.
