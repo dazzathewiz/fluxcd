@@ -64,7 +64,9 @@ rules follow from it:
   independently. `apps` has `wait: true` and would wait on a child Kustomization
   that depends on something outside the chain.
 
-`docs/app-zone.md` walks through the cold-rebuild order for the Tailscale pair.
+`docs/app-zone.md` walks through the cold-rebuild order for the Tailscale Kustomizations.
+There are two Connectors, `app-zone-route` (`tag:k3s`) and `inf-zone-route`
+(`tag:k3s-inf`); never merge their tags, since route approval is scoped per tag.
 
 ## No CI
 

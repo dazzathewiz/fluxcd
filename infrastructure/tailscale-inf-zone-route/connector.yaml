@@ -1,0 +1,16 @@
+---
+# Host routes to the k3s API VIP and the .inf zone address. Approved by the
+# tailnet policy for tag:k3s-inf only; never share a tag with app-zone-route.
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: inf-zone-route
+spec:
+  hostnamePrefix: k3s-inf-zone-route
+  tags:
+    - "tag:k3s-inf"
+  subnetRouter:
+    advertiseRoutes:
+      # kube-vip VIP (k3s API, :6443). No cluster var exists for it.
+      - "10.10.1.200/32"
+      - "${LB_TRAEFIK}/32"
