@@ -97,13 +97,14 @@ the app it serves, reviewed and reverted like anything else.
 |---|---|---|---|---|
 | `tailscale-operator` | `infrastructure/tailscale/` | Namespace, ExternalSecret `operator-oauth`, HelmRepository, HelmRelease | `infra-configs` | `true` |
 | `tailscale-connector` | `apps/tools/inventory/app-zone-route/` | Connector `app-zone-route` | `tailscale-operator` | `false` |
+| `tailscale-inf-connector` | `infrastructure/tailscale-connectors/inf-zone-route/` | Connector `inf-zone-route` | `tailscale-operator` | `false` |
 
-Both are defined in
+All three are defined in
 [clusters/home/tailscale.yaml](../clusters/home/tailscale.yaml). **Nothing may
-depend on either.**
+depend on any of them.**
 
-- **Tags.** The operator's own device is `tag:k3s-operator`. The router device
-  is `tag:k3s`, set on the Connector and as the chart's
+- **Tags.** The operator's own device is `tag:k3s-operator`. The `.app` router
+  is `tag:k3s`, set on its Connector and as the chart's
   `proxyConfig.defaultTags` fallback. The chart defaults (`tag:k8s-operator`,
   `tag:k8s`) are overridden; the policy matches these names as plain strings.
 - **Credential.** The chart uses a pre-existing Secret `operator-oauth` (keys
@@ -154,10 +155,11 @@ flux-system
          └─ infra-configs      (ClusterSecretStore onepassword-k3s)
              ├─ apps, cluster-orchestration
              └─ tailscale-operator   (Secret operator-oauth, then chart + CRDs; wait)
-                 └─ tailscale-connector   (Connector; no wait)
+                 ├─ tailscale-connector       (Connector app-zone-route; no wait)
+                 └─ tailscale-inf-connector   (Connector inf-zone-route; no wait)
 ```
 
-The `tailscale-*` pair hangs off the end of the chain. If the credential item is
+The `tailscale-*` Kustomizations hang off the end of the chain. If the credential item is
 missing or the tailnet is unreachable, they stay not-Ready and nothing else
 notices.
 
@@ -199,6 +201,30 @@ this design, which was to get the route off hand-maintained host lists on three
 hosts. Not done; decide deliberately. Check
 that no hypervisor advertises a prefix that *covers* the `/32` either, or
 traffic silently falls back to it.
+
+### The `.inf` routes: a separate Connector
+
+A second Connector, `inf-zone-route`
+([infrastructure/tailscale-connectors/inf-zone-route/](../infrastructure/tailscale-connectors/inf-zone-route/)),
+advertises two host routes for an operator workstation off-LAN: the k3s API
+VIP (`10.10.1.200/32`, port 6443) and the `.inf` address (`10.10.1.100/32`).
+It is infrastructure, not an app, so it doesn't sit under `apps/`, and it is
+outside `infrastructure/tailscale/` so the operator's `wait: true`
+Kustomization doesn't apply it.
+
+- **Separate Connector, separate tag.** `app-zone-route` is `tag:k3s`;
+  `inf-zone-route` is `tag:k3s-inf`. Route auto-approval is scoped per tag, so
+  a shared tag would let either router get the other's routes approved. Never
+  merge them.
+- **Restricted devices get no grant to the `.inf` routes.** Only the `.app`
+  `/32` is reachable from them. The `.inf` routes are for the operator
+  workstation alone.
+- **Policy entries required** (in the private policy record): a `tagOwners`
+  entry for `tag:k3s-inf` owned by `tag:k3s-operator`, and `autoApprovers`
+  `routes` entries approving `10.10.1.200/32` and `10.10.1.100/32` for
+  `tag:k3s-inf` only. Without them the router comes up, cannot take the tag
+  or reports unapproved routes, and carries no traffic.
+- **Host routes only.** Never widen these to the `/24`.
 
 ## Gotchas
 

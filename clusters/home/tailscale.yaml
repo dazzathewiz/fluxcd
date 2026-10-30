@@ -1,4 +1,4 @@
-# Tailscale route into the .app zone. Nothing may depend on these.
+# Tailscale routes into the .app and .inf zones. Nothing may depend on these.
 # Ordering and placement: docs/app-zone.md.
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -47,6 +47,37 @@ spec:
     kind: GitRepository
     name: flux-system
   path: ./apps/tools/inventory/app-zone-route
+  postBuild:
+    substitute: {}
+    substituteFrom:
+      - kind: ConfigMap
+        name: global-config
+      - kind: Secret
+        name: global-secrets
+      - kind: ConfigMap
+        name: cluster-config
+      - kind: Secret
+        name: cluster-secrets
+  prune: true
+  # kstatus ignores the Connector's ConnectorReady condition, so waiting proves nothing.
+  wait: false
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tailscale-inf-connector
+  namespace: flux-system
+spec:
+  # The operator chart installs the Connector CRD.
+  dependsOn:
+    - name: tailscale-operator
+  interval: 1h
+  retryInterval: 5m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/tailscale-connectors/inf-zone-route
   postBuild:
     substitute: {}
     substituteFrom:
