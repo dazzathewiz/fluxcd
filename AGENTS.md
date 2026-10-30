@@ -325,6 +325,17 @@ it's cargo-culted from the existing apps.
 - **Name the IaC gaps rather than hiding them.** If something can't be declarative,
   write down that it isn't, and what actually protects it instead (a backup job, a
   manual DNS entry, whatever it is).
+- **Describe the hosting environment by role, not by name.** The manifests here
+  don't name a node, and the repo should outlive today's hosts. This applies to
+  docs, AGENTS.md, commit messages and PR bodies. Write "a worker", "a
+  control-plane node", "every node" or "the hypervisor", not node hostnames, VM
+  IDs or hypervisor names. That holds for runbooks, rules and follow-ups, and
+  for a dated account of an incident too: "one worker had no blacklist" carries
+  the lesson, and a hostname only ages. A fact that does depend on one node,
+  such as hardware passed through to it, is stated as the property ("the node
+  with the passthrough device"), so it stays true after a rebuild. The
+  hostnames already in `docs/k3s-upgrade.md`'s 2026-10 record predate this
+  rule. Don't copy them as a pattern.
 
 ## Verification
 
