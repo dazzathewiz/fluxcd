@@ -47,8 +47,8 @@ Kustomization `system-upgrade-controller-plans` (not by `apps`):
   the control plane.
 
 A step is a change to `spec.version` in **both** Plans. Nothing is evicted, so
-there is no drain order to plan, and pods (including the one pinned to
-k3sworker2 by its passthrough hardware) stay on their node. Whether their
+there is no drain order to plan, and pods (including the one pinned to a
+worker by its passthrough hardware) stay on their node. Whether their
 containers keep running depends on the containerd version the step brings:
 
 - **Same containerd, or a patch/minor bump:** restarting k3s leaves running
@@ -116,8 +116,10 @@ and holds each one on the Dependency Dashboard. To take the next minor:
 1. **Open Renovate and chart PRs are reconciled first.** Merge, close or
    explicitly defer them, so a step's PR is the only moving part. During
    1.30 → 1.34, three groups were **deferred until after the upgrade**, each
-   with a comment on the PR saying so. They're now unblocked (see "Open
-   follow-ups"):
+   with a comment on the PR saying so. All three have since landed: Flux
+   2.9.6 as one regenerated install (#221), system-upgrade-controller
+   v0.20.2 with its manifests and CRD (#228, closing #98), and InvenTree
+   (#203, merged 2026-10-29):
    - **InvenTree** (#203, image 1.5.8 → 1.6.3). No dependency on the
      Kubernetes version either way. Deferred because it needs preparatory
      work first. The app holds hand-entered records, so take a Longhorn
@@ -438,11 +440,11 @@ did: all six nodes came up on containerd 2.1.
   matched.
 - **k3s drops the `master` toleration from its packaged manifests** (CoreDNS,
   metrics-server, local-path-provisioner). Before 1.34 these three ran **on
-  the masters** (k3smaster2 and k3smaster3), not on workers as this doc first
+  the masters** (two of the three), not on workers as this doc first
   said. The masters carry a custom `node-role.kubernetes.io/master=true:NoSchedule`
   taint, set by the provisioning repo's `--node-taint`, so the 1.34 manifests'
-  replacement pods could only schedule on workers: all three landed on
-  k3sworker1. Each is a single replica, so expect a brief DNS gap while
+  replacement pods could only schedule on workers: all three landed on the
+  same worker. Each is a single replica, so expect a brief DNS gap while
   CoreDNS moves. Cluster and external DNS and `kubectl top` were checked
   afterwards. Moving that taint to `node-role.kubernetes.io/control-plane` is
   a provisioning-repo change.
@@ -588,8 +590,8 @@ Verified against the live cluster before step 1 (2026-10-28, read-only):
 - Longhorn: backup target available. Daily and weekly backups and 12-hourly
   snapshots cover the `default` group.
 - k3s bundled Traefik and ServiceLB are disabled.
-- All six VMs run CPU type `x86-64-v2-AES`. k3sworker2 has no `balloon` set,
-  so its memory is fixed. k3sworker1 and k3sworker3 can still balloon down to
+- All six VMs run CPU type `x86-64-v2-AES`. One worker has no `balloon` set,
+  so its memory is fixed. The other two workers can still balloon down to
   half their memory under host pressure.
 
 Verified by the upgrade itself:
@@ -633,21 +635,18 @@ written down before this plan. Here's where each one landed:
 | Admin kubeconfig may go stale after master restarts | Expiry checked (2027-08, CA-signed). `kubectl` kept working through every step. |
 | VM CPU type `x86-64-v2-AES` | Verified on all six VMs. |
 | Master disks filled by log flooding | Free disk checked before each step. The journald cap itself is host config and wasn't checked from here. |
-| Worker memory ballooning | Verified per VM. k3sworker2 is effectively static. k3sworker1 and k3sworker3 can still balloon. |
-| k3sworker2 hard-pinned to its host | Nothing is drained, so its pods stayed on it through every step. |
+| Worker memory ballooning | Verified per VM. One worker is effectively static. The other two can still balloon. |
+| The worker with passthrough hardware is hard-pinned to its host | Nothing is drained, so its pods stayed on it through every step. |
 | Transient `unexpected EOF` on Flux applies | "During and after every step": one `flux reconcile ks flux-system --with-source`. |
 | Optional `--tls-san` for a tailnet address | Not part of this work. The Plans swap the binary and keep the server flags. Adding it is a change in the provisioning repo with its own restart. |
 | Provisioning may pin the k3s version for new nodes | The `infrastructure` repo has no pin. k3s itself is installed by the separate k3s-ansible repo, which **hasn't been checked**. A node built from it now must not come up below 1.34. |
 
 ## Open follow-ups
 
-- **Flux:** one regenerated install (1.33+ now satisfied) that supersedes the
-  eight deferred Flux PRs.
-- **system-upgrade-controller (#98):** bump the image, the controller
-  manifests (still `?ref=v0.16.3`) and the CRD (still v0.15.2) together, and
-  check its supported Kubernetes range.
-- **InvenTree (#203):** after its preparatory work, with a Longhorn backup
-  first.
+- **Flux 2.10 after k3s 1.35.** Flux 2.10 needs Kubernetes 1.35, so
+  `renovate.json` holds Flux below it. After the 1.35 step, lift that cap,
+  run `flux migrate`, and move
+  `infrastructure/configs/notify-slack.yaml` to the notification `v1` API.
 - **Rancher Turtles:** clear the duplicate provider ConfigMaps behind
   `multiple ConfigMaps match selector`.
 - **Renovate coverage for the other infrastructure charts** (Traefik,
