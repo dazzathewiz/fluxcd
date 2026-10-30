@@ -88,15 +88,15 @@ The hypervisor hosts already run Tailscale and could advertise the route. They
 aren't used for it because `tailscale set --advertise-routes` **replaces** the
 whole list. The three hosts must advertise identical lists for failover, so
 every route change restates every route on all three by hand, and leaving one
-out withdraws it silently. In this repo the route is one line of YAML next to
-the app it serves, reviewed and reverted like anything else.
+out withdraws it silently. In this repo the route is one line of YAML, reviewed and reverted like
+anything else.
 
 ### How it is wired
 
 | Flux Kustomization | Path | Applies | `dependsOn` | `wait` |
 |---|---|---|---|---|
 | `tailscale-operator` | `infrastructure/tailscale/` | Namespace, ExternalSecret `operator-oauth`, HelmRepository, HelmRelease | `infra-configs` | `true` |
-| `tailscale-connector` | `apps/tools/inventory/app-zone-route/` | Connector `app-zone-route` | `tailscale-operator` | `false` |
+| `tailscale-connector` | `infrastructure/tailscale-connectors/app-zone-route/` | Connector `app-zone-route` | `tailscale-operator` | `false` |
 | `tailscale-inf-connector` | `infrastructure/tailscale-connectors/inf-zone-route/` | Connector `inf-zone-route` | `tailscale-operator` | `false` |
 
 All three are defined in
@@ -139,9 +139,11 @@ This was the original plan. Both placements are wrong:
 - **The Connector in the `apps` render wedges `apps`.** The Connector is a CRD
   from the operator's chart. `apps` renders and applies the whole tree in one
   pass, so if the CRD is missing (a cold rebuild, or an operator that won't
-  install) the unknown kind fails the dry-run and no app receives updates. The
-  file sits next to the app, but `apps/tools/inventory/kustomization.yaml`
-  doesn't list it. Its own Kustomization applies it.
+  install) the unknown kind fails the dry-run and no app receives updates. Both
+  Connectors live under `infrastructure/tailscale-connectors/`, outside `apps/`,
+  each applied by its own Kustomization. The `.app` route originally sat next
+  to the first `.app` app, unlisted in its `kustomization.yaml`; one edit
+  adding it to that list would have wedged every app.
 - **Its Flux Kustomizations can't live in `apps/` either** (the grafana
   `app.yaml` shape). `apps` has `wait: true` and would wait on a child
   Kustomization that depends on the operator.
@@ -205,7 +207,8 @@ traffic silently falls back to it.
 ### The `.inf` routes: a separate Connector
 
 A second Connector, `inf-zone-route`
-([infrastructure/tailscale-connectors/inf-zone-route/](../infrastructure/tailscale-connectors/inf-zone-route/)),
+([infrastructure/tailscale-connectors/inf-zone-route/](../infrastructure/tailscale-connectors/inf-zone-route/),
+next to `app-zone-route`),
 advertises two host routes for an operator workstation off-LAN: the k3s API
 VIP (`10.10.1.200/32`, port 6443) and the `.inf` address (`10.10.1.100/32`).
 It is infrastructure, not an app, so it doesn't sit under `apps/`, and it is
