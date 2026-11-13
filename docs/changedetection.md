@@ -94,8 +94,8 @@ Until it's enabled that path returns 404.
 
 ### Token
 
-One named token, `claude-desktop-workstation`, used by Claude Desktop on the operator
-workstation:
+One named token per client machine, named for that machine, used by Claude Desktop on
+the operator workstation:
 
 | Area | Permission |
 |---|---|
