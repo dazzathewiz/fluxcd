@@ -73,6 +73,59 @@ IP — so every new `*.inf` app needs its own two manual DNS entries). Local DNS
 don't replicate between the two Pi-holes automatically, so this is a manual step for
 every future app of this kind, not just this one.
 
+## MCP server (Claude Desktop)
+
+changedetection.io 0.70+ ships an MCP server. It is **enabled** in the app
+(Settings → AI → MCP Server, stored as `settings.application.mcp_enabled` in the
+datastore — not in Git) and served at `https://changedetection.inf.${PERSONAL_DOMAIN}/mcp/v1`.
+Until it's enabled that path returns 404.
+
+- **Transport:** stateless Streamable HTTP — JSON-RPC over POST only. GET returns 405;
+  there is no SSE stream.
+- **Auth is two layers, both required:** the existing Traefik `basicAuth` Middleware
+  stays in front of the route, and changedetection then checks its own named MCP access
+  token. The token is never the REST API key. changedetection reads `Authorization`
+  only when it carries a Bearer token and otherwise falls back to `x-api-key`, so a
+  client sends `Authorization: Basic …` for Traefik and `x-api-key: <token>` for the
+  app. No IngressRoute or Middleware change was needed.
+- **No OAuth.** It would need `/mcp/v1` taken out from behind basic auth, which is not
+  wanted. "Allow read-only access without sign-in" is **off**.
+- `?readonly=1` on the URL caps a connection to read-only regardless of the token.
+
+### Token
+
+One named token, `claude-desktop-workstation`, used by Claude Desktop on the operator
+workstation:
+
+| Area | Permission |
+|---|---|
+| Monitors | Write |
+| Tags | Write |
+| Notifications | None — they hold the notification webhook |
+| Browser | None |
+| System | Read |
+
+Tokens live in the datastore, like watches. Rotate by creating a new token, updating
+the client, then deleting the old one.
+
+### Client
+
+Claude Desktop on the workstation reaches it the same way as the other homelab MCP
+servers that don't run locally: a launch wrapper that reads the token and the basic-auth
+credential from the OS keychain and execs `mcp-remote --transport http-only` with both
+headers. Provisioned by the `mac-dev-playbook` repo (`tasks/changedetection-mcp.yml`);
+no secret is in either repo.
+
+### DNS and off-LAN access
+
+The client uses the hostname, not Traefik's IP — the IngressRoute matches on `Host` and
+the certificate is issued for the name. On the LAN the name resolves from the Pi-hole A
+record above. Off-LAN, the tailnet's existing split DNS for the personal domain forwards
+to the same Pi-holes, and the `inf-zone-route` Connector routes Traefik's `.inf`
+address (see [tailscale.md](tailscale.md)), so no new route, no DNS change and no hosts-file
+entry on the workstation were needed. If off-LAN resolution ever breaks, fix it in the
+tailnet's split DNS (one place, every device) rather than with a per-machine hosts entry.
+
 ## Everything else that's drift, not Git
 
 - Watch URL, CSS selector, trigger text, and any future additional watches.
@@ -80,3 +133,4 @@ every future app of this kind, not just this one.
 - The DNS A record on both Pi-holes.
 - Any UniFi inter-VLAN rule.
 - The Home Assistant automation itself.
+- The MCP server toggle and its access tokens.
