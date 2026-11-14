@@ -1,0 +1,107 @@
+# PR triage rules config. Non-secret; reviewed like any manifest.
+# Parsed by rules.js (block-style YAML subset: maps, lists, [a, b], quoted scalars).
+
+# off: no GitHub writes. digest | labels come in a later PR.
+# Quoted: YAML 1.1 parsers read a bare off as false.
+write_mode: "off"
+
+# One line, flow style: the poll workflow's SQL reads this line to list repos,
+# and the rules code checks it against the parsed config.
+repos: [dazzathewiz/fluxcd]
+
+# PRs triaged per run, oldest first.
+per_run_cap: 10
+
+renovate_logins:
+  - "renovate[bot]"
+
+# Unauthenticated; system:public-info-viewer allows GET /version.
+cluster_version_url: "https://kubernetes.default.svc/version"
+
+# Negative control: no cluster satisfies this, so R4 must fail it every run.
+negative_control_kube_version: ">=99"
+
+# R3: mirrors renovate.json packageRules with dependencyDashboardApproval.
+# A rule with no package matches any package; no update_types matches any.
+gated:
+  - package: postgres
+    datasource: docker
+    update_types: [major]
+  - package: k3s-io/k3s
+    datasource: github-releases
+  - datasource: helm
+    update_types: [major]
+  - package: longhorn
+    datasource: helm
+    update_types: [minor, major]
+  - package: fluxcd/flux2
+    update_types: [minor, major]
+  - package: rancher/system-upgrade-controller
+  - package: n8nio/n8n
+    datasource: docker
+    update_types: [major]
+
+# R5: mirrors renovate.json allowedVersions caps, one-minor rules and groups.
+caps:
+  - package: traefik
+    below: "24.0.0"
+  - package: fluxcd/flux2
+    below: "2.10.0"
+  - package: portainer/agent
+    below: "3.0.0"
+
+one_minor_per_pr:
+  - longhorn
+  - rancher
+
+groups:
+  - name: portainer
+    branch: renovate/portainer
+    packages: [portainer, portainer/agent]
+
+# Removed from the cluster; any package or path containing these fails R5.
+removed:
+  - rook-ceph
+  - rook/ceph
+
+# Verdict: these packages always go to needs-claude.
+needs_claude_packages:
+  - longhorn
+  - fluxcd/flux2
+  - k3s-io/k3s
+  - traefik
+  - postgres
+
+# R6: case-insensitive substrings in Renovate's release notes.
+release_note_keywords:
+  - breaking
+  - BREAKING CHANGE
+  - CRD
+  - kubeVersion
+  - deprecat
+  - removed
+  - migrat
+  - requires
+  - values
+
+# R1 classifications that can be low-risk.
+low_risk_update_types: [digest, patch, minor]
+
+# R4: chart -> Helm repository URL (index.yaml is fetched from it).
+# rules.test.js checks this matches the HelmRepositories in the repo.
+helm_index:
+  influxdb: "https://helm.influxdata.com/"
+  influxdb2: "https://helm.influxdata.com/"
+  portainer: "https://portainer.github.io/k8s/"
+  rancher: "https://releases.rancher.com/server-charts/stable"
+  intel-device-plugins-gpu: "https://intel.github.io/helm-charts/"
+  intel-device-plugins-operator: "https://intel.github.io/helm-charts/"
+  reloader: "https://stakater.github.io/stakater-charts"
+  tailscale-operator: "https://pkgs.tailscale.com/helmcharts"
+  connect: "https://1password.github.io/connect-helm-charts/"
+  external-secrets: "https://charts.external-secrets.io"
+  longhorn: "https://charts.longhorn.io"
+  cert-manager: "https://charts.jetstack.io"
+  traefik: "https://helm.traefik.io/traefik"
+  node-feature-discovery: "https://kubernetes-sigs.github.io/node-feature-discovery/charts"
+  reflector: "https://emberstack.github.io/helm-charts"

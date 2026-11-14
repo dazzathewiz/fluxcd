@@ -113,6 +113,20 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "n8n ships often and runs its own database migrations on start, so let each release settle for a week and batch bumps into one weekly window. Its own image is the platform the PR triage runs on.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["n8nio/n8n"],
+      "minimumReleaseAge": "7 days",
+      "schedule": ["* 0-5 * * 1"]
+    },
+    {
+      "description": "An n8n major changes workflow and node behaviour and its migrations can't be rolled back, so it waits on the Dependency Dashboard until someone has read the breaking-changes notes. The triage rules (apps/tools/n8n/triage/config.yaml) mirror this gate.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["n8nio/n8n"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": "Portainer agent must match the CE 2.x server.",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["portainer/agent"],
