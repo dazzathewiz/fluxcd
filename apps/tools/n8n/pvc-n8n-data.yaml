@@ -1,0 +1,14 @@
+---
+# /home/node/.n8n. Backed up by the default Longhorn recurring-job group.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: n8n-data
+  namespace: tools
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-diskencrypt-global
+  resources:
+    requests:
+      storage: 1Gi

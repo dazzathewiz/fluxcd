@@ -1,0 +1,21 @@
+---
+# Read-only cluster identity. `view` excludes Secrets and already aggregates
+# get/list/watch on the Flux kinds.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: n8n
+  namespace: tools
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: n8n-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+- kind: ServiceAccount
+  name: n8n
+  namespace: tools

@@ -1,0 +1,24 @@
+---
+# No basicAuth: n8n has its own login, and webhooks must stay reachable.
+# default-headers is shared across the namespace: apps/tools/middleware.yaml.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: n8n
+  namespace: tools
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`n8n.inf.${PERSONAL_DOMAIN}`)
+      kind: Rule
+      middlewares:
+        - name: default-headers
+      services:
+        - name: n8n
+          port: 5678
+          passHostHeader: true
+  tls:
+    secretName: inf-personal-domain-tls
