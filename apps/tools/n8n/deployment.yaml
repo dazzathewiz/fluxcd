@@ -26,6 +26,76 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
         runAsNonRoot: true
+      initContainers:
+      # Applies triage/schema.sql, reloads config.yaml and reseeds the
+      # redaction patterns from the Secret. Idempotent.
+      - name: triage-schema
+        image: postgres:17.11-alpine
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          until pg_isready -q; do echo "waiting for n8n-db"; sleep 2; done
+          psql -X -v ON_ERROR_STOP=1 -f /triage/schema.sql -f /triage/seed.sql
+        env:
+        - name: PGHOST
+          value: "n8n-db"
+        - name: PGUSER
+          value: "n8n"
+        - name: PGDATABASE
+          value: "n8n"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: DB_POSTGRESDB_PASSWORD
+        - name: REDACTION_PATTERNS
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: REDACTION_PATTERNS
+        volumeMounts:
+        - name: triage
+          mountPath: /triage
+          readOnly: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+      # Git wins: import overwrites the workflows (and unpublishes them), then
+      # each one is published again. UI edits are lost on every restart.
+      - name: import-workflows
+        image: n8nio/n8n:2.47.7
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          n8n import:credentials --separate --input=/import/credentials
+          n8n import:workflow --separate --input=/import/workflows
+          n8n publish:workflow --id=TriagePoll000001
+          n8n publish:workflow --id=TriageBeat000001
+        envFrom:
+        - configMapRef:
+            name: n8n-env
+        - secretRef:
+            name: n8n-secrets
+        volumeMounts:
+        - name: data
+          mountPath: /home/node/.n8n
+        - name: workflows
+          mountPath: /import/workflows
+          readOnly: true
+        - name: credentials
+          mountPath: /import/credentials
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
       containers:
       - name: n8n
         image: n8nio/n8n:2.47.7
@@ -34,6 +104,12 @@ spec:
             name: n8n-env
         - secretRef:
             name: n8n-secrets
+        env:
+        - name: N8N_EDITOR_BASE_URL
+          value: "https://n8n.inf.${PERSONAL_DOMAIN}/"
+        # Lets helpers.httpRequest verify kubernetes.default.svc for GET /version.
+        - name: NODE_EXTRA_CA_CERTS
+          value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
         ports:
         - containerPort: 5678
           name: http
@@ -70,3 +146,12 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: n8n-data
+      - name: workflows
+        configMap:
+          name: n8n-workflows
+      - name: credentials
+        configMap:
+          name: n8n-credentials
+      - name: triage
+        configMap:
+          name: n8n-triage
