@@ -1,0 +1,95 @@
+{
+  "id": "TriageBeat000001",
+  "name": "PR triage: heartbeat",
+  "nodes": [
+    {
+      "id": "0b7c1d8e-0101-4a00-9000-000000000101",
+      "name": "Every 30 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0102-4a00-9000-000000000102",
+      "name": "Record last success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO triage.heartbeat (name, last_success, checked)\nSELECT 'triage-poll', max(finished), now() FROM triage.runs WHERE ok\nON CONFLICT (name) DO UPDATE\n  SET last_success = excluded.last_success, checked = excluded.checked\nRETURNING name, last_success, checked,\n  (last_success IS NULL OR last_success < now() - interval '2 hours') AS stale;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0103-4a00-9000-000000000103",
+      "name": "Alert Home Assistant (P2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "disabled": true,
+      "notes": "P2: alert when stale is true. Disabled until the webhook ID is in the Secret.",
+      "parameters": {
+        "method": "POST",
+        "url": "",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every 30 minutes": {
+      "main": [
+        [
+          {
+            "node": "Record last success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record last success": {
+      "main": [
+        [
+          {
+            "node": "Alert Home Assistant (P2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "active": false
+}
