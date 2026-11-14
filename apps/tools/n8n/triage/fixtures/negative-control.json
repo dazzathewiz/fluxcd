@@ -1,0 +1,61 @@
+{
+  "name": "Negative control: a chart requiring kubeVersion >=99 must fail R4",
+  "history": "Synthetic. Run on every poll as well; a run where this passes is marked broken.",
+  "facts": {
+    "repo": "owner/fluxcd",
+    "now": "2026-11-14T00:00:00Z",
+    "pr": {
+      "number": 9999,
+      "html_url": "https://github.com/owner/fluxcd/pull/9999",
+      "etag": "W/\"pr-9999-etag\"",
+      "head_sha": "9999999999999999999999999999999999999999",
+      "head_ref": "renovate/example-chart-1.x",
+      "user_login": "renovate[bot]",
+      "title": "chore(deps): update helm release example-chart to v1.1.0",
+      "body": "| Package | Type | Update | Change |\n|---|---|---|---|\n| [example-chart](https://example.invalid/example-chart) | HelmChart | minor | `1.0.0` → `1.1.0` |\n",
+      "created_at": "2026-11-13T00:00:00Z",
+      "mergeable": true,
+      "mergeable_state": "clean",
+      "draft": false
+    },
+    "files": {
+      "url": "https://api.github.com/repos/owner/fluxcd/pulls/9999/files?per_page=100",
+      "etag": "W/\"files-9999-etag\"",
+      "items": [
+        {
+          "filename": "apps/example/helmrelease.yaml",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -10,7 +10,7 @@ spec:\n   chart:\n     spec:\n       chart: example-chart\n-      version: 1.0.0\n+      version: 1.1.0\n       sourceRef:"
+        }
+      ]
+    },
+    "dashboard": {
+      "url": "https://api.github.com/repos/owner/fluxcd/issues/2",
+      "etag": "W/\"dashboard-etag\"",
+      "body": "## Open\n\n - [ ] <!-- rebase-branch=renovate/example-chart-1.x -->[x](../pull/9999)\n"
+    },
+    "cluster": {
+      "url": "https://kubernetes.default.svc/version",
+      "gitVersion": "v1.34.12+k3s1",
+      "etag_or_sha": "0000000000000000000000000000000000013412"
+    },
+    "patterns": []
+  },
+  "config_overrides": {
+    "helm_index": { "example-chart": "https://charts.example.invalid" }
+  },
+  "http": {
+    "https://charts.example.invalid/index.yaml": {
+      "statusCode": 200,
+      "headers": { "etag": "\"example-index-etag\"" },
+      "body": "apiVersion: v1\nentries:\n  example-chart:\n    - apiVersion: v2\n      name: example-chart\n      kubeVersion: \">=99\"\n      version: 1.1.0\n      dependencies:\n        - name: sub\n          version: 9.9.9\n    - apiVersion: v2\n      name: example-chart\n      version: 1.0.0\n"
+    }
+  },
+  "expect": {
+    "verdict": "blocked",
+    "checks": { "R4": "fail" },
+    "negative_control": "fail"
+  }
+}
