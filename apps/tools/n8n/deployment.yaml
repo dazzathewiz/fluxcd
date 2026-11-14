@@ -1,0 +1,72 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: tools
+  name: n8n
+  labels:
+    app: n8n
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # RWO PVC
+  selector:
+    matchLabels:
+      app: n8n
+  template:
+    metadata:
+      labels:
+        app: n8n
+    spec:
+      serviceAccountName: n8n
+      # The `n8n` Service would otherwise inject N8N_PORT=tcp://...
+      enableServiceLinks: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      containers:
+      - name: n8n
+        image: n8nio/n8n:2.47.7
+        envFrom:
+        - configMapRef:
+            name: n8n-env
+        - secretRef:
+            name: n8n-secrets
+        ports:
+        - containerPort: 5678
+          name: http
+        volumeMounts:
+        - name: data
+          mountPath: /home/node/.n8n
+        # /healthz answers without the database; /healthz/readiness waits for
+        # the DB connection and migrations.
+        startupProbe:
+          httpGet:
+            path: /healthz/readiness
+            port: http
+          failureThreshold: 60
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz/readiness
+            port: http
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 30
+          failureThreshold: 6
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: n8n-data

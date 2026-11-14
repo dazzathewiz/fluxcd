@@ -1,0 +1,103 @@
+---
+# n8n: ingress from Traefik only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: n8n
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: n8n
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    ports:
+    - protocol: TCP
+      port: 5678
+  egress:
+  # DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Database
+  - to:
+    - podSelector:
+        matchLabels:
+          app: n8n-db
+    ports:
+    - protocol: TCP
+      port: 5432
+  # k3s API: control-plane VIP and control-plane node addresses
+  - to:
+    - ipBlock:
+        cidr: 10.10.1.200/32
+    - ipBlock:
+        cidr: 10.10.1.65/32
+    - ipBlock:
+        cidr: 10.10.1.74/32
+    - ipBlock:
+        cidr: 10.10.1.77/32
+    ports:
+    - protocol: TCP
+      port: 6443
+  # Internet only, no private ranges
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+---
+# n8n-db: ingress from n8n only, egress DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: n8n-db
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: n8n-db
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: n8n
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53

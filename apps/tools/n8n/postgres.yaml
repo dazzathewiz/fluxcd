@@ -1,0 +1,82 @@
+---
+# Dedicated Postgres for n8n. Majors are held on the Dependency Dashboard
+# (renovate.json); a major needs a dump and restore.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: tools
+  name: n8n-db
+  labels:
+    app: n8n-db
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # RWO PVC
+  selector:
+    matchLabels:
+      app: n8n-db
+  template:
+    metadata:
+      labels:
+        app: n8n-db
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - name: postgres
+        image: postgres:17.11-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "n8n"
+        - name: POSTGRES_USER
+          value: "n8n"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: POSTGRES_PASSWORD
+        # Subdirectory: the volume root holds lost+found.
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        startupProbe:
+          exec:
+            command: ["pg_isready", "-U", "n8n", "-d", "n8n"]
+          failureThreshold: 30
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "n8n", "-d", "n8n"]
+          periodSeconds: 30
+          failureThreshold: 6
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: n8n-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: tools
+  name: n8n-db
+  labels:
+    app: n8n-db
+spec:
+  type: ClusterIP
+  selector:
+    app: n8n-db
+  ports:
+  - name: postgres
+    protocol: TCP
+    port: 5432
+    targetPort: 5432
