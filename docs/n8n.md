@@ -206,14 +206,15 @@ a workflow could read or change n8n's own tables. A dedicated role limited to th
    list is unchanged or empty, one placeholder item goes through instead and the two
    reads hit `/rate_limit`, which costs no quota. These reads are the only ones that
    carry the source-host credential, and only to `api.github.com`.
-5. **Triage**, the only Code node, parses the config and checks it lists the same
-   repos, reads the cluster version from `https://kubernetes.default.svc/version`
-   without a token (`system:public-info-viewer` allows it; `NODE_EXTRA_CA_CERTS`
-   points Node at the service-account CA) and runs the negative control. It keeps
-   PRs whose `head_sha` has no verdict yet, oldest first, up to `per_run_cap`. Then
-   it fetches the Helm index and registry manifests and runs R1–R9.
-6. **Insert verdict**, then the **Write gate**.
-7. **Finish run** records the PR count, the negative-control result and the ETags.
+5. **Cluster version** calls the `PR triage: cluster version` sub-workflow once,
+   which returns the live `/version` response. See
+   [Cluster version](#cluster-version).
+6. **Triage**, the only Code node, parses the config and checks it lists the same
+   repos, and runs the negative control against that response. It keeps PRs whose
+   `head_sha` has no verdict yet, oldest first, up to `per_run_cap`. Then it fetches
+   the Helm index and registry manifests and runs R1–R9.
+7. **Insert verdict**, then the **Write gate**.
+8. **Finish run** records the PR count, the negative-control result and the ETags.
 
 So when the PR list changes, every open PR's detail and files are read, and only
 the new head SHAs are triaged. A failed read of a PR being triaged fails the run;
@@ -221,6 +222,41 @@ the run stays unfinished, no ETag is stored, and the next run retries.
 
 `PR triage: heartbeat` runs every 30 minutes and writes the last successful run time
 to `triage.heartbeat`. Its alert node is disabled until the alerting phase.
+
+### Cluster version
+
+R4 and the negative control compare charts against the live cluster version.
+The apiserver runs with anonymous auth off, so an unauthenticated `GET /version`
+gets `401`. The call uses the pod's own projected service-account token instead.
+No Secret holds a token, and kubelet rotates the file.
+
+- **RBAC:** none added. `system:discovery` grants `/version` to every
+  authenticated identity. Check:
+  `kubectl auth can-i get /version --as=system:serviceaccount:tools:n8n` → `yes`.
+- **File access:** `N8N_RESTRICT_FILE_ACCESS_TO` in `n8n-env` adds the token
+  directory to `~/.n8n-files`. It's listed twice, as `/var/run/...` and `/run/...`.
+  n8n checks a file's real path against the list without resolving the list
+  itself, and in the n8n image `/var/run` links to `/run`. The setting is
+  instance-wide, so any workflow the owner builds can read the token.
+- **The token never reaches saved data.** n8n's execution redaction only hides
+  data when the API or UI loads it: the execution is still stored in full. The
+  pod's token is issued with `expirationSeconds: 3607`, which the apiserver
+  extends to about a year, so a saved copy would outlive the hourly rotation. So
+  the token is read only in the sub-workflow `PR triage: cluster version`
+  (`workflows/triage-cluster-version.json`). It reads the token file, turns it
+  into text and sends `GET /version` with `Authorization: Bearer`. It saves no
+  executions, successful, failed or manual. n8n deletes an unsaved production
+  execution, binary data included. Its last node is the HTTP request, whose
+  output holds only the status and body. That matters because n8n copies a
+  sub-workflow's last-node binary data into the caller.
+- **Fallback:** the poll calls the sub-workflow with `continueRegularOutput`. If the
+  token read or the call fails, R4 and the negative control are `not_run`, and the
+  run still finishes with `ok = false`.
+
+`sync-code-nodes.js` fails if a workflow that reads the token has any execution
+saving turned on. A **manual** test run of the sub-workflow from the editor is
+still kept until the hard-delete buffer passes, so test it through the poll
+instead.
 
 ### Checks and verdicts
 
