@@ -1,0 +1,560 @@
+{
+  "id": "TriagePoll000001",
+  "name": "PR triage: poll (shadow mode)",
+  "nodes": [
+    {
+      "id": "0b7c1d8e-0001-4a00-9000-000000000001",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0002-4a00-9000-000000000002",
+      "name": "Start run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH run AS (\n  INSERT INTO triage.runs (started) VALUES (now()) RETURNING id\n),\ncfg AS (\n  SELECT body, sha256 FROM triage.config WHERE name = 'config.yaml'\n),\n-- Same pattern as reposFromConfigLine() in rules.js; the Triage node checks they agree.\nrepos AS (\n  SELECT btrim(r, ' \"''') AS repo\n  FROM cfg, regexp_split_to_table((regexp_match(E'\\n' || cfg.body, '\\nrepos:\\s*\\[([^\\]\\n]*)\\]'))[1], ',') AS r\n),\nlast AS (\n  SELECT list_etags FROM triage.runs WHERE finished IS NOT NULL ORDER BY id DESC LIMIT 1\n)\nSELECT\n  run.id AS run_id,\n  repos.repo,\n  (SELECT list_etags ->> repos.repo FROM last) AS list_etag,\n  cfg.body AS config_body,\n  cfg.sha256 AS config_sha,\n  (SELECT coalesce(json_agg(pattern ORDER BY pattern), '[]'::json) FROM triage.redaction_patterns) AS patterns,\n  (SELECT coalesce(json_agg(repo || '#' || pr || '@' || head_sha), '[]'::json)\n     FROM triage.verdicts WHERE created > now() - interval '90 days') AS seen\nFROM run\nLEFT JOIN cfg ON true\nLEFT JOIN repos ON true;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0005-4a00-9000-000000000005",
+      "name": "Get dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json.repo }}/issues?state=open&creator=renovate%5Bbot%5D&per_page=100",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "triageGithubBot1",
+          "name": "GitHub (triage, credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0004-4a00-9000-000000000004",
+      "name": "List PRs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('Start run').item.json.repo }}/pulls?state=open&per_page=100&sort=created&direction=asc",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "If-None-Match",
+              "value": "={{ $('Start run').item.json.list_etag || '\"none\"' }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "triageGithubBot1",
+          "name": "GitHub (triage, credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0017-4a00-9000-000000000017",
+      "name": "One item per PR",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        880,
+        300
+      ],
+      "alwaysOutputData": true,
+      "notes": "A 304 or an empty list gives no items; alwaysOutputData then passes one empty placeholder, so Triage still runs.",
+      "parameters": {
+        "fieldToSplitOut": "body",
+        "include": "noOtherFields",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0007-4a00-9000-000000000007",
+      "name": "Get PR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ String($json.url || '').startsWith('https://api.github.com/') ? $json.url : 'https://api.github.com/rate_limit' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "triageGithubBot1",
+          "name": "GitHub (triage, credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0008-4a00-9000-000000000008",
+      "name": "Get files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ String(($json.body && $json.body.url ? $json.body.url + '/files?per_page=100' : '') || '').startsWith('https://api.github.com/') ? ($json.body && $json.body.url ? $json.body.url + '/files?per_page=100' : '') : 'https://api.github.com/rate_limit' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "triageGithubBot1",
+          "name": "GitHub (triage, credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0009-4a00-9000-000000000009",
+      "name": "Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ==== BEGIN rules.js (verbatim copy; edit triage/rules.js) ====\n'use strict';\n// PR triage rules R1-R9. Pure functions: no n8n APIs, no require().\n// Network access is injected as `http(opts) -> {statusCode, headers, body}`.\n// The triage-poll workflow's one Code node (Triage) carries a verbatim copy of\n// this file (check with sync-code-nodes.js). Edit here, then run\n// `node sync-code-nodes.js --write`.\n\nconst RESULTS = ['pass', 'flag', 'fail', 'not_run'];\nconst VERDICTS = ['blocked', 'needs-claude', 'review', 'low-risk'];\nconst WRITE_MODES = ['off', 'digest', 'labels'];\nconst CHECK_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9'];\nconst CONFIG_SOURCE = 'git:apps/tools/n8n/triage/config.yaml';\n\n// ---------------------------------------------------------------- config\n\nfunction stripComment(line) {\n  let quote = null;\n  for (let i = 0; i < line.length; i++) {\n    const c = line[i];\n    if (quote) {\n      if (c === quote) quote = null;\n    } else if (c === '\"' || c === \"'\") {\n      quote = c;\n    } else if (c === '#' && (i === 0 || /\\s/.test(line[i - 1]))) {\n      return line.slice(0, i);\n    }\n  }\n  return line;\n}\n\nfunction parseScalar(raw, lineNo) {\n  const s = raw.trim();\n  if (s.startsWith('\"')) {\n    if (!s.endsWith('\"') || s.length < 2) throw new Error(`config line ${lineNo}: unterminated string`);\n    return s.slice(1, -1).replace(/\\\\\"/g, '\"').replace(/\\\\\\\\/g, '\\\\');\n  }\n  if (s.startsWith(\"'\")) {\n    if (!s.endsWith(\"'\") || s.length < 2) throw new Error(`config line ${lineNo}: unterminated string`);\n    return s.slice(1, -1).replace(/''/g, \"'\");\n  }\n  if (s.startsWith('[')) {\n    if (!s.endsWith(']')) throw new Error(`config line ${lineNo}: unterminated list`);\n    const inner = s.slice(1, -1).trim();\n    if (inner === '') return [];\n    return inner.split(',').map((part) => parseScalar(part, lineNo));\n  }\n  if (s.startsWith('{') || s.startsWith('>') || s.startsWith('|') || s.startsWith('&') || s.startsWith('*')) {\n    throw new Error(`config line ${lineNo}: unsupported YAML syntax \"${s}\"`);\n  }\n  if (s === 'true') return true;\n  if (s === 'false') return false;\n  if (s === 'null' || s === '~') return null;\n  if (/^-?\\d+$/.test(s)) return parseInt(s, 10);\n  return s;\n}\n\nconst SEQ_ITEM = /^-(\\s|$)/;\nconst MAP_ITEM = /^(\"[^\"]*\"|'[^']*'|[^\\s\"'#\\[\\]{},:][^:]*?):(\\s+(.*))?$/;\n\n// Parses the block-style YAML subset that config.yaml uses: maps, sequences,\n// flow sequences of scalars, quoted and plain scalars, comments.\nfunction parseConfigYaml(text) {\n  const lines = [];\n  String(text).split(/\\r?\\n/).forEach((raw, i) => {\n    const s = stripComment(raw).replace(/\\s+$/, '');\n    if (s.trim() === '' || s.trim() === '---') return;\n    const lead = s.match(/^\\s*/)[0];\n    if (lead.includes('\\t')) throw new Error(`config line ${i + 1}: tab indentation`);\n    lines.push({ indent: lead.length, text: s.trim(), n: i + 1 });\n  });\n  let pos = 0;\n\n  function parseBlock() {\n    if (pos >= lines.length) return null;\n    return SEQ_ITEM.test(lines[pos].text) ? parseSeq(lines[pos].indent) : parseMap(lines[pos].indent);\n  }\n\n  function parseMap(indent) {\n    const out = {};\n    while (pos < lines.length && lines[pos].indent === indent && !SEQ_ITEM.test(lines[pos].text)) {\n      const line = lines[pos];\n      const m = line.text.match(MAP_ITEM);\n      if (!m) throw new Error(`config line ${line.n}: expected \"key: value\"`);\n      const key = parseScalar(m[1], line.n);\n      if (Object.prototype.hasOwnProperty.call(out, key)) throw new Error(`config line ${line.n}: duplicate key \"${key}\"`);\n      const rest = m[3] === undefined ? '' : m[3];\n      pos++;\n      if (rest !== '') {\n        out[key] = parseScalar(rest, line.n);\n      } else if (pos < lines.length && lines[pos].indent > indent) {\n        out[key] = parseBlock();\n      } else if (pos < lines.length && lines[pos].indent === indent && SEQ_ITEM.test(lines[pos].text)) {\n        out[key] = parseSeq(indent);\n      } else {\n        out[key] = null;\n      }\n    }\n    if (pos < lines.length && lines[pos].indent > indent) {\n      throw new Error(`config line ${lines[pos].n}: unexpected indentation`);\n    }\n    return out;\n  }\n\n  function parseSeq(indent) {\n    const out = [];\n    while (pos < lines.length && lines[pos].indent === indent && SEQ_ITEM.test(lines[pos].text)) {\n      const line = lines[pos];\n      const rest = line.text.slice(1).trim();\n      if (rest === '') {\n        pos++;\n        out.push(parseBlock());\n      } else if (MAP_ITEM.test(rest) && !/^[\"'\\[]/.test(rest)) {\n        lines[pos] = { indent: indent + 2, text: rest, n: line.n };\n        out.push(parseMap(indent + 2));\n      } else {\n        pos++;\n        out.push(parseScalar(rest, line.n));\n      }\n    }\n    return out;\n  }\n\n  const result = parseBlock();\n  if (pos < lines.length) throw new Error(`config line ${lines[pos].n}: unexpected content`);\n  return result || {};\n}\n\nfunction asList(value) {\n  if (value === undefined || value === null) return [];\n  return Array.isArray(value) ? value : [value];\n}\n\nfunction loadConfig(text) {\n  const cfg = parseConfigYaml(text);\n  if (!WRITE_MODES.includes(cfg.write_mode)) {\n    throw new Error(`config: write_mode must be one of ${WRITE_MODES.join(', ')}`);\n  }\n  const repos = asList(cfg.repos);\n  if (repos.length === 0 || !repos.every((r) => /^[\\w.-]+\\/[\\w.-]+$/.test(r))) {\n    throw new Error('config: repos must list owner/name entries');\n  }\n  if (!Number.isInteger(cfg.per_run_cap) || cfg.per_run_cap < 1) {\n    throw new Error('config: per_run_cap must be a positive integer');\n  }\n  return {\n    write_mode: cfg.write_mode,\n    repos,\n    per_run_cap: cfg.per_run_cap,\n    renovate_logins: asList(cfg.renovate_logins),\n    cluster_version_url: cfg.cluster_version_url,\n    negative_control_kube_version: cfg.negative_control_kube_version,\n    gated: asList(cfg.gated).map((r) => ({\n      package: r.package || null,\n      datasource: r.datasource || null,\n      update_types: asList(r.update_types),\n    })),\n    caps: asList(cfg.caps).map((c) => ({ package: c.package, below: String(c.below) })),\n    one_minor_per_pr: asList(cfg.one_minor_per_pr),\n    groups: asList(cfg.groups).map((g) => ({ name: g.name, branch: g.branch, packages: asList(g.packages) })),\n    removed: asList(cfg.removed),\n    needs_claude_packages: asList(cfg.needs_claude_packages),\n    release_note_keywords: asList(cfg.release_note_keywords),\n    low_risk_update_types: asList(cfg.low_risk_update_types),\n    helm_index: cfg.helm_index || {},\n  };\n}\n\n// The poll workflow's Start run SQL lists repos with this same pattern\n// (regexp_match(body, '\\nrepos:\\s*\\[([^\\]\\n]*)\\]')), before any JS runs.\nfunction reposFromConfigLine(text) {\n  const m = ('\\n' + String(text)).match(/\\nrepos:\\s*\\[([^\\]\\n]*)\\]/);\n  if (!m) return [];\n  return m[1].split(',').map((r) => r.trim().replace(/^[\"']|[\"']$/g, '')).filter(Boolean);\n}\n\n// Fails the run if the SQL's repo list and the parsed config disagree.\nfunction assertReposMatch(config, sqlRepos) {\n  const a = config.repos.slice().sort().join(',');\n  const b = (sqlRepos || []).slice().sort().join(',');\n  if (a !== b) throw new Error(`repos from SQL (${b}) differ from config.yaml (${a}); keep repos on one line`);\n}\n\n// ---------------------------------------------------------------- versions\n\nconst VERSION_RE = /^v?(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?(?:\\.(\\d+))?(?:-([0-9A-Za-z.-]+))?(?:\\+([0-9A-Za-z.-]+))?$/;\n\nfunction parseVersion(raw) {\n  if (raw === undefined || raw === null) return null;\n  const m = String(raw).trim().match(VERSION_RE);\n  if (!m) return null;\n  return {\n    raw: String(raw).trim(),\n    nums: [m[1], m[2], m[3], m[4]].map((x) => (x === undefined ? 0 : parseInt(x, 10))),\n    given: [m[1], m[2], m[3]].filter((x) => x !== undefined).length,\n    pre: m[5] || '',\n    build: m[6] || '',\n  };\n}\n\nfunction comparePre(a, b) {\n  if (a === b) return 0;\n  if (a === '') return 1; // a release sorts after any prerelease\n  if (b === '') return -1;\n  const pa = a.split('.');\n  const pb = b.split('.');\n  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {\n    if (pa[i] === undefined) return -1;\n    if (pb[i] === undefined) return 1;\n    const na = /^\\d+$/.test(pa[i]);\n    const nb = /^\\d+$/.test(pb[i]);\n    if (na && nb) {\n      const d = parseInt(pa[i], 10) - parseInt(pb[i], 10);\n      if (d !== 0) return d < 0 ? -1 : 1;\n    } else if (na !== nb) {\n      return na ? -1 : 1;\n    } else if (pa[i] !== pb[i]) {\n      return pa[i] < pb[i] ? -1 : 1;\n    }\n  }\n  return 0;\n}\n\n// Compares numeric parts, then prerelease. Build metadata is ignored.\nfunction compareVersions(a, b) {\n  const va = typeof a === 'string' ? parseVersion(a) : a;\n  const vb = typeof b === 'string' ? parseVersion(b) : b;\n  if (!va || !vb) return null;\n  for (let i = 0; i < 4; i++) {\n    if (va.nums[i] !== vb.nums[i]) return va.nums[i] < vb.nums[i] ? -1 : 1;\n  }\n  return comparePre(va.pre, vb.pre);\n}\n\n// Helm/Masterminds semver constraint subset: ||, comma or space AND,\n// = != > < >= <= ~ ^, x-ranges, hyphen ranges.\nfunction expandComparator(token) {\n  const m = token.match(/^(>=|<=|!=|>|<|=|~>|~|\\^)?(.*)$/);\n  const op = m[1] || '=';\n  const ver = m[2].replace(/^v/, '');\n  if (ver === '' || ver === '*' || ver === 'x' || ver === 'X') return [{ op: '*' }];\n  const parts = ver.split(/[-+]/)[0].split('.');\n  if (parts.length > 3 || !parts.every((p) => /^(\\d+|x|X|\\*)$/.test(p))) throw new Error(`bad version in constraint: ${token}`);\n  const pre = ver.includes('-') ? ver.slice(ver.indexOf('-') + 1).split('+')[0] : '';\n  const wild = parts.findIndex((p) => p === 'x' || p === 'X' || p === '*');\n  const nums = parts.map((p) => (/^\\d+$/.test(p) ? parseInt(p, 10) : null));\n  const given = wild === -1 ? parts.length : wild;\n  const base = [nums[0] || 0, given > 1 ? nums[1] || 0 : 0, given > 2 ? nums[2] || 0 : 0];\n  const v = (n) => ({ nums: [n[0], n[1], n[2], 0], pre: '' });\n  const exact = { nums: [base[0], base[1], base[2], 0], pre };\n  const upper = (level) => {\n    if (level === 0) return v([base[0] + 1, 0, 0]);\n    return v([base[0], base[1] + 1, 0]);\n  };\n  if (op === '^') {\n    let hi;\n    if (base[0] > 0 || given === 1) hi = v([base[0] + 1, 0, 0]);\n    else if (base[1] > 0 || given === 2) hi = v([0, base[1] + 1, 0]);\n    else hi = v([0, 0, base[2] + 1]);\n    return [{ op: '>=', v: exact }, { op: '<', v: Object.assign(hi, { pre: '0' }) }];\n  }\n  if (op === '~' || op === '~>') {\n    const hi = given <= 1 ? upper(0) : upper(1);\n    return [{ op: '>=', v: exact }, { op: '<', v: Object.assign(hi, { pre: '0' }) }];\n  }\n  if (given < 3 && (op === '=' || op === '!=')) {\n    const lo = exact;\n    const hi = Object.assign(given === 1 ? upper(0) : upper(1), { pre: '0' });\n    if (op === '=') return [{ op: '>=', v: lo }, { op: '<', v: hi }];\n    return [{ op: 'or-outside', lo, hi }];\n  }\n  if (given < 3 && op === '>') return [{ op: '>=', v: Object.assign(given === 1 ? upper(0) : upper(1), { pre: '0' }) }];\n  if (given < 3 && op === '<=') return [{ op: '<', v: Object.assign(given === 1 ? upper(0) : upper(1), { pre: '0' }) }];\n  return [{ op, v: exact }];\n}\n\nfunction testComparator(version, c) {\n  if (c.op === '*') return true;\n  if (c.op === 'or-outside') return compareVersions(version, c.lo) < 0 || compareVersions(version, c.hi) >= 0;\n  const d = compareVersions(version, c.v);\n  switch (c.op) {\n    case '=': return d === 0;\n    case '!=': return d !== 0;\n    case '>': return d > 0;\n    case '<': return d < 0;\n    case '>=': return d >= 0;\n    case '<=': return d <= 0;\n    default: return false;\n  }\n}\n\n// Returns true/false, or null when the constraint can't be parsed.\nfunction satisfies(versionRaw, constraintRaw) {\n  const version = parseVersion(String(versionRaw).replace(/^v/, ''));\n  if (!version || constraintRaw === undefined || constraintRaw === null) return null;\n  // Prereleases of the cluster version are compared as releases, as Helm does\n  // for kubeVersion when the constraint carries a \"-0\".\n  const ver = { nums: version.nums, pre: version.pre };\n  const groups = String(constraintRaw).split('||');\n  let anyParsed = false;\n  for (const group of groups) {\n    let g = group.trim();\n    if (g === '') continue;\n    g = g.replace(/(\\S+)\\s+-\\s+(\\S+)/g, '>=$1 <=$2');\n    g = g.replace(/(>=|<=|!=|~>|>|<|=|~|\\^)\\s+/g, '$1');\n    const tokens = g.split(/[\\s,]+/).filter(Boolean);\n    let comparators;\n    try {\n      comparators = [].concat(...tokens.map(expandComparator));\n    } catch (e) {\n      return null;\n    }\n    if (comparators.some((c) => c.v && compareVersions(ver, c.v) === null)) return null;\n    anyParsed = true;\n    if (comparators.every((c) => testComparator(ver, c))) return true;\n  }\n  return anyParsed ? false : null;\n}\n\n// digest | pin | patch | minor | major | downgrade | unknown\nfunction classifyUpdate(oldTag, newTag, oldDigest, newDigest) {\n  if (oldTag === newTag) {\n    if (!oldDigest && newDigest) return 'pin';\n    if (oldDigest && newDigest && oldDigest !== newDigest) return 'digest';\n    return 'unknown';\n  }\n  const a = parseVersion(oldTag);\n  const b = parseVersion(newTag);\n  if (!a || !b) return 'unknown';\n  const d = compareVersions(a, b);\n  if (d === null) return 'unknown';\n  if (d > 0) return 'downgrade';\n  if (a.nums[0] !== b.nums[0]) return 'major';\n  if (a.nums[1] !== b.nums[1]) return 'minor';\n  return 'patch';\n}\n\n// ---------------------------------------------------------------- PR parsing\n\nfunction linkText(cell) {\n  const m = cell.match(/\\[([^\\]]+)\\]\\(([^)]+)\\)/);\n  return m ? m[1].trim() : cell.replace(/[`*]/g, '').trim();\n}\n\n// Renovate's \"| Package | Type | Update | Change |\" table. Columns vary.\nfunction parseRenovateTable(body) {\n  const lines = String(body || '').split(/\\r?\\n/);\n  const start = lines.findIndex((l) => /^\\|\\s*Package\\s*\\|/i.test(l.trim()));\n  if (start === -1) return [];\n  const headers = lines[start].trim().replace(/^\\||\\|$/g, '').split('|').map((h) => h.trim().toLowerCase());\n  const rows = [];\n  for (let i = start + 2; i < lines.length; i++) {\n    const line = lines[i].trim();\n    if (!line.startsWith('|')) break;\n    const cells = line.replace(/^\\||\\|$/g, '').split('|').map((c) => c.trim());\n    const row = {};\n    headers.forEach((h, idx) => { row[h] = cells[idx] || ''; });\n    const change = (row.change || '').match(/`([^`]+)`\\s*(?:→|->|&#8594;)\\s*`([^`]+)`/);\n    const source = (row.package || '').match(/\\[source\\]\\(([^)]+)\\)/);\n    rows.push({\n      package: linkText(row.package || ''),\n      type: (row.type || '').trim(),\n      update: (row.update || '').replace(/[`*]/g, '').trim().toLowerCase(),\n      from: change ? change[1] : null,\n      to: change ? change[2] : null,\n      source_url: source ? source[1] : null,\n    });\n  }\n  return rows;\n}\n\nfunction extractReleaseNotes(body) {\n  const text = String(body || '');\n  const i = text.search(/^###\\s+Release Notes\\s*$/m);\n  if (i === -1) return null;\n  const rest = text.slice(i);\n  const end = rest.search(/\\n---\\s*\\n|^###\\s+Configuration/m);\n  return end === -1 ? rest : rest.slice(0, end);\n}\n\nfunction parseImageRef(raw) {\n  if (!raw) return null;\n  let ref = String(raw).trim().replace(/^[\"']|[\"']$/g, '');\n  if (!ref || /\\s/.test(ref)) return null;\n  let digest = null;\n  const at = ref.indexOf('@');\n  if (at !== -1) {\n    digest = ref.slice(at + 1);\n    ref = ref.slice(0, at);\n  }\n  let tag = null;\n  const slash = ref.lastIndexOf('/');\n  const colon = ref.lastIndexOf(':');\n  if (colon > slash) {\n    tag = ref.slice(colon + 1);\n    ref = ref.slice(0, colon);\n  }\n  const parts = ref.split('/');\n  let registry = 'docker.io';\n  if (parts.length > 1 && (parts[0].includes('.') || parts[0].includes(':') || parts[0] === 'localhost')) {\n    registry = parts.shift();\n  }\n  if (registry === 'index.docker.io' || registry === 'registry-1.docker.io') registry = 'docker.io';\n  let repository = parts.join('/');\n  if (!repository) return null;\n  if (registry === 'docker.io' && !repository.includes('/')) repository = `library/${repository}`;\n  const depName = registry === 'docker.io'\n    ? repository.replace(/^library\\//, '')\n    : `${registry}/${repository}`;\n  return { registry, repository, tag, digest, depName };\n}\n\nfunction imageKey(img) {\n  return `${img.registry}/${img.repository}${img.tag ? `:${img.tag}` : ''}${img.digest ? `@${img.digest}` : ''}`;\n}\n\nconst VERSION_TOKEN = /(sha256:[0-9a-f]{64}|v?\\d+(?:\\.\\d+){1,3}(?:[-+][0-9A-Za-z.+-]*)?)/g;\n\nfunction maskVersions(line) {\n  return line.replace(VERSION_TOKEN, '<v>');\n}\n\n// Pairs removed/added lines in each hunk and classifies each pair.\nfunction parsePatch(patch) {\n  const pairs = [];\n  const lines = String(patch || '').split('\\n');\n  let context = [];\n  let removed = [];\n  let added = [];\n  const flush = () => {\n    const n = Math.max(removed.length, added.length);\n    for (let i = 0; i < n; i++) {\n      pairs.push({ old: removed[i] === undefined ? null : removed[i], new: added[i] === undefined ? null : added[i], context: context.slice(-6) });\n    }\n    removed = [];\n    added = [];\n  };\n  for (const line of lines) {\n    if (line.startsWith('@@')) {\n      flush();\n      context = [];\n      continue;\n    }\n    if (line.startsWith('-')) {\n      if (added.length) flush();\n      removed.push(line.slice(1));\n    } else if (line.startsWith('+')) {\n      added.push(line.slice(1));\n    } else {\n      flush();\n      context.push(line.startsWith(' ') ? line.slice(1) : line);\n    }\n  }\n  flush();\n  return pairs;\n}\n\nfunction keyValue(line) {\n  const m = String(line || '').match(/^\\s*(?:-\\s+)?([\\w.-]+):\\s*(.*?)\\s*$/);\n  return m ? { key: m[1], value: m[2].replace(/^[\"']|[\"']$/g, '') } : null;\n}\n\nfunction firstVersionToken(s) {\n  const m = String(s || '').match(/v?\\d+(?:\\.\\d+){1,3}(?:[-+][0-9A-Za-z.+-]*)?/);\n  return m ? m[0] : null;\n}\n\n// Turns the PR's files into a list of version changes.\nfunction extractChanges(files, table) {\n  const changes = [];\n  const helmRows = (table || []).filter((r) => /helm/i.test(r.type));\n  for (const f of files || []) {\n    if (typeof f.patch !== 'string') {\n      changes.push({ file: f.filename, kind: 'unparsed', versionOnly: false, reason: 'no patch in API response' });\n      continue;\n    }\n    for (const pair of parsePatch(f.patch)) {\n      const versionOnly = pair.old !== null && pair.new !== null && maskVersions(pair.old) === maskVersions(pair.new) && pair.old !== pair.new;\n      const kvOld = keyValue(pair.old);\n      const kvNew = keyValue(pair.new);\n      const change = { file: f.filename, versionOnly, old_line: pair.old, new_line: pair.new };\n      const key = kvNew ? kvNew.key : kvOld ? kvOld.key : null;\n      const ctx = pair.context.join('\\n');\n      if (key === 'image' && kvNew) {\n        const a = kvOld ? parseImageRef(kvOld.value) : null;\n        const b = parseImageRef(kvNew.value);\n        Object.assign(change, {\n          kind: 'image',\n          package: b ? b.depName : null,\n          image: b,\n          from: a ? a.tag : null,\n          to: b ? b.tag : null,\n          update: a && b ? classifyUpdate(a.tag, b.tag, a.digest, b.digest) : 'unknown',\n          datasource: 'docker',\n        });\n      } else if ((key === 'newTag' || key === 'tag') && kvNew) {\n        const nameLine = pair.context.slice().reverse().map(keyValue).find((kv) => kv && /^(newName|name|repository)$/.test(kv.key));\n        const img = nameLine ? parseImageRef(`${nameLine.value}:${kvNew.value}`) : null;\n        Object.assign(change, {\n          kind: 'image',\n          package: img ? img.depName : null,\n          image: img,\n          from: kvOld ? kvOld.value : null,\n          to: kvNew.value,\n          update: kvOld ? classifyUpdate(kvOld.value, kvNew.value) : 'unknown',\n          datasource: 'docker',\n        });\n      } else if (key === 'version' && kvNew) {\n        const renovateHint = ctx.match(/#\\s*renovate:\\s*datasource=(\\S+)\\s+depName=(\\S+)/);\n        const chartLine = pair.context.slice().reverse().map(keyValue).find((kv) => kv && kv.key === 'chart');\n        const from = kvOld ? kvOld.value : null;\n        const to = kvNew.value;\n        if (renovateHint) {\n          Object.assign(change, { kind: 'release', package: renovateHint[2], datasource: renovateHint[1] });\n        } else if (chartLine || helmRows.length === 1) {\n          Object.assign(change, { kind: 'chart', package: chartLine ? chartLine.value : helmRows[0].package, datasource: 'helm' });\n        } else {\n          Object.assign(change, { kind: 'other', package: null, datasource: null });\n        }\n        Object.assign(change, { from, to, update: from ? classifyUpdate(from, to) : 'unknown' });\n      } else {\n        const from = firstVersionToken(pair.old);\n        const to = firstVersionToken(pair.new);\n        Object.assign(change, {\n          kind: 'other',\n          package: null,\n          datasource: null,\n          from,\n          to,\n          update: from && to ? classifyUpdate(from, to) : 'unknown',\n        });\n      }\n      changes.push(change);\n    }\n  }\n  return changes;\n}\n\nfunction pathClass(filename) {\n  const f = String(filename || '');\n  if (/(^|\\/)gotk-components\\.ya?ml$/.test(f)) return 'gotk';\n  if (f.startsWith('clusters/')) return 'clusters';\n  if (f.startsWith('infrastructure/')) return 'infrastructure';\n  if (f.startsWith('apps/')) return 'apps';\n  return 'other';\n}\n\nfunction parseDashboard(body) {\n  const out = { pending: [], open: [], closed: [] };\n  let section = null;\n  for (const line of String(body || '').split(/\\r?\\n/)) {\n    const h = line.match(/^##\\s+(.*)$/);\n    if (h) {\n      const title = h[1].toLowerCase();\n      section = title.includes('pending approval') ? 'pending'\n        : title.startsWith('open') ? 'open'\n          : title.includes('closed') ? 'closed' : null;\n      continue;\n    }\n    const m = line.match(/<!--\\s*(?:approve|rebase|recreate|unlimit)-branch=([^\\s>]+)\\s*-->/);\n    if (m && section) out[section].push(m[1]);\n  }\n  return out;\n}\n\n// Finds one chart version's entry in a Helm repository index.\n// Returns {found, kubeVersion} or null when the text isn't an index.\nfunction findChartEntry(indexText, chart, version) {\n  const text = String(indexText || '');\n  const want = String(version).replace(/^v/, '');\n  if (text.trim().startsWith('{')) {\n    let doc;\n    try { doc = JSON.parse(text); } catch (e) { return null; }\n    const list = doc && doc.entries && doc.entries[chart];\n    if (!Array.isArray(list)) return doc && doc.entries ? { found: false, kubeVersion: null } : null;\n    const e = list.find((x) => String(x.version).replace(/^v/, '') === want);\n    return e ? { found: true, kubeVersion: e.kubeVersion || null } : { found: false, kubeVersion: null };\n  }\n  const lines = text.split(/\\r?\\n/);\n  const entriesAt = lines.findIndex((l) => /^entries:\\s*$/.test(l));\n  if (entriesAt === -1) return null;\n  let chartIndent = -1;\n  let i = entriesAt + 1;\n  for (; i < lines.length; i++) {\n    if (/^\\S/.test(lines[i])) return { found: false, kubeVersion: null };\n    const m = lines[i].match(/^(\\s+)([\"']?)([^\"':\\s]+)\\2:\\s*$/);\n    if (m && m[3] === chart) {\n      chartIndent = m[1].length;\n      break;\n    }\n  }\n  if (chartIndent === -1) return { found: false, kubeVersion: null };\n  let item = null;\n  let itemIndent = -1;\n  const finish = () => {\n    if (item && String(item.version || '').replace(/^v/, '') === want) return true;\n    return false;\n  };\n  for (i += 1; i < lines.length; i++) {\n    const line = lines[i];\n    if (line.trim() === '') continue;\n    const indent = line.match(/^\\s*/)[0].length;\n    const dash = line.match(/^(\\s*)-\\s+(.*)$/);\n    if (dash && (itemIndent === -1 ? indent >= chartIndent : indent === itemIndent)) {\n      if (finish()) break;\n      itemIndent = indent;\n      item = {};\n      const kv = keyValue(dash[2]);\n      if (kv) item[kv.key] = kv.value;\n      continue;\n    }\n    if (indent <= chartIndent && !dash) break;\n    if (item && indent === itemIndent + 2) {\n      const kv = keyValue(line);\n      if (kv && (kv.key === 'version' || kv.key === 'kubeVersion')) item[kv.key] = kv.value;\n    }\n  }\n  if (finish()) return { found: true, kubeVersion: item.kubeVersion || null };\n  return { found: false, kubeVersion: null };\n}\n\nfunction parseAuthChallenge(header) {\n  const h = Array.isArray(header) ? header[0] : header;\n  const m = String(h || '').match(/^Bearer\\s+(.*)$/i);\n  if (!m) return null;\n  const out = {};\n  const re = /(\\w+)=\"([^\"]*)\"/g;\n  let p;\n  while ((p = re.exec(m[1])) !== null) out[p[1]] = p[2];\n  return out.realm ? out : null;\n}\n\nconst MANIFEST_ACCEPT = [\n  'application/vnd.oci.image.index.v1+json',\n  'application/vnd.docker.distribution.manifest.list.v2+json',\n  'application/vnd.oci.image.manifest.v1+json',\n  'application/vnd.docker.distribution.manifest.v2+json',\n].join(', ');\n\n// true/false for an index; null for a single-platform manifest.\nfunction amd64InIndex(manifest) {\n  if (!manifest || !Array.isArray(manifest.manifests)) return null;\n  return manifest.manifests.some((m) => m.platform && m.platform.os === 'linux' && m.platform.architecture === 'amd64');\n}\n\nfunction header(headers, name) {\n  if (!headers) return null;\n  const want = name.toLowerCase();\n  for (const k of Object.keys(headers)) {\n    if (k.toLowerCase() === want) return Array.isArray(headers[k]) ? headers[k][0] : headers[k];\n  }\n  return null;\n}\n\nfunction bodyText(body) {\n  if (body === undefined || body === null) return '';\n  if (typeof body === 'string') return body;\n  if (body.type === 'Buffer' && Array.isArray(body.data)) {\n    let s = '';\n    for (let i = 0; i < body.data.length; i += 8192) s += String.fromCharCode.apply(null, body.data.slice(i, i + 8192));\n    try { return decodeURIComponent(escape(s)); } catch (e) { return s; }\n  }\n  return JSON.stringify(body);\n}\n\nfunction bodyJson(body) {\n  if (body && typeof body === 'object' && body.type !== 'Buffer') return body;\n  try { return JSON.parse(bodyText(body)); } catch (e) { return null; }\n}\n\n// SHA-256 of a string's UTF-8 bytes, in pure JS (Code nodes can't load crypto).\n// Evidence for sources that send no ETag.\nfunction rotr(x, n) {\n  return (x >>> n) | (x << (32 - n));\n}\n\nfunction fracBits(x) {\n  return Math.floor((x - Math.floor(x)) * 0x100000000) | 0;\n}\n\nconst SHA256_K = [];\nconst SHA256_H = [];\nfor (let n = 2; SHA256_K.length < 64; n++) {\n  let prime = true;\n  for (let d = 2; d * d <= n; d++) if (n % d === 0) prime = false;\n  if (!prime) continue;\n  if (SHA256_H.length < 8) SHA256_H.push(fracBits(Math.sqrt(n)));\n  SHA256_K.push(fracBits(Math.cbrt(n)));\n}\n\nfunction sha256Hex(message) {\n  const bin = unescape(encodeURIComponent(String(message)));\n  const len = bin.length;\n  const words = [];\n  for (let i = 0; i < len; i++) words[i >> 2] |= (bin.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8);\n  words[len >> 2] |= 0x80 << (24 - (len % 4) * 8);\n  const total = (((len + 8) >> 6) + 1) * 16;\n  for (let i = 0; i < total; i++) words[i] = words[i] | 0;\n  words[total - 1] = (len * 8) | 0;\n  words[total - 2] = Math.floor((len * 8) / 0x100000000) | 0;\n  const H = SHA256_H.slice();\n  const W = new Array(64);\n  for (let j = 0; j < total; j += 16) {\n    for (let t = 0; t < 64; t++) {\n      if (t < 16) {\n        W[t] = words[j + t];\n      } else {\n        const s0 = rotr(W[t - 15], 7) ^ rotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);\n        const s1 = rotr(W[t - 2], 17) ^ rotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);\n        W[t] = (W[t - 16] + s0 + W[t - 7] + s1) | 0;\n      }\n    }\n    let [a, b, c, d, e, f, g, h] = H;\n    for (let t = 0; t < 64; t++) {\n      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA256_K[t] + W[t]) | 0;\n      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;\n      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;\n    }\n    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;\n    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;\n  }\n  return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');\n}\n\n// ---------------------------------------------------------------- fetchers (http injected)\n\nasync function fetchClusterVersion(http, url) {\n  try {\n    const r = await http({ method: 'GET', url, headers: { Accept: 'application/json' } });\n    const j = bodyJson(r.body);\n    if (r.statusCode !== 200 || !j || !j.gitVersion) return { url, error: `HTTP ${r.statusCode}` };\n    return { url, gitVersion: j.gitVersion, etag_or_sha: j.gitCommit || `sha256:${sha256Hex(bodyText(r.body))}` };\n  } catch (e) {\n    return { url, error: String(e.message || e) };\n  }\n}\n\nasync function fetchChartIndex(http, url) {\n  try {\n    const r = await http({ method: 'GET', url, headers: { Accept: 'application/x-yaml, text/yaml, */*' } });\n    if (r.statusCode !== 200) return { url, error: `HTTP ${r.statusCode}` };\n    const text = bodyText(r.body);\n    return { url, etag: header(r.headers, 'etag') || `sha256:${sha256Hex(text)}`, text };\n  } catch (e) {\n    return { url, error: String(e.message || e) };\n  }\n}\n\nasync function registryGet(http, img, path, accept, tokenCache) {\n  const host = img.registry === 'docker.io' ? 'registry-1.docker.io' : img.registry;\n  const url = `https://${host}/v2/${img.repository}/${path}`;\n  const headers = { Accept: accept };\n  const scopeKey = `${host}/${img.repository}`;\n  if (tokenCache[scopeKey]) headers.Authorization = `Bearer ${tokenCache[scopeKey]}`;\n  let r = await http({ method: 'GET', url, headers });\n  if (r.statusCode === 401) {\n    const ch = parseAuthChallenge(header(r.headers, 'www-authenticate'));\n    if (!ch) return { url, r };\n    const q = [];\n    if (ch.service) q.push(`service=${encodeURIComponent(ch.service)}`);\n    q.push(`scope=${encodeURIComponent(ch.scope || `repository:${img.repository}:pull`)}`);\n    const t = await http({ method: 'GET', url: `${ch.realm}?${q.join('&')}`, headers: { Accept: 'application/json' } });\n    const tj = bodyJson(t.body);\n    const token = tj && (tj.token || tj.access_token);\n    if (!token) return { url, r };\n    tokenCache[scopeKey] = token;\n    headers.Authorization = `Bearer ${token}`;\n    r = await http({ method: 'GET', url, headers });\n  }\n  return { url, r };\n}\n\nasync function fetchImage(http, img, tokenCache) {\n  const ref = img.digest || img.tag;\n  if (!ref) return { error: 'no tag or digest' };\n  try {\n    const { url, r } = await registryGet(http, img, `manifests/${ref}`, MANIFEST_ACCEPT, tokenCache);\n    if (r.statusCode !== 200) return { url, error: `HTTP ${r.statusCode}` };\n    const digest = header(r.headers, 'docker-content-digest');\n    const manifest = bodyJson(r.body);\n    if (!manifest) return { url, error: 'manifest is not JSON' };\n    let amd64 = amd64InIndex(manifest);\n    let platform = null;\n    if (amd64 === null && manifest.config && manifest.config.digest) {\n      const blob = await registryGet(http, img, `blobs/${manifest.config.digest}`, 'application/json', tokenCache);\n      const cfg = blob.r.statusCode === 200 ? bodyJson(blob.r.body) : null;\n      if (!cfg) return { url, digest, error: `config blob HTTP ${blob.r.statusCode}` };\n      platform = `${cfg.os}/${cfg.architecture}`;\n      amd64 = cfg.os === 'linux' && cfg.architecture === 'amd64';\n    }\n    if (amd64 === null) return { url, digest, error: 'unrecognised manifest' };\n    return { url, digest: digest || `body-sha256:${sha256Hex(bodyText(r.body))}`, amd64, platform };\n  } catch (e) {\n    return { error: String(e.message || e) };\n  }\n}\n\n// Gathers every non-GitHub fact the checks need for one PR.\nasync function gatherExternalFacts(http, changes, config, caches) {\n  const charts = {};\n  const images = {};\n  for (const c of changes) {\n    if (c.kind === 'chart' && c.package && c.to) {\n      const key = `${c.package}@${c.to}`;\n      const repoUrl = config.helm_index[c.package];\n      if (!repoUrl) {\n        charts[key] = { error: 'chart has no helm_index entry in config' };\n        continue;\n      }\n      const indexUrl = `${String(repoUrl).replace(/\\/+$/, '')}/index.yaml`;\n      if (!caches.index[indexUrl]) caches.index[indexUrl] = await fetchChartIndex(http, indexUrl);\n      const idx = caches.index[indexUrl];\n      if (idx.error) {\n        charts[key] = { url: indexUrl, error: idx.error };\n        continue;\n      }\n      const entry = findChartEntry(idx.text, c.package, c.to);\n      charts[key] = entry\n        ? { url: indexUrl, etag: idx.etag, found: entry.found, kubeVersion: entry.kubeVersion }\n        : { url: indexUrl, error: 'not a Helm index' };\n    }\n    if (c.kind === 'image' && c.image) {\n      const key = imageKey(c.image);\n      if (!caches.image[key]) caches.image[key] = await fetchImage(http, c.image, caches.tokens);\n      images[key] = caches.image[key];\n    }\n  }\n  return { charts, images };\n}\n\n// ---------------------------------------------------------------- checks\n\nfunction check(id, result, evidence, extra) {\n  return Object.assign({ id, result, evidence: evidence || {} }, extra || {});\n}\n\n// Missing evidence means not_run, never pass.\nfunction finalize(c) {\n  if (!RESULTS.includes(c.result)) c.result = 'not_run';\n  const e = c.evidence || {};\n  if (c.result !== 'not_run' && (!e.source_url || !e.etag_or_sha)) {\n    c.evidence = Object.assign({}, e, { missing_evidence: true, original_result: c.result });\n    c.result = 'not_run';\n  }\n  return c;\n}\n\nfunction filesEvidence(facts, compared) {\n  return { source_url: facts.files && facts.files.url, etag_or_sha: facts.files && (facts.files.etag || facts.pr.head_sha), compared };\n}\n\nfunction prEvidence(facts, compared) {\n  return { source_url: facts.pr.html_url, etag_or_sha: facts.pr.etag || null, compared };\n}\n\nfunction configEvidence(facts, compared) {\n  return { source_url: CONFIG_SOURCE, etag_or_sha: facts.config_sha || null, compared };\n}\n\nfunction versionChanges(changes) {\n  return changes.filter((c) => ['image', 'chart', 'release'].includes(c.kind));\n}\n\nfunction checkR1(facts, ctx) {\n  if (!ctx.isRenovate) return check('R1', 'not_run', { compared: 'not applicable: not a Renovate PR' }, { required: false });\n  const diffTypes = ctx.changes.filter((c) => c.kind !== 'unparsed' && c.old_line !== null && c.new_line !== null && c.update !== 'unknown').map((c) => c.update);\n  const tableTypes = ctx.table.map((r) => r.update).filter(Boolean);\n  const compared = {\n    diff: ctx.changes.filter((c) => c.kind !== 'unparsed').map((c) => ({ file: c.file, package: c.package || null, from: c.from || null, to: c.to || null, update: c.update })),\n    renovate_table: ctx.table.map((r) => ({ package: r.package, update: r.update, from: r.from, to: r.to })),\n  };\n  if (!facts.files || ctx.changes.some((c) => c.kind === 'unparsed') || diffTypes.length === 0 || tableTypes.length === 0) {\n    return check('R1', 'not_run', Object.assign(filesEvidence(facts, compared), { reason: 'could not classify from the diff or the PR table' }), { required: true });\n  }\n  const diffSet = Array.from(new Set(diffTypes)).sort();\n  const tableSet = Array.from(new Set(tableTypes)).sort();\n  const toValues = ctx.table.map((r) => r.to).filter(Boolean);\n  const addedText = ctx.changes.map((c) => c.new_line || '').join('\\n');\n  const valuesInDiff = toValues.every((v) => addedText.includes(v));\n  const agree = diffSet.join(',') === tableSet.join(',') && valuesInDiff;\n  compared.classification = diffSet.length === 1 ? diffSet[0] : 'mixed';\n  if (!agree) compared.mismatch = { diff: diffSet, table: tableSet, table_values_in_diff: valuesInDiff };\n  return check('R1', agree ? 'pass' : 'flag', filesEvidence(facts, compared), { required: true, classification: compared.classification });\n}\n\nfunction checkR2(facts, ctx) {\n  if (!facts.files) return check('R2', 'not_run', { compared: 'files not read' }, { required: true });\n  const files = facts.files.items || [];\n  const classes = Array.from(new Set(files.map((f) => pathClass(f.filename))));\n  const additions = files.reduce((n, f) => n + (f.additions || 0), 0);\n  const deletions = files.reduce((n, f) => n + (f.deletions || 0), 0);\n  const singleLine = files.length === 1 && additions === 1 && deletions === 1 && ctx.changes.length === 1 && ctx.changes[0].versionOnly;\n  const compared = {\n    files: files.map((f) => ({ path: f.filename, class: pathClass(f.filename), additions: f.additions, deletions: f.deletions })),\n    single_version_line: singleLine,\n    path_classes: classes,\n  };\n  const ok = singleLine && classes.length === 1 && classes[0] === 'apps';\n  return check('R2', ok ? 'pass' : 'flag', filesEvidence(facts, compared), { required: true, path_classes: classes, single_version_line: singleLine });\n}\n\nfunction ruleMatches(rule, pkg, datasource, update) {\n  if (rule.package && rule.package !== pkg) return false;\n  if (rule.datasource && rule.datasource !== datasource) return false;\n  if (rule.update_types.length && !rule.update_types.includes(update)) return false;\n  return true;\n}\n\nfunction packagesOf(ctx) {\n  const out = [];\n  for (const c of versionChanges(ctx.changes)) {\n    if (c.package) out.push({ package: c.package, datasource: c.datasource, update: c.update, from: c.from, to: c.to });\n  }\n  for (const r of ctx.table) {\n    if (!out.some((p) => p.package === r.package)) {\n      out.push({ package: r.package, datasource: /helm/i.test(r.type) ? 'helm' : null, update: r.update, from: r.from, to: r.to });\n    }\n  }\n  return out;\n}\n\nfunction checkR3(facts, ctx, config) {\n  const pkgs = packagesOf(ctx);\n  const gated = [];\n  for (const p of pkgs) {\n    const rule = config.gated.find((r) => ruleMatches(r, p.package, p.datasource, p.update));\n    if (rule) gated.push({ package: p.package, update: p.update, rule });\n  }\n  const dash = facts.dashboard ? parseDashboard(facts.dashboard.body) : null;\n  const branch = facts.pr.head_ref;\n  const dashboardState = !dash ? 'not read'\n    : dash.open.includes(branch) ? 'open'\n      : dash.pending.includes(branch) ? 'pending approval'\n        : dash.closed.includes(branch) ? 'closed' : 'not listed';\n  const compared = {\n    packages: pkgs.map((p) => `${p.package} (${p.datasource || 'unknown'}, ${p.update})`),\n    gated: gated.map((g) => ({ package: g.package, update: g.update, rule: g.rule })),\n    dashboard: { url: facts.dashboard ? facts.dashboard.url : null, etag: facts.dashboard ? facts.dashboard.etag : null, branch_state: dashboardState },\n  };\n  if (pkgs.length === 0) return check('R3', 'not_run', configEvidence(facts, compared), { required: ctx.isRenovate });\n  return check('R3', gated.length ? 'flag' : 'pass', configEvidence(facts, compared), { required: ctx.isRenovate });\n}\n\nfunction evaluateKubeVersion(entry, cluster) {\n  if (!cluster || !cluster.gitVersion) return { result: 'not_run', reason: 'cluster version not read' };\n  if (!entry.kubeVersion) return { result: 'pass', reason: 'chart declares no kubeVersion' };\n  const ok = satisfies(cluster.gitVersion, entry.kubeVersion);\n  if (ok === null) return { result: 'not_run', reason: `unparsable constraint ${entry.kubeVersion}` };\n  return { result: ok ? 'pass' : 'fail' };\n}\n\nfunction checkR4(facts, ctx) {\n  const charts = ctx.changes.filter((c) => c.kind === 'chart' && c.to);\n  if (charts.length === 0) return check('R4', 'not_run', { compared: 'not applicable: no chart version in the diff' }, { required: false });\n  const per = [];\n  for (const c of charts) {\n    const key = `${c.package}@${c.to}`;\n    const fact = (facts.charts || {})[key];\n    if (!fact || fact.error) {\n      per.push({ chart: key, result: 'not_run', reason: fact ? fact.error : 'index not read', source_url: fact && fact.url });\n      continue;\n    }\n    if (!fact.found) {\n      per.push({ chart: key, result: 'not_run', reason: 'version not in index', source_url: fact.url, etag: fact.etag });\n      continue;\n    }\n    const r = evaluateKubeVersion(fact, facts.cluster);\n    per.push({ chart: key, result: r.result, reason: r.reason, kubeVersion: fact.kubeVersion, cluster: facts.cluster && facts.cluster.gitVersion, source_url: fact.url, etag: fact.etag });\n  }\n  const order = ['fail', 'not_run', 'flag', 'pass'];\n  const worst = per.slice().sort((a, b) => order.indexOf(a.result) - order.indexOf(b.result))[0];\n  const evidence = {\n    source_url: worst.source_url || null,\n    etag_or_sha: worst.etag || null,\n    compared: { charts: per, cluster_source: facts.cluster ? facts.cluster.url : null },\n  };\n  if (worst.result !== 'not_run' && !(facts.cluster && facts.cluster.gitVersion)) return check('R4', 'not_run', evidence, { required: true });\n  return check('R4', worst.result, evidence, { required: true });\n}\n\nfunction checkR5(facts, ctx, config) {\n  const pkgs = packagesOf(ctx);\n  const violations = [];\n  for (const p of pkgs) {\n    for (const cap of config.caps) {\n      if (cap.package === p.package && p.to && compareVersions(p.to.replace(/^v/, ''), cap.below.replace(/^v/, '')) >= 0) {\n        violations.push({ package: p.package, rule: `below ${cap.below}`, to: p.to });\n      }\n    }\n    if (config.one_minor_per_pr.includes(p.package) && p.from && p.to) {\n      const a = parseVersion(p.from);\n      const b = parseVersion(p.to);\n      if (a && b && (a.nums[0] !== b.nums[0] || b.nums[1] - a.nums[1] > 1)) {\n        violations.push({ package: p.package, rule: 'one minor per PR', from: p.from, to: p.to });\n      }\n    }\n    for (const g of config.groups) {\n      if (g.packages.includes(p.package) && facts.pr.head_ref !== g.branch) {\n        violations.push({ package: p.package, rule: `group ${g.name} must come from ${g.branch}`, branch: facts.pr.head_ref });\n      }\n    }\n  }\n  const names = pkgs.map((p) => p.package).concat((facts.files ? facts.files.items : []).map((f) => f.filename));\n  for (const removed of config.removed) {\n    if (names.some((n) => String(n).toLowerCase().includes(String(removed).toLowerCase()))) {\n      violations.push({ package: removed, rule: 'removed from this cluster; any reappearance is flagged' });\n    }\n  }\n  const compared = { packages: pkgs.map((p) => p.package), violations };\n  if (pkgs.length === 0 && violations.length === 0 && ctx.isRenovate) return check('R5', 'not_run', configEvidence(facts, compared), { required: true });\n  return check('R5', violations.length ? 'fail' : 'pass', configEvidence(facts, compared), { required: true });\n}\n\nfunction checkR6(facts, ctx, config) {\n  if (!ctx.isRenovate) return check('R6', 'not_run', { compared: 'not applicable: not a Renovate PR' }, { required: false });\n  const notes = extractReleaseNotes(facts.pr.body);\n  if (notes === null) {\n    return check('R6', 'pass', prEvidence(facts, { release_notes: 'none in the PR body', hits: [] }), { required: true });\n  }\n  const lower = notes.toLowerCase();\n  const hits = config.release_note_keywords.filter((k) => lower.includes(String(k).toLowerCase()));\n  return check('R6', hits.length ? 'flag' : 'pass', prEvidence(facts, { release_notes_chars: notes.length, hits }), { required: true });\n}\n\nfunction checkR7(facts) {\n  const pr = facts.pr;\n  if (pr.mergeable === undefined && pr.mergeable_state === undefined) {\n    return check('R7', 'not_run', prEvidence(facts, 'PR detail not read'), { required: false, informational: true });\n  }\n  const ageDays = facts.now && pr.created_at ? Math.floor((Date.parse(facts.now) - Date.parse(pr.created_at)) / 86400000) : null;\n  const compared = { mergeable: pr.mergeable, mergeable_state: pr.mergeable_state, draft: !!pr.draft, age_days: ageDays };\n  const ok = pr.mergeable !== false && !pr.draft && pr.mergeable_state !== 'dirty';\n  return check('R7', ok ? 'pass' : 'flag', prEvidence(facts, compared), { required: false, informational: true });\n}\n\nfunction checkR8(facts, ctx) {\n  const imgs = ctx.changes.filter((c) => c.kind === 'image' && c.image);\n  if (imgs.length === 0) return check('R8', 'not_run', { compared: 'not applicable: no image in the diff' }, { required: false });\n  const per = imgs.map((c) => {\n    const key = imageKey(c.image);\n    const fact = (facts.images || {})[key];\n    if (!fact || fact.error) return { image: key, result: 'not_run', reason: fact ? fact.error : 'registry not read', source_url: fact && fact.url };\n    return { image: key, result: fact.amd64 ? 'pass' : 'fail', platform: fact.platform || null, source_url: fact.url, digest: fact.digest };\n  });\n  const order = ['fail', 'not_run', 'pass'];\n  const worst = per.slice().sort((a, b) => order.indexOf(a.result) - order.indexOf(b.result))[0];\n  return check('R8', worst.result, { source_url: worst.source_url || null, etag_or_sha: worst.digest || null, compared: { images: per } }, { required: true });\n}\n\nfunction compilePatterns(patterns) {\n  const out = [];\n  let invalid = 0;\n  for (const raw of patterns || []) {\n    const p = String(raw).trim();\n    if (!p || p.startsWith('#')) continue;\n    const m = p.match(/^\\/(.+)\\/([gimsuy]*)$/);\n    if (m) {\n      try {\n        out.push(new RegExp(m[1], m[2].includes('i') ? m[2] : `${m[2]}i`));\n      } catch (e) {\n        invalid++;\n      }\n    } else {\n      out.push(p.toLowerCase());\n    }\n  }\n  return { list: out, invalid };\n}\n\nfunction countMatches(text, compiled) {\n  const lower = text.toLowerCase();\n  let n = 0;\n  for (const p of compiled) {\n    if (typeof p === 'string' ? lower.includes(p) : p.test(text)) n++;\n  }\n  return n;\n}\n\nfunction checkR9(facts, ctx) {\n  if (ctx.isRenovate) return check('R9', 'not_run', { compared: 'not applicable: Renovate PR' }, { required: false });\n  const compiled = compilePatterns(facts.patterns);\n  if (!facts.files) return check('R9', 'not_run', { compared: 'files not read' }, { required: true });\n  if (compiled.list.length === 0) return check('R9', 'not_run', filesEvidence(facts, { reason: 'no deny-list patterns loaded' }), { required: true });\n  const hitFiles = [];\n  let total = 0;\n  for (const f of facts.files.items || []) {\n    const added = String(f.patch || '').split('\\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\\n');\n    const n = countMatches(`${f.filename}\\n${added}`, compiled.list);\n    if (n) {\n      hitFiles.push(f.filename);\n      total += n;\n    }\n  }\n  total += countMatches(`${facts.pr.title || ''}\\n${facts.pr.body || ''}`, compiled.list);\n  const unpatched = (facts.files.items || []).filter((f) => typeof f.patch !== 'string').map((f) => f.filename);\n  // Deny-list values are never echoed: only counts and file paths.\n  const compared = { patterns: compiled.list.length, invalid_patterns: compiled.invalid, matched_patterns: total, files_with_matches: hitFiles, files_without_patch: unpatched };\n  if (total > 0) return check('R9', 'fail', filesEvidence(facts, compared), { required: true });\n  if (unpatched.length) return check('R9', 'not_run', filesEvidence(facts, compared), { required: true });\n  return check('R9', 'pass', filesEvidence(facts, compared), { required: true });\n}\n\n// ---------------------------------------------------------------- verdict\n\nfunction isNeedsClaudePackage(pkg, config) {\n  return config.needs_claude_packages.includes(pkg);\n}\n\nfunction touchesCrds(facts, ctx) {\n  const files = facts.files ? facts.files.items : [];\n  if (files.some((f) => /crd/i.test(f.filename))) return true;\n  return ctx.changes.some((c) => /kind:\\s*CustomResourceDefinition|crds?\\.ya?ml/i.test(`${c.old_line || ''}\\n${c.new_line || ''}`))\n    || files.some((f) => /^[+-].*kind:\\s*CustomResourceDefinition/m.test(String(f.patch || '')));\n}\n\n// First matching rule wins: blocked, needs-claude, review, low-risk.\nfunction verdictFor(checks, facts, ctx, config) {\n  const by = {};\n  for (const c of checks) by[c.id] = c;\n  const reasons = [];\n  for (const id of ['R4', 'R5', 'R8', 'R9']) {\n    if (by[id].result === 'fail') reasons.push(`${id} fail`);\n  }\n  if (reasons.length) return { verdict: 'blocked', reasons };\n\n  if (by.R3.result === 'flag') reasons.push('R3 gated package (Dependency Dashboard approval)');\n  const pkgs = Array.from(new Set(packagesOf(ctx).map((p) => p.package)));\n  const special = pkgs.filter((p) => isNeedsClaudePackage(p, config));\n  if (special.length) reasons.push(`package needs Claude: ${special.join(', ')}`);\n  if (touchesCrds(facts, ctx)) reasons.push('touches CRDs');\n  const classes = (facts.files ? facts.files.items : []).map((f) => pathClass(f.filename));\n  if (classes.includes('clusters') || classes.includes('gotk')) reasons.push('touches clusters/ or gotk-components');\n  if (reasons.length) return { verdict: 'needs-claude', reasons };\n\n  if (by.R1.result === 'flag') reasons.push('R1 diff and Renovate table disagree');\n  if (by.R2.result === 'flag') reasons.push(`R2 not a single version line in apps/ (${by.R2.path_classes.join(', ')})`);\n  if (by.R6.result === 'flag') reasons.push(`R6 release-note keywords: ${(by.R6.evidence.compared.hits || []).join(', ')}`);\n  const notRun = checks.filter((c) => c.required && c.result === 'not_run').map((c) => c.id);\n  if (notRun.length) reasons.push(`required checks not run: ${notRun.join(', ')}`);\n  if (reasons.length) return { verdict: 'review', reasons };\n\n  const lowRiskType = by.R1.result === 'pass' && config.low_risk_update_types.includes(by.R1.classification);\n  const kinds = versionChanges(ctx.changes);\n  const kindOk = kinds.length > 0 && kinds.every((c) => (c.kind === 'image' && pathClass(c.file) === 'apps') || c.kind === 'chart');\n  const required = (id) => !by[id].required || by[id].result === 'pass';\n  const clear = by.R2.result === 'pass' && by.R3.result === 'pass' && by.R5.result === 'pass' && by.R6.result === 'pass' && required('R4') && required('R8');\n  if (ctx.isRenovate && lowRiskType && kindOk && clear) return { verdict: 'low-risk', reasons: ['all low-risk conditions hold'] };\n  return { verdict: 'review', reasons: ['low-risk conditions not all met'] };\n}\n\nfunction buildContext(facts, config) {\n  const login = facts.pr.user_login;\n  const isRenovate = config.renovate_logins.includes(login);\n  const table = isRenovate ? parseRenovateTable(facts.pr.body) : [];\n  const changes = extractChanges(facts.files ? facts.files.items : [], table);\n  return { isRenovate, table, changes };\n}\n\nfunction evaluate(facts, config) {\n  const ctx = buildContext(facts, config);\n  const checks = [\n    checkR1(facts, ctx),\n    checkR2(facts, ctx),\n    checkR3(facts, ctx, config),\n    checkR4(facts, ctx),\n    checkR5(facts, ctx, config),\n    checkR6(facts, ctx, config),\n    checkR7(facts),\n    checkR8(facts, ctx),\n    checkR9(facts, ctx),\n  ].map(finalize);\n  const v = verdictFor(checks, facts, ctx, config);\n  return { verdict: v.verdict, reasons: v.reasons, checks };\n}\n\n// Fetches the non-GitHub facts one PR needs, then evaluates it.\nasync function triagePR(http, facts, config, caches) {\n  const ctx = buildContext(facts, config);\n  const external = await gatherExternalFacts(http, ctx.changes, config, caches);\n  return evaluate(Object.assign({}, facts, external), config);\n}\n\nfunction newCaches() {\n  return { index: {}, image: {}, tokens: {} };\n}\n\n// A synthetic chart that no cluster satisfies. A run whose control does not\n// come back `fail` is marked broken.\nfunction negativeControl(cluster, config) {\n  const constraint = (config && config.negative_control_kube_version) || '>=99';\n  const r = evaluateKubeVersion({ kubeVersion: constraint }, cluster);\n  return finalize(check('negative_control', r.result, {\n    source_url: cluster ? cluster.url : null,\n    etag_or_sha: cluster ? cluster.etag_or_sha : null,\n    compared: { kubeVersion: constraint, cluster: cluster ? cluster.gitVersion || null : null, reason: r.reason || null },\n  }));\n}\n\n// Picks PRs to triage: open, not draft, head_sha not yet seen, oldest first,\n// capped per run. A capped or failed list keeps no ETag, so the next run refetches.\nfunction selectPRs(lists, seen, config) {\n  const seenSet = new Set(seen || []);\n  const candidates = [];\n  const etags = {};\n  for (const l of lists) {\n    const r = l.response || {};\n    if (r.statusCode === 304) {\n      etags[l.repo] = l.previous_etag || null;\n      continue;\n    }\n    if (r.statusCode !== 200 || !Array.isArray(r.body)) {\n      throw new Error(`listing PRs for ${l.repo} failed: HTTP ${r.statusCode}`);\n    }\n    etags[l.repo] = header(r.headers, 'etag');\n    for (const pr of r.body) {\n      if (pr.draft) continue;\n      const key = `${l.repo}#${pr.number}@${pr.head.sha}`;\n      if (seenSet.has(key)) continue;\n      candidates.push({ repo: l.repo, number: pr.number, head_sha: pr.head.sha, created_at: pr.created_at });\n    }\n  }\n  candidates.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.number - b.number);\n  const selected = candidates.slice(0, config.per_run_cap);\n  if (candidates.length > selected.length) {\n    for (const c of candidates.slice(config.per_run_cap)) etags[c.repo] = null;\n  }\n  return { selected, etags, candidates: candidates.length };\n}\n\nconst RULES_EXPORTS = {\n  RESULTS, VERDICTS, WRITE_MODES, CHECK_IDS,\n  parseConfigYaml, loadConfig, reposFromConfigLine, assertReposMatch, parseVersion, compareVersions, satisfies, classifyUpdate,\n  parseRenovateTable, extractReleaseNotes, parseImageRef, imageKey, parsePatch, extractChanges,\n  pathClass, sha256Hex, parseDashboard, findChartEntry, parseAuthChallenge, amd64InIndex, bodyText, bodyJson,\n  fetchClusterVersion, fetchChartIndex, fetchImage, gatherExternalFacts,\n  finalize, evaluate, verdictFor, triagePR, newCaches, negativeControl, selectPRs, compilePatterns,\n};\n\nif (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {\n  module.exports = RULES_EXPORTS;\n}\n\n// ==== END rules.js ====\n\n// ---- Triage: the only Code node. The nodes before it read GitHub (with the\n// overwritten credential); this one parses the reviewed config, reads the live\n// cluster version, runs the negative control, picks the PRs to triage (new head\n// SHAs only, oldest first, capped), fetches Helm index and registry facts and\n// runs R1-R9. Output: one run summary item, then one item per verdict.\nconst rows = $('Start run').all();\nconst lists = $('List PRs').all();\nconst dashes = $('Get dashboard').all();\nconst prs = $('Get PR').all();\nconst files = $input.all();\nconst first = rows[0].json;\nif (!first.config_body) throw new Error('triage.config has no config.yaml; did the triage-schema initContainer run?');\nconst config = loadConfig(first.config_body);\nassertReposMatch(config, rows.map((r) => r.json.repo));\n// helpers.httpRequest runs in the main n8n process, so NODE_EXTRA_CA_CERTS applies.\nconst http = (opts) => helpers.httpRequest(Object.assign({ returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 30000 }, opts));\nconst cluster = await fetchClusterVersion(http, config.cluster_version_url);\nconst control = negativeControl(cluster, config);\nconst picked = selectPRs(rows.map((r, i) => ({ repo: r.json.repo, previous_etag: r.json.list_etag, response: lists[i].json })), first.seen, config);\n\nconst dashboardByRepo = {};\nrows.forEach((row, i) => {\n  const r = dashes[i].json;\n  const issue = r.statusCode === 200 && Array.isArray(r.body)\n    ? r.body.find((x) => !x.pull_request && x.title === 'Dependency Dashboard')\n    : null;\n  dashboardByRepo[row.json.repo] = issue\n    ? { url: issue.html_url, etag: header(r.headers, 'etag') || issue.updated_at, body: issue.body || '' }\n    : null;\n});\n\n// Get PR and Get files ran once per open PR (or once on a placeholder), in step.\nconst fetched = {};\nfor (let i = 0; i < prs.length; i++) {\n  const p = prs[i].json;\n  if (p.statusCode === 200 && p.body && p.body.number && p.body.base) {\n    fetched[`${p.body.base.repo.full_name}#${p.body.number}`] = { p, f: files[i].json };\n  }\n}\n\nconst caches = newCaches();\nconst verdicts = [];\nfor (const s of picked.selected) {\n  const got = fetched[`${s.repo}#${s.number}`];\n  // A failed read fails the run, so no ETag is stored and the next run retries.\n  if (!got || got.f.statusCode !== 200 || !Array.isArray(got.f.body)) {\n    throw new Error(`reading ${s.repo}#${s.number} failed: PR HTTP ${got ? got.p.statusCode : 'missing'}, files HTTP ${got ? got.f.statusCode : 'missing'}`);\n  }\n  const pr = got.p.body;\n  const facts = {\n    repo: s.repo,\n    now: new Date().toISOString(),\n    config_sha: first.config_sha,\n    pr: {\n      number: pr.number,\n      html_url: pr.html_url,\n      etag: header(got.p.headers, 'etag'),\n      head_sha: pr.head.sha,\n      head_ref: pr.head.ref,\n      user_login: pr.user ? pr.user.login : null,\n      title: pr.title,\n      body: pr.body || '',\n      created_at: pr.created_at,\n      mergeable: pr.mergeable,\n      mergeable_state: pr.mergeable_state,\n      draft: pr.draft,\n    },\n    files: {\n      url: `${pr.url}/files?per_page=100`,\n      etag: header(got.f.headers, 'etag'),\n      items: got.f.body,\n    },\n    dashboard: dashboardByRepo[s.repo],\n    cluster,\n    patterns: first.patterns || [],\n  };\n  const r = await triagePR(http, facts, config, caches);\n  verdicts.push({\n    json: {\n      kind: 'verdict',\n      run_id: first.run_id,\n      repo: s.repo,\n      pr: pr.number,\n      head_sha: pr.head.sha,\n      verdict: r.verdict,\n      reasons: r.reasons,\n      checks: r.checks,\n    },\n  });\n}\n\nconst run = {\n  kind: 'run',\n  run_id: first.run_id,\n  write_mode: config.write_mode,\n  negative_control: control,\n  ok: control.result === 'fail',\n  list_etags: picked.etags,\n  candidates: picked.candidates,\n  triaged: verdicts.length,\n};\nreturn [{ json: run }].concat(verdicts);\n"
+      }
+    },
+    {
+      "id": "0b7c1d8e-0015-4a00-9000-000000000015",
+      "name": "Verdicts only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "0b7c1d8e-0015-4a00-9000-000000000015-c",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "verdict",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0010-4a00-9000-000000000010",
+      "name": "Insert verdict",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO triage.verdicts (run_id, repo, pr, head_sha, verdict, reasons, checks)\nVALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)\nON CONFLICT (repo, pr, head_sha) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$json.run_id, $json.repo, $json.pr, $json.head_sha, $json.verdict, JSON.stringify($json.reasons), JSON.stringify($json.checks)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0011-4a00-9000-000000000011",
+      "name": "Write gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        200
+      ],
+      "notes": "Every GitHub write node must sit after the true output. write_mode comes from config.yaml.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "0b7c1d8e-0011-4a00-9000-0000000000c1",
+              "leftValue": "={{ $('Triage').first().json.write_mode }}",
+              "rightValue": "off",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0012-4a00-9000-000000000012",
+      "name": "No GitHub writes in shadow mode",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2420,
+        120
+      ],
+      "notes": "Placeholder. Label and comment writes arrive in a later PR, behind the Write gate.",
+      "parameters": {}
+    },
+    {
+      "id": "0b7c1d8e-0016-4a00-9000-000000000016",
+      "name": "Run summary only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "0b7c1d8e-0016-4a00-9000-000000000016-c",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "run",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0014-4a00-9000-000000000014",
+      "name": "Finish run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1980,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE triage.runs\nSET finished = now(),\n    pr_count = (SELECT count(*) FROM triage.verdicts WHERE run_id = $1),\n    negative_control = $2,\n    ok = $3,\n    list_etags = $4::jsonb\nWHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$json.run_id, $json.negative_control.result, $json.ok, JSON.stringify($json.list_etags)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Get dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get dashboard": {
+      "main": [
+        [
+          {
+            "node": "List PRs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List PRs": {
+      "main": [
+        [
+          {
+            "node": "One item per PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per PR": {
+      "main": [
+        [
+          {
+            "node": "Get PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get PR": {
+      "main": [
+        [
+          {
+            "node": "Get files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get files": {
+      "main": [
+        [
+          {
+            "node": "Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage": {
+      "main": [
+        [
+          {
+            "node": "Verdicts only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Run summary only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verdicts only": {
+      "main": [
+        [
+          {
+            "node": "Insert verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert verdict": {
+      "main": [
+        [
+          {
+            "node": "Write gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write gate": {
+      "main": [
+        [
+          {
+            "node": "No GitHub writes in shadow mode",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Run summary only": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "active": false
+}

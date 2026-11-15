@@ -12,3 +12,31 @@ resources:
   - service.yaml
   - ingress.yaml
   - networkpolicy.yaml
+# Hash-suffixed, so a change to any file rolls the n8n pod and re-runs the
+# initContainers. Workflow and rules code carry JS template literals, which
+# Flux postBuild substitution would blank: substitution is disabled on them.
+configMapGenerator:
+  - name: n8n-workflows
+    namespace: tools
+    files:
+      - workflows/triage-poll.json
+      - workflows/triage-heartbeat.json
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled
+  - name: n8n-triage
+    namespace: tools
+    files:
+      - triage/rules.js
+      - triage/config.yaml
+      - triage/schema.sql
+      - triage/seed.sql
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled
+  # Credential records with no secret fields; see externalsecret.yaml.
+  - name: n8n-credentials
+    namespace: tools
+    files:
+      - credentials/github.json
+      - credentials/postgres.json
