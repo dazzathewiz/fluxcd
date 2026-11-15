@@ -1,0 +1,132 @@
+{
+  "id": "TriageClusterV01",
+  "name": "PR triage: cluster version (unsaved)",
+  "nodes": [
+    {
+      "id": "0b7c1d8e-0201-4a00-9000-000000000201",
+      "name": "When called by the poll",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "0b7c1d8e-0202-4a00-9000-000000000202",
+      "name": "Read service-account token",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Kubelet rotates this file; it is read fresh on every call. Allowed by N8N_RESTRICT_FILE_ACCESS_TO.",
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "/var/run/secrets/kubernetes.io/serviceaccount/token",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0203-4a00-9000-000000000203",
+      "name": "Token as text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "destinationKey": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0204-4a00-9000-000000000204",
+      "name": "GET /version",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "notes": "Last node: its output (status and body only, no binary) is all the poll receives.",
+      "parameters": {
+        "method": "GET",
+        "url": "https://kubernetes.default.svc/version",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ String($json.data || '').trim() }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When called by the poll": {
+      "main": [
+        [
+          {
+            "node": "Read service-account token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read service-account token": {
+      "main": [
+        [
+          {
+            "node": "Token as text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token as text": {
+      "main": [
+        [
+          {
+            "node": "GET /version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "pinData": {},
+  "active": false
+}

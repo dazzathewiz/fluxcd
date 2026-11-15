@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 // Checks that the workflow Code node marked with the rules.js markers carries
-// rules.js verbatim, that no workflow carries more than one copy, and that no
-// GitHub write sits outside the write_mode gate. Run before every push (this
+// rules.js verbatim, that no workflow carries more than one copy, that no
+// GitHub write sits outside the write_mode gate, and that a workflow reading
+// the service-account token saves no executions. Run before every push (this
 // repo has no CI):
 //   node apps/tools/n8n/triage/sync-code-nodes.js           # check, exit 1 on drift
 //   node apps/tools/n8n/triage/sync-code-nodes.js --write   # copy rules.js into the nodes
@@ -75,6 +76,14 @@ for (const file of fs.readdirSync(workflowsDir).filter((f) => f.endsWith('.json'
         } else {
           fail(`${file}: node "${node.name}" differs from rules.js (run with --write)`);
         }
+      }
+    }
+
+    // The service-account token must never be saved with run data.
+    if (node.type === 'n8n-nodes-base.readWriteFile' && /serviceaccount/.test(String(node.parameters.fileSelector || ''))) {
+      const s = wf.settings || {};
+      if (s.saveDataSuccessExecution !== 'none' || s.saveDataErrorExecution !== 'none' || s.saveManualExecutions !== false) {
+        fail(`${file}: "${node.name}" reads the service-account token, so the workflow must save no executions`);
       }
     }
 

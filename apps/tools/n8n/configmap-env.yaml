@@ -32,6 +32,9 @@ data:
   N8N_COMMUNITY_PACKAGES_ENABLED: "false"
   N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
   N8N_SECURE_COOKIE: "true"
+  # File nodes may read only these. The SA token dir is listed in both forms:
+  # n8n compares the file's real path, and /var/run links to /run in the image.
+  N8N_RESTRICT_FILE_ACCESS_TO: "~/.n8n-files;/var/run/secrets/kubernetes.io/serviceaccount;/run/secrets/kubernetes.io/serviceaccount"
 
   # Execution history: prune after 14 days
   EXECUTIONS_DATA_PRUNE: "true"
