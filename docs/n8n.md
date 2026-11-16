@@ -36,14 +36,16 @@ into Secret `n8n-secrets`:
 | 1Password field | Secret key(s) | Used by |
 | --- | --- | --- |
 | `encryption-key` | `N8N_ENCRYPTION_KEY` | n8n, to encrypt stored credentials |
-| `db-password` | `DB_POSTGRESDB_PASSWORD`, `POSTGRES_PASSWORD` | n8n and Postgres (one source, so they can't drift) |
+| `db-password` | `DB_POSTGRESDB_PASSWORD`, `POSTGRES_PASSWORD`, and hashed into `TRIAGE_DB_PASSWORD` | n8n and Postgres (one source, so they can't drift); the workflows' `triage` role |
 | `github-token` | `GITHUB_TOKEN`, and inside `CREDENTIALS_OVERWRITE_DATA` | The triage workflow's source-host reads |
 | `redaction-patterns` | `REDACTION_PATTERNS` | Seeded into `triage.redaction_patterns` for the R9 hygiene check |
 
 All four fields must exist before the ExternalSecret syncs. The ExternalSecret
-also templates a fifth key, `CREDENTIALS_OVERWRITE_DATA`, from two of them. It uses
-`mergePolicy: Merge` so the plain keys stay alongside it. See
-[Credential overwrites](#credential-overwrites).
+also templates two more keys. `CREDENTIALS_OVERWRITE_DATA` is built from
+`github-token` and `db-password`, and `TRIAGE_DB_PASSWORD` is derived from
+`db-password`. It uses `mergePolicy: Merge` so the plain keys stay alongside them.
+See [Credential overwrites](#credential-overwrites) and
+[The `triage` database role](#the-triage-database-role).
 
 **The encryption key cannot change once credentials are stored.** n8n also writes
 it to `/home/node/.n8n/config` on first boot. A key that differs from the one in
@@ -191,9 +193,42 @@ credential in the UI would win over the overwrite.
 and Code nodes run in a task-runner child process that gets a fixed allowlist of
 variables, which doesn't include the overwrite data or any other Secret key.
 
-The `postgres` credential connects as the same `n8n` database user that n8n uses, so
-a workflow could read or change n8n's own tables. A dedicated role limited to the
-`triage` schema is a follow-up.
+### The `triage` database role
+
+The `postgres` credential connects as `triage`, not as the `n8n` superuser that
+n8n itself uses. So a workflow can't read or change n8n's own tables: users,
+credentials and execution history. `triage/roles.sql` runs in the `triage-schema`
+initContainer on every start. It creates the role if it's missing, sets its
+password, revokes everything and grants back exactly:
+
+| Object | Privileges | Used by |
+| --- | --- | --- |
+| schema `triage` | `USAGE` | every query |
+| `triage.runs` | `SELECT`, `INSERT`, `UPDATE` | Start run, Finish run, heartbeat |
+| `triage.verdicts` | `SELECT`, `INSERT` | the seen-SHA read, Insert verdict |
+| `triage.config`, `triage.redaction_patterns` | `SELECT` | Start run |
+| `triage.heartbeat` | `SELECT`, `INSERT`, `UPDATE` | heartbeat upsert |
+| the two `id` sequences | `USAGE` | inserts |
+
+No `DELETE`, no DDL, and nothing in `public`, where n8n's tables live and where
+`PUBLIC` has no table privileges. The role is `NOSUPERUSER NOCREATEDB
+NOCREATEROLE NOINHERIT` with a 10-connection limit. A manual grant is reset on the
+next pod start. Admin work, such as deleting a verdict row to re-triage a PR, still
+goes through `kubectl exec` as `n8n`.
+
+The role's password is `TRIAGE_DB_PASSWORD`. The ExternalSecret templates it as
+`sha256("n8n-triage-db:" + db-password)`, and the overwrite uses the same
+expression. So it needs no extra 1Password field, rotates with `db-password`, and
+can't be turned back into the superuser password. The initContainer refuses to run
+`roles.sql` if the value is missing or shorter than 32 characters.
+
+To check the role from outside:
+
+```sh
+kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
+  "select rolsuper, rolcreaterole, rolcanlogin, rolconnlimit from pg_roles where rolname = 'triage';" -c \
+  "select table_name, string_agg(privilege_type, ', ' order by privilege_type) from information_schema.role_table_grants where grantee = 'triage' group by 1 order by 1;"
+```
 
 ## PR triage (shadow mode)
 

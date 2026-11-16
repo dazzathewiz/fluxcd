@@ -32,6 +32,7 @@ configMapGenerator:
       - triage/config.yaml
       - triage/schema.sql
       - triage/seed.sql
+      - triage/roles.sql
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled
