@@ -517,6 +517,19 @@ function extractChanges(files, table) {
           Object.assign(change, { kind: 'other', package: null, datasource: null });
         }
         Object.assign(change, { from, to, update: from ? classifyUpdate(from, to) : 'unknown' });
+      } else if (key === 'apiVersion' && kvNew && kvOld && kvOld.value !== kvNew.value) {
+        // An API migration (e.g. notification.toolkit.fluxcd.io/v1beta3 -> v1), not a
+        // package version: the group and version sit after the last '/'.
+        const group = kvNew.value.includes('/') ? kvNew.value.slice(0, kvNew.value.lastIndexOf('/')) : 'core';
+        Object.assign(change, {
+          kind: 'api',
+          package: group,
+          group,
+          from: kvOld.value,
+          to: kvNew.value,
+          update: 'api',
+          datasource: 'kubernetes-api',
+        });
       } else {
         const from = firstVersionToken(pair.old);
         const to = firstVersionToken(pair.new);
@@ -868,6 +881,15 @@ function checkR1(facts, ctx) {
     diff: ctx.changes.filter((c) => c.kind !== 'unparsed').map((c) => ({ file: c.file, package: c.package || null, from: c.from || null, to: c.to || null, update: c.update })),
     renovate_table: ctx.table.map((r) => ({ package: r.package, update: r.update, from: r.from, to: r.to })),
   };
+  // Renovate labels an apiVersion move with a semver-style update type, so compare
+  // its table's from/to values with the diff instead of the type.
+  const parsed = ctx.changes.filter((c) => c.kind !== 'unparsed');
+  if (facts.files && parsed.length > 0 && parsed.every((c) => c.kind === 'api')) {
+    const matches = ctx.table.length > 0 && ctx.table.every((r) => parsed.some((c) => c.from === r.from && c.to === r.to));
+    compared.classification = 'api-version';
+    if (!matches) compared.mismatch = { diff: parsed.map((c) => `${c.from} -> ${c.to}`), table: ctx.table.map((r) => `${r.from} -> ${r.to}`) };
+    return check('R1', matches ? 'pass' : 'flag', filesEvidence(facts, compared), { required: true, classification: 'api-version' });
+  }
   if (!facts.files || ctx.changes.some((c) => c.kind === 'unparsed') || diffTypes.length === 0 || tableTypes.length === 0) {
     return check('R1', 'not_run', Object.assign(filesEvidence(facts, compared), { reason: 'could not classify from the diff or the PR table' }), { required: true });
   }
@@ -1127,6 +1149,10 @@ function verdictFor(checks, facts, ctx, config) {
   const special = pkgs.filter((p) => isNeedsClaudePackage(p, config));
   if (special.length) reasons.push(`package needs Claude: ${special.join(', ')}`);
   if (touchesCrds(facts, ctx)) reasons.push('touches CRDs');
+  const apiMoves = ctx.changes.filter((c) => c.kind === 'api');
+  if (apiMoves.length) {
+    reasons.push(`API version change: ${apiMoves.map((c) => `${c.group} ${c.from.split('/').pop()} -> ${c.to.split('/').pop()}`).join(', ')}`);
+  }
   const classes = (facts.files ? facts.files.items : []).map((f) => pathClass(f.filename));
   if (classes.includes('clusters') || classes.includes('gotk')) reasons.push('touches clusters/ or gotk-components');
   if (reasons.length) return { verdict: 'needs-claude', reasons };

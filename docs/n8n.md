@@ -213,8 +213,10 @@ password, revokes everything and grants back exactly:
 No `DELETE`, no DDL, and nothing in `public`, where n8n's tables live and where
 `PUBLIC` has no table privileges. The role is `NOSUPERUSER NOCREATEDB
 NOCREATEROLE NOINHERIT` with a 10-connection limit. A manual grant is reset on the
-next pod start. Admin work, such as deleting a verdict row to re-triage a PR, still
-goes through `kubectl exec` as `n8n`.
+next pod start. Admin work, such as finalising a verdict (see
+[Rulesets and re-triage](#rulesets-and-re-triage)), still goes through
+`kubectl exec` as `n8n`. Without `UPDATE` on `triage.verdicts`, the workflows
+can't finalise anything themselves.
 
 The role's password is `TRIAGE_DB_PASSWORD`. The ExternalSecret templates it as
 `sha256("n8n-triage-db:" + db-password)`, and the overwrite uses the same
@@ -234,8 +236,9 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
 
 `PR triage: poll` runs every 15 minutes:
 
-1. **Start run** inserts a `triage.runs` row and reads the config, the redaction
-   patterns, the last stored PR-list ETags and the PRs already triaged. It lists the
+1. **Start run** works out the [ruleset](#rulesets-and-re-triage), inserts a
+   `triage.runs` row, and reads the config, the redaction patterns, the PR-list
+   ETags stored under this ruleset and the PRs already triaged under it. It lists the
    repos from the one-line `repos: [...]` in `config.yaml`.
 2. **Get dashboard** reads the Dependency Dashboard issue.
 3. **List PRs** sends `If-None-Match`. A `304` means nothing changed.
@@ -248,7 +251,7 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
    [Cluster version](#cluster-version).
 6. **Triage**, the only Code node, parses the config and checks it lists the same
    repos, and runs the negative control against that response. It keeps PRs whose
-   `head_sha` has no verdict yet, oldest first, up to `per_run_cap`. Then it fetches
+   `head_sha` has no verdict under this ruleset and no finalised one, oldest first, up to `per_run_cap`. Then it fetches
    the Helm index and registry manifests and runs R1–R9.
 7. **Insert verdict**, then the **Write gate**.
 8. **Finish run** records the PR count, the negative-control result and the ETags.
@@ -338,11 +341,19 @@ The first matching verdict wins:
 
 1. **blocked**: R4, R5, R8 or R9 failed.
 2. **needs-claude**: R3 flagged, the package is in `needs_claude_packages`, the
-   change touches CRDs, or it touches `clusters/` or `gotk-components`.
+   change touches CRDs, it touches `clusters/` or `gotk-components`, or it moves a
+   manifest's `apiVersion`.
 3. **review**: R1, R2 or R6 flagged, or a required check didn't run.
 4. **low-risk**: only when R1 is digest, patch or minor on an `apps/` image or an
    ungated chart, R2 is one version line, R3 and R5 are clear, R4 and R8 pass where
    they apply, and R6 has no hits.
+
+**API-version changes.** Renovate's `kubernetes-api` updates move a manifest from
+one API version to another, such as `notification.toolkit.fluxcd.io/v1beta3` to
+`v1`. Its table calls that a patch, but no package version changes, and a schema
+can drop or rename fields between versions. R1 classifies the change as
+`api-version` and passes when the table names the same move. The verdict is
+needs-claude, with the API group and versions in the reasons.
 
 Release notes come from the section Renovate writes into the PR body. If Renovate
 found none, R6 records that and passes.
@@ -362,9 +373,9 @@ endpoint, and today there are none to call. Every future write node goes after t
 
 ```sh
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
-  "select pr, verdict, reasons, created from triage.verdicts order by created desc limit 20;"
+  "select pr, verdict, reasons, ruleset, finalised_at, created from triage.verdicts order by created desc limit 20;"
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
-  "select id, started, finished, pr_count, negative_control, ok from triage.runs order by id desc limit 10;"
+  "select id, started, finished, pr_count, negative_control, ok, ruleset from triage.runs order by id desc limit 10;"
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select c->>'id' as check, c->>'result' as result, c->'evidence'->>'source_url' as source, c->'evidence'->>'etag_or_sha' as etag
      from triage.verdicts v, jsonb_array_elements(v.checks) c where v.pr = <number> order by v.created desc limit 9;"
@@ -373,8 +384,35 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
 A run with `finished` empty failed partway. Its execution is in the n8n UI under
 Executions.
 
-Verdicts are keyed by `(repo, pr, head_sha)`. A Renovate rebase gets a new verdict;
-an unchanged PR is never re-triaged. To re-triage one, delete its row.
+### Rulesets and re-triage
+
+Each verdict records the ruleset that produced it:
+`r<sha256(rules.js)[:12]>.c<sha256(config.yaml)[:12]>`. The `triage-schema`
+initContainer loads both files into `triage.config` with their hashes, and Start
+run builds the ruleset from them. `sync-code-nodes.js` keeps the Triage node's copy
+of `rules.js` identical to the file, so the hash names the code that ran.
+
+Verdicts are keyed by `(repo, pr, head_sha, ruleset)`. A head SHA counts as done
+when it has a verdict under the current ruleset, or a finalised verdict under any
+ruleset. So:
+
+- A Renovate rebase gets a new verdict.
+- An unchanged PR under unchanged rules is never re-triaged.
+- A merged change to `rules.js` or `config.yaml` re-triages every open PR on the
+  next run after the pod restarts, `per_run_cap` at a time. PR-list ETags are
+  stored per ruleset, so a `304` from the old one can't hold that back.
+- Older verdicts stay as history. Rows from before rulesets have an empty
+  `ruleset`.
+
+To stop a head SHA being re-triaged, finalise its verdict:
+
+```sh
+kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
+  "update triage.verdicts set finalised_at = now() where pr = <number> and head_sha = '<sha>' and finalised_at is null;"
+```
+
+To re-triage a PR under the current ruleset, delete its verdict rows for that
+ruleset.
 
 ### Redaction patterns
 
@@ -402,5 +440,6 @@ which n8n users can see.
 - Workflows or credentials created in the UI and not committed (see
   [Workflows from Git](#workflows-from-git)).
 - The verdict and run history in the `triage` schema. It's a working record, and
-  re-polling rebuilds it for open PRs.
+  re-polling rebuilds it for open PRs. A `finalised_at` set by hand isn't rebuilt;
+  the volume backups hold it.
 - The DNS record on both local DNS resolvers.
