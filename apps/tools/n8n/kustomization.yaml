@@ -21,6 +21,7 @@ configMapGenerator:
     files:
       - workflows/triage-poll.json
       - workflows/triage-heartbeat.json
+      - workflows/triage-cluster-version.json
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled

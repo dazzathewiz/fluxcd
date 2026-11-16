@@ -15,7 +15,8 @@ per_run_cap: 10
 renovate_logins:
   - "renovate[bot]"
 
-# Unauthenticated; system:public-info-viewer allows GET /version.
+# Evidence URL for R4. The call itself is made by the triage-cluster-version
+# sub-workflow with the pod's service-account token (anonymous auth is off).
 cluster_version_url: "https://kubernetes.default.svc/version"
 
 # Negative control: no cluster satisfies this, so R4 must fail it every run.

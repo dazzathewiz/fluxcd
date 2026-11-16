@@ -74,6 +74,7 @@ spec:
           set -eu
           n8n import:credentials --separate --input=/import/credentials
           n8n import:workflow --separate --input=/import/workflows
+          n8n publish:workflow --id=TriageClusterV01
           n8n publish:workflow --id=TriagePoll000001
           n8n publish:workflow --id=TriageBeat000001
         envFrom:
@@ -107,7 +108,7 @@ spec:
         env:
         - name: N8N_EDITOR_BASE_URL
           value: "https://n8n.inf.${PERSONAL_DOMAIN}/"
-        # Lets helpers.httpRequest verify kubernetes.default.svc for GET /version.
+        # Lets n8n verify kubernetes.default.svc for the GET /version that R4 uses.
         - name: NODE_EXTRA_CA_CERTS
           value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
         ports:
