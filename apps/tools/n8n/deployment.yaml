@@ -72,6 +72,9 @@ spec:
         args:
         - |
           set -eu
+          # Binary copies of the SA token written to the PVC before binary data
+          # moved to tmpfs. Prune can no longer reach them, so remove them here.
+          rm -rf /home/node/.n8n/storage/workflows/TriageClusterV01 /home/node/.n8n/binaryData/workflows/TriageClusterV01
           n8n import:credentials --separate --input=/import/credentials
           n8n import:workflow --separate --input=/import/workflows
           n8n publish:workflow --id=TriageClusterV01
@@ -111,12 +114,18 @@ spec:
         # Lets n8n verify kubernetes.default.svc for the GET /version that R4 uses.
         - name: NODE_EXTRA_CA_CERTS
           value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        # Binary data in RAM only, never on the backed-up PVC: the cluster-version
+        # sub-workflow's token read lands here until prune removes it.
+        - name: N8N_BINARY_DATA_STORAGE_PATH
+          value: "/n8n-binary-data"
         ports:
         - containerPort: 5678
           name: http
         volumeMounts:
         - name: data
           mountPath: /home/node/.n8n
+        - name: binary-data
+          mountPath: /n8n-binary-data
         # /healthz answers without the database; /healthz/readiness waits for
         # the DB connection and migrations.
         startupProbe:
@@ -147,6 +156,11 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: n8n-data
+      # tmpfs; counts against the n8n container's 1Gi memory limit.
+      - name: binary-data
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
       - name: workflows
         configMap:
           name: n8n-workflows

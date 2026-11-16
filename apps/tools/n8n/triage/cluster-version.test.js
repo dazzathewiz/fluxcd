@@ -98,6 +98,24 @@ test('the poll calls the sub-workflow once, tolerates its failure, and never rea
   assert.ok(!JSON.stringify(poll).includes('serviceaccount/token'));
 });
 
+test('binary data (the token read) lives on a tmpfs mounted only in the main container', () => {
+  const dep = fs.readFileSync(path.join(HERE, '..', 'deployment.yaml'), 'utf8');
+  const [, afterInit] = dep.split(/^      containers:$/m);
+  const [main, volumes] = afterInit.split(/^      volumes:$/m);
+  const initPart = dep.split(/^      containers:$/m)[0];
+  const env = main.match(/- name: N8N_BINARY_DATA_STORAGE_PATH\n\s+value: "([^"]+)"/);
+  assert.ok(env, 'main container sets N8N_BINARY_DATA_STORAGE_PATH');
+  const mount = main.match(/- name: binary-data\n\s+mountPath: (\S+)/);
+  assert.ok(mount, 'main container mounts binary-data');
+  assert.equal(mount[1], env[1]);
+  assert.ok(!env[1].startsWith('/home/node/.n8n'), 'not on the n8n-data PVC');
+  assert.ok(!/binary-data/.test(initPart), 'initContainers do not mount it');
+  assert.match(volumes, /- name: binary-data\n\s+emptyDir:\n\s+medium: Memory\n\s+sizeLimit: 16Mi/);
+  // n8n refuses to start if N8N_STORAGE_PATH is also set to a different path.
+  assert.ok(!/N8N_STORAGE_PATH/.test(dep));
+  assert.ok(!/N8N_STORAGE_PATH/.test(fs.readFileSync(path.join(HERE, '..', 'configmap-env.yaml'), 'utf8')));
+});
+
 test('the n8n env allows the token directory in both /var/run and /run forms', () => {
   const env = fs.readFileSync(path.join(HERE, '..', 'configmap-env.yaml'), 'utf8');
   const m = env.match(/N8N_RESTRICT_FILE_ACCESS_TO:\s*"([^"]+)"/);

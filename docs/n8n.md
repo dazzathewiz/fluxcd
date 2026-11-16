@@ -12,7 +12,7 @@ them up.
 
 | Object | Purpose |
 | --- | --- |
-| `Deployment n8n` | One replica, `Recreate`, runs as UID/GID 1000. `/home/node/.n8n` is on PVC `n8n-data` (1Gi). |
+| `Deployment n8n` | One replica, `Recreate`, runs as UID/GID 1000. `/home/node/.n8n` is on PVC `n8n-data` (1Gi). Binary data is on a 16Mi memory-backed `emptyDir`. |
 | `Deployment n8n-db` + `Service n8n-db` | Postgres 17, database and user `n8n`, data on PVC `n8n-db` (5Gi). No service-account token mounted. |
 | `ConfigMap n8n-env` | Non-secret env only: database coordinates, public URL, proxy hops, timezone, telemetry off, community packages off, env access from nodes blocked, execution pruning after 14 days. |
 | `ConfigMap n8n-workflows-<hash>`, `n8n-triage-<hash>`, `n8n-credentials-<hash>` | Generated from `workflows/`, `triage/` and `credentials/`. A change to any file changes the hash, which rolls the pod. See below. |
@@ -105,6 +105,8 @@ Longhorn recurring-job group with no label. The backing PVs are reclaimed with
 
 - `n8n-db` holds workflows, credentials (encrypted), users and execution history.
 - `n8n-data` holds n8n's local config, including the copy of the encryption key.
+  Binary data is not on it: it lives in a memory-backed `emptyDir`. See
+  [Cluster version](#cluster-version).
 
 To restore:
 
@@ -245,10 +247,30 @@ No Secret holds a token, and kubelet rotates the file.
   the token is read only in the sub-workflow `PR triage: cluster version`
   (`workflows/triage-cluster-version.json`). It reads the token file, turns it
   into text and sends `GET /version` with `Authorization: Bearer`. It saves no
-  executions, successful, failed or manual. n8n deletes an unsaved production
-  execution, binary data included. Its last node is the HTTP request, whose
-  output holds only the status and body. That matters because n8n copies a
+  executions, successful, failed or manual. Its last node is the HTTP request,
+  whose output holds only the status and body. That matters because n8n copies a
   sub-workflow's last-node binary data into the caller.
+- **The Read node's binary copy of the token is RAM-only.** With pruning on, n8n
+  doesn't delete an unsaved execution in flight. It soft-deletes it, and the next
+  prune batch, every 15 minutes, hard-deletes it together with its binary data. The
+  database row it keeps until then is a stub with no node output. But the binary
+  copy of the token would otherwise sit in `~/.n8n/storage` on the backed-up
+  `n8n-data` PVC for up to 15 minutes of every 15, so Longhorn snapshots could
+  capture it. `N8N_BINARY_DATA_STORAGE_PATH=/n8n-binary-data` on the main container
+  points binary data at a memory-backed `emptyDir` (`medium: Memory`,
+  `sizeLimit: 16Mi`, counted against the container's memory limit). The
+  initContainers don't mount it. No workflow here saves binary data, so losing the
+  store on restart costs nothing. Don't also set `N8N_STORAGE_PATH`: n8n refuses to
+  start if it differs from `N8N_BINARY_DATA_STORAGE_PATH`.
+- **Copies written before the move are dead.** From the deployment of the
+  cluster-version sub-workflow until binary data moved to tmpfs, token copies were
+  written to `~/.n8n/storage` on the PVC, and some may be in Longhorn snapshots and
+  backups. The projected token is bound to its pod, so the apiserver rejects it once
+  that pod is deleted. The rollout that moved binary data to tmpfs replaced the pod,
+  which invalidated every one of those copies, on the PVC and in backups alike. The
+  `import-workflows` initContainer also deletes the sub-workflow's old binary
+  directory on every start, because prune now looks only at the new path and can't
+  reach it.
 - **Fallback:** the poll calls the sub-workflow with `continueRegularOutput`. If the
   token read or the call fails, R4 and the negative control are `not_run`, and the
   run still finishes with `ok = false`.
