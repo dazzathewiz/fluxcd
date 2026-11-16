@@ -27,8 +27,8 @@ spec:
         fsGroup: 1000
         runAsNonRoot: true
       initContainers:
-      # Applies triage/schema.sql, reloads config.yaml and reseeds the
-      # redaction patterns from the Secret. Idempotent.
+      # Applies triage/schema.sql, reloads config.yaml, reseeds the redaction
+      # patterns and resets the least-privilege `triage` role. Idempotent.
       - name: triage-schema
         image: postgres:17.11-alpine
         command: ["/bin/sh", "-c"]
@@ -36,7 +36,7 @@ spec:
         - |
           set -eu
           until pg_isready -q; do echo "waiting for n8n-db"; sleep 2; done
-          psql -X -v ON_ERROR_STOP=1 -f /triage/schema.sql -f /triage/seed.sql
+          psql -X -v ON_ERROR_STOP=1 -f /triage/schema.sql -f /triage/seed.sql -f /triage/roles.sql
         env:
         - name: PGHOST
           value: "n8n-db"
@@ -54,6 +54,11 @@ spec:
             secretKeyRef:
               name: n8n-secrets
               key: REDACTION_PATTERNS
+        - name: TRIAGE_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: TRIAGE_DB_PASSWORD
         volumeMounts:
         - name: triage
           mountPath: /triage
