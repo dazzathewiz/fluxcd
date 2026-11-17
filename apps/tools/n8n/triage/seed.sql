@@ -4,6 +4,7 @@
 
 \getenv patterns REDACTION_PATTERNS
 \set config `cat /triage/config.yaml`
+\set rules `cat /triage/rules.js`
 
 BEGIN;
 
@@ -19,7 +20,14 @@ VALUES ('config.yaml', :'config', encode(sha256(convert_to(:'config', 'UTF8')), 
 ON CONFLICT (name) DO UPDATE
   SET body = excluded.body, sha256 = excluded.sha256, loaded = excluded.loaded;
 
+-- The Triage Code node carries rules.js verbatim (sync-code-nodes.js), so this
+-- hash identifies the rules that produce each verdict.
+INSERT INTO triage.config (name, body, sha256, loaded)
+VALUES ('rules.js', :'rules', encode(sha256(convert_to(:'rules', 'UTF8')), 'hex'), now())
+ON CONFLICT (name) DO UPDATE
+  SET body = excluded.body, sha256 = excluded.sha256, loaded = excluded.loaded;
+
 COMMIT;
 
 SELECT count(*) AS redaction_patterns FROM triage.redaction_patterns;
-SELECT sha256 AS config_sha256 FROM triage.config WHERE name = 'config.yaml';
+SELECT name, sha256 FROM triage.config ORDER BY name;

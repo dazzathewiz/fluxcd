@@ -33,7 +33,7 @@ const SUB_ERROR = { error: 'Access to the file is not allowed.' };
 // One run with no PRs to triage: the list is unchanged (304).
 async function runTriage(clusterVersionJson) {
   const out = {
-    'Start run': [{ json: { run_id: 1, repo: 'dazzathewiz/fluxcd', list_etag: 'W/"e"', config_body: CONFIG_TEXT, config_sha: 'sha', patterns: [], seen: [] } }],
+    'Start run': [{ json: { run_id: 1, ruleset: 'rtest.ctest', repo: 'dazzathewiz/fluxcd', list_etag: 'W/"e"', config_body: CONFIG_TEXT, config_sha: 'sha', patterns: [], seen: [] } }],
     'Get dashboard': [{ json: { statusCode: 200, headers: {}, body: [] } }],
     'List PRs': [{ json: { statusCode: 304, headers: {} } }],
     'Get PR': [{ json: { statusCode: 200, headers: {}, body: { resources: {} } } }],
@@ -53,6 +53,7 @@ async function runTriage(clusterVersionJson) {
 test('a 200 from the sub-workflow makes the negative control fail and the run ok', async () => {
   const { run, calls } = await runTriage(VERSION_200);
   assert.equal(run.kind, 'run');
+  assert.equal(run.ruleset, 'rtest.ctest');
   assert.equal(run.negative_control.result, 'fail');
   assert.equal(run.negative_control.evidence.compared.cluster, 'v1.34.12+k3s1');
   assert.equal(run.negative_control.evidence.etag_or_sha, 'b1c2d3e4f5');

@@ -1,0 +1,51 @@
+{
+  "name": "Flux Alert apiVersion v1beta3 -> v1: an API migration goes to needs-claude",
+  "history": "Shape of the Renovate PR that moved a notification Alert to notification.toolkit.fluxcd.io/v1. Renovate's table calls it a patch; the diff has no package version.",
+  "facts": {
+    "repo": "owner/fluxcd",
+    "now": "2026-11-17T00:00:00Z",
+    "pr": {
+      "number": 272,
+      "html_url": "https://github.com/owner/fluxcd/pull/272",
+      "etag": "W/\"pr-272-etag\"",
+      "head_sha": "2727272727272727272727272727272727272727",
+      "head_ref": "renovate/notification.toolkit.fluxcd.io-v1",
+      "user_login": "renovate[bot]",
+      "title": "chore(deps): update dependency alert to notification.toolkit.fluxcd.io/v1",
+      "body": "This PR contains the following updates:\n\n| Package | Update | Change |\n|---|---|---|\n| Alert | patch | `notification.toolkit.fluxcd.io/v1beta3` → `notification.toolkit.fluxcd.io/v1` |\n\n---\n\n### Configuration\n",
+      "created_at": "2026-11-16T20:00:00Z",
+      "mergeable": true,
+      "mergeable_state": "clean",
+      "draft": false
+    },
+    "files": {
+      "url": "https://api.github.com/repos/owner/fluxcd/pulls/272/files?per_page=100",
+      "etag": "W/\"files-272-etag\"",
+      "items": [
+        {
+          "filename": "infrastructure/configs/notify-example.yaml",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -27,7 +27,7 @@ spec:\n   secretRef:\n     name: example-webhook\n ---\n-apiVersion: notification.toolkit.fluxcd.io/v1beta3\n+apiVersion: notification.toolkit.fluxcd.io/v1\n kind: Alert\n metadata:\n   name: example-alert"
+        }
+      ]
+    },
+    "dashboard": {
+      "url": "https://api.github.com/repos/owner/fluxcd/issues/2",
+      "etag": "W/\"dashboard-etag\"",
+      "body": "## Open\n\n - [ ] <!-- rebase-branch=renovate/notification.toolkit.fluxcd.io-v1 -->[x](../pull/272)\n"
+    },
+    "cluster": {
+      "url": "https://kubernetes.default.svc/version",
+      "gitVersion": "v1.34.12+k3s1",
+      "etag_or_sha": "0000000000000000000000000000000000013412"
+    },
+    "patterns": []
+  },
+  "http": {},
+  "expect": {
+    "verdict": "needs-claude",
+    "checks": { "R1": "pass", "R2": "flag", "R4": "not_run", "R8": "not_run" }
+  }
+}
