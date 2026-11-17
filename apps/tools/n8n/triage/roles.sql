@@ -29,7 +29,9 @@ REVOKE ALL ON SCHEMA triage FROM triage;
 GRANT USAGE ON SCHEMA triage TO triage;
 -- Start run inserts a run and reads the last ETags; Finish run updates it.
 GRANT SELECT, INSERT, UPDATE ON triage.runs TO triage;
--- Insert verdict (ON CONFLICT DO NOTHING) and the seen-SHA read.
+-- Insert verdict (ON CONFLICT DO NOTHING; a human row sets finalised_at in the
+-- insert itself), and the seen-SHA and previous-verdict reads. No UPDATE or
+-- DELETE: finalising an existing row is a manual step.
 GRANT SELECT, INSERT ON triage.verdicts TO triage;
 -- Loaded by this initContainer; the workflows only read them.
 GRANT SELECT ON triage.config, triage.redaction_patterns TO triage;

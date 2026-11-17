@@ -1,0 +1,70 @@
+{
+  "name": "n8n image patch on apps/: review (review_floor_packages), though every check is clear",
+  "history": "Synthetic patch in the shape of the n8n 2.47.7 -> 2.48.4 PR, with no release notes, so only the floor stops it being low-risk.",
+  "facts": {
+    "repo": "owner/fluxcd",
+    "now": "2026-11-17T00:00:00Z",
+    "pr": {
+      "number": 266,
+      "html_url": "https://github.com/owner/fluxcd/pull/266",
+      "etag": "W/\"pr-266-etag\"",
+      "head_sha": "4444444444444444444444444444444444444444",
+      "head_ref": "renovate/n8nio-n8n-2.x",
+      "user_login": "renovate[bot]",
+      "title": "chore(deps): update n8nio/n8n docker tag to v2.47.8",
+      "body": "| Package | Update | Change |\n|---|---|---|\n| [n8nio/n8n](https://example.invalid/n8n) ([source](https://example.invalid/n8n/source)) | patch | `2.47.7` → `2.47.8` |\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n",
+      "created_at": "2026-11-13T00:00:00Z",
+      "mergeable": true,
+      "mergeable_state": "clean",
+      "draft": false
+    },
+    "files": {
+      "url": "https://api.github.com/repos/owner/fluxcd/pulls/266/files?per_page=100",
+      "etag": "W/\"files-266-etag\"",
+      "items": [
+        {
+          "filename": "apps/tools/n8n/deployment.yaml",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -28,7 +28,7 @@ spec:\n         runAsNonRoot: true\n       containers:\n       - name: n8n\n-        image: n8nio/n8n:2.47.7\n+        image: n8nio/n8n:2.47.8\n         envFrom:\n         - configMapRef:\n             name: n8n-env"
+        }
+      ]
+    },
+    "dashboard": {
+      "url": "https://api.github.com/repos/owner/fluxcd/issues/2",
+      "etag": "W/\"dashboard-etag\"",
+      "body": "## Open\n\n - [ ] <!-- rebase-branch=renovate/n8nio-n8n-2.x -->[x](../pull/266)\n"
+    },
+    "cluster": {
+      "url": "https://kubernetes.default.svc/version",
+      "gitVersion": "v1.34.12+k3s1",
+      "etag_or_sha": "0000000000000000000000000000000000013412"
+    },
+    "patterns": []
+  },
+  "http": {
+    "https://registry-1.docker.io/v2/n8nio/n8n/manifests/2.47.8": {
+      "statusCode": 200,
+      "headers": {
+        "docker-content-digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "body": "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"digest\":\"sha256:cccc\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}"
+    }
+  },
+  "expect": {
+    "verdict": "review",
+    "checks": {
+      "R1": "pass",
+      "R2": "pass",
+      "R3": "pass",
+      "R5": "pass",
+      "R6": "pass",
+      "R8": "pass"
+    },
+    "reasons_include": [
+      "floor review: n8nio/n8n is never low-risk"
+    ],
+    "dependants": []
+  }
+}

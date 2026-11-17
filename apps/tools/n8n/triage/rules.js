@@ -6,7 +6,7 @@
 // `node sync-code-nodes.js --write`.
 
 const RESULTS = ['pass', 'flag', 'fail', 'not_run'];
-const VERDICTS = ['blocked', 'needs-claude', 'review', 'low-risk'];
+const VERDICTS = ['blocked', 'needs-claude', 'review', 'low-risk', 'human'];
 const WRITE_MODES = ['off', 'digest', 'labels'];
 const CHECK_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9'];
 const CONFIG_SOURCE = 'git:apps/tools/n8n/triage/config.yaml';
@@ -57,17 +57,37 @@ function parseScalar(raw, lineNo) {
 const SEQ_ITEM = /^-(\s|$)/;
 const MAP_ITEM = /^("[^"]*"|'[^']*'|[^\s"'#\[\]{},:][^:]*?):(\s+(.*))?$/;
 
+const FOLDED = /:\s+>-$/;
+
 // Parses the block-style YAML subset that config.yaml uses: maps, sequences,
-// flow sequences of scalars, quoted and plain scalars, comments.
+// flow sequences of scalars, quoted and plain scalars, `>-` folded scalars,
+// comments.
 function parseConfigYaml(text) {
   const lines = [];
-  String(text).split(/\r?\n/).forEach((raw, i) => {
-    const s = stripComment(raw).replace(/\s+$/, '');
-    if (s.trim() === '' || s.trim() === '---') return;
+  const raw = String(text).split(/\r?\n/);
+  for (let i = 0; i < raw.length; i++) {
+    const s = stripComment(raw[i]).replace(/\s+$/, '');
+    if (s.trim() === '' || s.trim() === '---') continue;
     const lead = s.match(/^\s*/)[0];
     if (lead.includes('\t')) throw new Error(`config line ${i + 1}: tab indentation`);
-    lines.push({ indent: lead.length, text: s.trim(), n: i + 1 });
-  });
+    const line = { indent: lead.length, text: s.trim(), n: i + 1 };
+    if (FOLDED.test(line.text)) {
+      // The block is every following line indented deeper (or blank), read raw:
+      // a # inside it is text, not a comment. Lines fold to spaces, blank lines
+      // to newlines, and the final newline is stripped.
+      const body = [];
+      let j = i + 1;
+      while (j < raw.length && (raw[j].trim() === '' || raw[j].match(/^\s*/)[0].length > lead.length)) {
+        if (raw[j].match(/^\s*/)[0].includes('\t')) throw new Error(`config line ${j + 1}: tab indentation`);
+        body.push(raw[j].trim());
+        j++;
+      }
+      line.block = body.join('\n').trim().split(/\n{2,}/).map((p) => p.split('\n').join(' ')).join('\n');
+      if (line.block === '') throw new Error(`config line ${i + 1}: empty folded scalar`);
+      i = j - 1;
+    }
+    lines.push(line);
+  }
   let pos = 0;
 
   function parseBlock() {
@@ -85,7 +105,9 @@ function parseConfigYaml(text) {
       if (Object.prototype.hasOwnProperty.call(out, key)) throw new Error(`config line ${line.n}: duplicate key "${key}"`);
       const rest = m[3] === undefined ? '' : m[3];
       pos++;
-      if (rest !== '') {
+      if (line.block !== undefined) {
+        out[key] = line.block;
+      } else if (rest !== '') {
         out[key] = parseScalar(rest, line.n);
       } else if (pos < lines.length && lines[pos].indent > indent) {
         out[key] = parseBlock();
@@ -110,7 +132,7 @@ function parseConfigYaml(text) {
         pos++;
         out.push(parseBlock());
       } else if (MAP_ITEM.test(rest) && !/^["'\[]/.test(rest)) {
-        lines[pos] = { indent: indent + 2, text: rest, n: line.n };
+        lines[pos] = Object.assign({}, line, { indent: indent + 2, text: rest });
         out.push(parseMap(indent + 2));
       } else {
         pos++;
@@ -130,8 +152,75 @@ function asList(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+const CONFIG_KEYS = [
+  'write_mode', 'repos', 'per_run_cap', 'renovate_logins', 'cluster_version_url', 'negative_control_kube_version',
+  'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'needs_claude_packages', 'review_floor_packages',
+  'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
+];
+const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
+// clusters/ and gotk-components always go to needs-claude, and apps/ needs no override.
+const OVERRIDABLE_PATH_CLASSES = ['infrastructure', 'other'];
+// A floor caps how good a verdict can be; low-risk would be no floor at all.
+const FLOORS = ['needs-claude', 'review'];
+const PACKAGE_NAME = /^[a-z0-9][a-z0-9._/-]*$/;
+
+function checkKeys(where, obj, allowed) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error(`config: ${where} must be a map`);
+  const unknown = Object.keys(obj).filter((k) => !allowed.includes(k));
+  if (unknown.length) throw new Error(`config: ${where} has unknown key(s) ${unknown.join(', ')}`);
+}
+
+function checkPackage(where, name) {
+  if (typeof name !== 'string' || !PACKAGE_NAME.test(name)) throw new Error(`config: ${where} names an invalid package "${name}"`);
+}
+
+function loadPathClassOverrides(list, helmIndex) {
+  return asList(list).map((o, i) => {
+    const where = `path_class_overrides[${i}]`;
+    checkKeys(where, o, ['package', 'datasource', 'path_class', 'update_types']);
+    checkPackage(where, o.package);
+    if (o.datasource !== 'helm' && o.datasource !== 'docker') throw new Error(`config: ${where} datasource must be helm or docker`);
+    // A chart the triage can't find in helm_index is a typo or a removed chart.
+    if (o.datasource === 'helm' && !Object.prototype.hasOwnProperty.call(helmIndex, o.package)) {
+      throw new Error(`config: ${where} names chart ${o.package}, which has no helm_index entry`);
+    }
+    if (!OVERRIDABLE_PATH_CLASSES.includes(o.path_class)) {
+      throw new Error(`config: ${where} path_class must be one of ${OVERRIDABLE_PATH_CLASSES.join(', ')}`);
+    }
+    const types = asList(o.update_types);
+    if (types.length === 0 || !types.every((t) => UPDATE_TYPES.includes(t) && t !== 'major')) {
+      throw new Error(`config: ${where} update_types must list ${UPDATE_TYPES.filter((t) => t !== 'major').join(', ')} (majors stay gated)`);
+    }
+    return { package: o.package, datasource: o.datasource, path_class: o.path_class, update_types: types };
+  });
+}
+
+function loadDependants(map) {
+  if (map === undefined || map === null) return {};
+  if (typeof map !== 'object' || Array.isArray(map)) throw new Error('config: dependants must be a map of package to list');
+  const out = {};
+  const ids = new Set();
+  for (const [pkg, entries] of Object.entries(map)) {
+    checkPackage(`dependants.${pkg}`, pkg);
+    if (!Array.isArray(entries) || entries.length === 0) throw new Error(`config: dependants.${pkg} must be a non-empty list`);
+    out[pkg] = entries.map((d, i) => {
+      const where = `dependants.${pkg}[${i}]`;
+      checkKeys(where, d, ['id', 'where', 'check', 'floor']);
+      for (const k of ['id', 'where', 'check']) {
+        if (typeof d[k] !== 'string' || d[k].trim() === '') throw new Error(`config: ${where} needs ${k}`);
+      }
+      if (ids.has(d.id)) throw new Error(`config: ${where} repeats id ${d.id}`);
+      ids.add(d.id);
+      if (d.floor !== undefined && !FLOORS.includes(d.floor)) throw new Error(`config: ${where} floor must be one of ${FLOORS.join(', ')}`);
+      return { id: d.id, where: d.where, check: d.check, floor: d.floor || null };
+    });
+  }
+  return out;
+}
+
 function loadConfig(text) {
   const cfg = parseConfigYaml(text);
+  checkKeys('the top level', cfg, CONFIG_KEYS);
   if (!WRITE_MODES.includes(cfg.write_mode)) {
     throw new Error(`config: write_mode must be one of ${WRITE_MODES.join(', ')}`);
   }
@@ -142,6 +231,9 @@ function loadConfig(text) {
   if (!Number.isInteger(cfg.per_run_cap) || cfg.per_run_cap < 1) {
     throw new Error('config: per_run_cap must be a positive integer');
   }
+  const helmIndex = cfg.helm_index || {};
+  const reviewFloor = asList(cfg.review_floor_packages);
+  reviewFloor.forEach((p, i) => checkPackage(`review_floor_packages[${i}]`, p));
   return {
     write_mode: cfg.write_mode,
     repos,
@@ -159,9 +251,12 @@ function loadConfig(text) {
     groups: asList(cfg.groups).map((g) => ({ name: g.name, branch: g.branch, packages: asList(g.packages) })),
     removed: asList(cfg.removed),
     needs_claude_packages: asList(cfg.needs_claude_packages),
+    review_floor_packages: reviewFloor,
+    path_class_overrides: loadPathClassOverrides(cfg.path_class_overrides, helmIndex),
+    dependants: loadDependants(cfg.dependants),
     release_note_keywords: asList(cfg.release_note_keywords),
     low_risk_update_types: asList(cfg.low_risk_update_types),
-    helm_index: cfg.helm_index || {},
+    helm_index: helmIndex,
   };
 }
 
@@ -904,7 +999,14 @@ function checkR1(facts, ctx) {
   return check('R1', agree ? 'pass' : 'flag', filesEvidence(facts, compared), { required: true, classification: compared.classification });
 }
 
-function checkR2(facts, ctx) {
+// path_class_overrides: the one version change's package, datasource and update
+// type, in the overridden path class. It lifts only the path reason.
+function pathOverrideFor(change, cls, config) {
+  if (!change || !change.package) return null;
+  return (config.path_class_overrides || []).find((o) => o.path_class === cls && ruleMatches(o, change.package, change.datasource, change.update)) || null;
+}
+
+function checkR2(facts, ctx, config) {
   if (!facts.files) return check('R2', 'not_run', { compared: 'files not read' }, { required: true });
   const files = facts.files.items || [];
   const classes = Array.from(new Set(files.map((f) => pathClass(f.filename))));
@@ -916,8 +1018,10 @@ function checkR2(facts, ctx) {
     single_version_line: singleLine,
     path_classes: classes,
   };
-  const ok = singleLine && classes.length === 1 && classes[0] === 'apps';
-  return check('R2', ok ? 'pass' : 'flag', filesEvidence(facts, compared), { required: true, path_classes: classes, single_version_line: singleLine });
+  const override = singleLine && classes.length === 1 && classes[0] !== 'apps' ? pathOverrideFor(ctx.changes[0], classes[0], config) : null;
+  if (override) compared.path_class_override = override;
+  const ok = singleLine && classes.length === 1 && (classes[0] === 'apps' || !!override);
+  return check('R2', ok ? 'pass' : 'flag', filesEvidence(facts, compared), { required: true, path_classes: classes, single_version_line: singleLine, path_class_override: !!override });
 }
 
 function ruleMatches(rule, pkg, datasource, update) {
@@ -1134,10 +1238,32 @@ function touchesCrds(facts, ctx) {
     || files.some((f) => /^[+-].*kind:\s*CustomResourceDefinition/m.test(String(f.patch || '')));
 }
 
-// First matching rule wins: blocked, needs-claude, review, low-risk.
-function verdictFor(checks, facts, ctx, config) {
+// The dependants config lists for the PR's packages, in package order.
+function dependantsOf(ctx, config) {
+  const out = [];
+  for (const pkg of Array.from(new Set(packagesOf(ctx).map((p) => p.package)))) {
+    for (const d of (config.dependants || {})[pkg] || []) out.push(Object.assign({ package: pkg }, d));
+  }
+  return out;
+}
+
+// Floors from review_floor_packages and dependant floors: [{floor, reason}].
+function floorsOf(ctx, config, dependants) {
+  const pkgs = Array.from(new Set(packagesOf(ctx).map((p) => p.package)));
+  const out = pkgs.filter((p) => (config.review_floor_packages || []).includes(p))
+    .map((p) => ({ floor: 'review', reason: `floor review: ${p} is never low-risk` }));
+  for (const d of dependants) {
+    if (d.floor) out.push({ floor: d.floor, reason: `floor ${d.floor}: dependant ${d.id} of ${d.package}` });
+  }
+  return out;
+}
+
+// First matching rule wins: blocked, needs-claude, review, low-risk. A floor
+// joins the reasons at its own level, so it can only make a verdict worse.
+function verdictFor(checks, facts, ctx, config, floors) {
   const by = {};
   for (const c of checks) by[c.id] = c;
+  const floorReasons = (level) => (floors || []).filter((f) => f.floor === level).map((f) => f.reason);
   const reasons = [];
   for (const id of ['R4', 'R5', 'R8', 'R9']) {
     if (by[id].result === 'fail') reasons.push(`${id} fail`);
@@ -1148,6 +1274,7 @@ function verdictFor(checks, facts, ctx, config) {
   const pkgs = Array.from(new Set(packagesOf(ctx).map((p) => p.package)));
   const special = pkgs.filter((p) => isNeedsClaudePackage(p, config));
   if (special.length) reasons.push(`package needs Claude: ${special.join(', ')}`);
+  reasons.push(...floorReasons('needs-claude'));
   if (touchesCrds(facts, ctx)) reasons.push('touches CRDs');
   const apiMoves = ctx.changes.filter((c) => c.kind === 'api');
   if (apiMoves.length) {
@@ -1162,11 +1289,13 @@ function verdictFor(checks, facts, ctx, config) {
   if (by.R6.result === 'flag') reasons.push(`R6 release-note keywords: ${(by.R6.evidence.compared.hits || []).join(', ')}`);
   const notRun = checks.filter((c) => c.required && c.result === 'not_run').map((c) => c.id);
   if (notRun.length) reasons.push(`required checks not run: ${notRun.join(', ')}`);
+  reasons.push(...floorReasons('review'));
   if (reasons.length) return { verdict: 'review', reasons };
 
   const lowRiskType = by.R1.result === 'pass' && config.low_risk_update_types.includes(by.R1.classification);
   const kinds = versionChanges(ctx.changes);
-  const kindOk = kinds.length > 0 && kinds.every((c) => (c.kind === 'image' && pathClass(c.file) === 'apps') || c.kind === 'chart');
+  const imageOk = (c) => pathClass(c.file) === 'apps' || by.R2.path_class_override === true;
+  const kindOk = kinds.length > 0 && kinds.every((c) => (c.kind === 'image' && imageOk(c)) || c.kind === 'chart');
   const required = (id) => !by[id].required || by[id].result === 'pass';
   const clear = by.R2.result === 'pass' && by.R3.result === 'pass' && by.R5.result === 'pass' && by.R6.result === 'pass' && required('R4') && required('R8');
   if (ctx.isRenovate && lowRiskType && kindOk && clear) return { verdict: 'low-risk', reasons: ['all low-risk conditions hold'] };
@@ -1181,11 +1310,25 @@ function buildContext(facts, config) {
   return { isRenovate, table, changes };
 }
 
+// A PR from anyone but Renovate is triaged by hand. Only R9 runs: a hit is
+// blocked; otherwise the verdict is human, recorded finalised. If R9 couldn't
+// run, the verdict is still human but left unfinalised, so a later ruleset
+// checks it again.
+function evaluateHuman(facts, ctx) {
+  const skipped = (id) => check(id, 'not_run', { compared: 'not applicable: not a Renovate PR (triaged by hand)' }, { required: false });
+  const checks = CHECK_IDS.map((id) => (id === 'R9' ? checkR9(facts, ctx) : skipped(id))).map(finalize);
+  const r9 = checks.find((c) => c.id === 'R9');
+  if (r9.result === 'fail') return { verdict: 'blocked', reasons: ['R9 fail'], checks, dependants: [], finalise: false };
+  if (r9.result === 'pass') return { verdict: 'human', reasons: ['not a Renovate PR: triaged by hand'], checks, dependants: [], finalise: true };
+  return { verdict: 'human', reasons: ['not a Renovate PR: triaged by hand', 'R9 not run: left unfinalised'], checks, dependants: [], finalise: false };
+}
+
 function evaluate(facts, config) {
   const ctx = buildContext(facts, config);
+  if (!ctx.isRenovate) return evaluateHuman(facts, ctx);
   const checks = [
     checkR1(facts, ctx),
-    checkR2(facts, ctx),
+    checkR2(facts, ctx, config),
     checkR3(facts, ctx, config),
     checkR4(facts, ctx),
     checkR5(facts, ctx, config),
@@ -1194,15 +1337,42 @@ function evaluate(facts, config) {
     checkR8(facts, ctx),
     checkR9(facts, ctx),
   ].map(finalize);
-  const v = verdictFor(checks, facts, ctx, config);
-  return { verdict: v.verdict, reasons: v.reasons, checks };
+  const dependants = dependantsOf(ctx, config);
+  const v = verdictFor(checks, facts, ctx, config, floorsOf(ctx, config, dependants));
+  // Dependants go into the reasons, which every row stores (carried or not),
+  // so the review sees what outside the repo to check.
+  const reasons = v.reasons.concat(dependants.map((d) => `dependant ${d.id} (${d.where}): ${d.check}`));
+  return {
+    verdict: v.verdict,
+    reasons,
+    checks,
+    dependants: dependants.map((d) => ({ id: d.id, where: d.where, check: d.check })),
+    finalise: false,
+  };
 }
 
 // Fetches the non-GitHub facts one PR needs, then evaluates it.
 async function triagePR(http, facts, config, caches) {
   const ctx = buildContext(facts, config);
+  if (!ctx.isRenovate) return evaluate(facts, config);
   const external = await gatherExternalFacts(http, ctx.changes, config, caches);
   return evaluate(Object.assign({}, facts, external), config);
+}
+
+// Compares a new result with the latest verdict row for the same head SHA:
+// previous = {id, verdict, results: [{id, result}]}, where id is the full row
+// (a carried row's own carried_from). Same verdict and the same result for every
+// check: a carried row, which stores no checks and points at that full row.
+// Anything else: a full row.
+function carryForward(result, previous) {
+  const full = { carried_from: null, checks: result.checks };
+  if (!previous || !previous.id || previous.verdict !== result.verdict || !Array.isArray(previous.results)) return full;
+  const before = {};
+  for (const c of previous.results) before[c.id] = c.result;
+  const now = result.checks.map((c) => [c.id, c.result]);
+  if (Object.keys(before).length !== now.length) return full;
+  if (!now.every(([id, r]) => before[id] === r)) return full;
+  return { carried_from: previous.id, checks: null };
 }
 
 function newCaches() {
@@ -1258,7 +1428,7 @@ const RULES_EXPORTS = {
   parseRenovateTable, extractReleaseNotes, parseImageRef, imageKey, parsePatch, extractChanges,
   pathClass, sha256Hex, parseDashboard, findChartEntry, parseAuthChallenge, amd64InIndex, bodyText, bodyJson,
   fetchClusterVersion, fetchChartIndex, fetchImage, gatherExternalFacts,
-  finalize, evaluate, verdictFor, triagePR, newCaches, negativeControl, selectPRs, compilePatterns,
+  finalize, evaluate, verdictFor, triagePR, newCaches, negativeControl, selectPRs, compilePatterns, carryForward,
 };
 
 if (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {

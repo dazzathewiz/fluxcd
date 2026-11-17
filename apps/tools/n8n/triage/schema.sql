@@ -23,15 +23,20 @@ CREATE TABLE IF NOT EXISTS triage.verdicts (
   repo     text NOT NULL,
   pr       integer NOT NULL,
   head_sha text NOT NULL,
-  verdict  text NOT NULL CHECK (verdict IN ('blocked', 'needs-claude', 'review', 'low-risk')),
+  verdict  text NOT NULL,
   reasons  jsonb NOT NULL DEFAULT '[]'::jsonb,
-  checks   jsonb NOT NULL,
+  -- NULL on a carried row: see carried_from.
+  checks   jsonb,
   created  timestamptz NOT NULL DEFAULT now(),
   -- r<sha256(rules.js)[:12]>.c<sha256(config.yaml)[:12]>: the rules and config
   -- that produced this verdict. A new ruleset re-triages open PRs.
   ruleset  text,
   -- Set by hand (or, later, by a write mode) to stop re-triage of this head SHA.
-  finalised_at timestamptz
+  -- A human verdict is inserted with it set.
+  finalised_at timestamptz,
+  -- A new ruleset gave the same verdict and check results as this full row, so
+  -- this row stores no checks.
+  carried_from bigint REFERENCES triage.verdicts (id)
 );
 
 -- Migration for tables created before rulesets: one verdict per ruleset.
@@ -41,6 +46,18 @@ ALTER TABLE triage.verdicts ADD COLUMN IF NOT EXISTS finalised_at timestamptz;
 ALTER TABLE triage.verdicts DROP CONSTRAINT IF EXISTS verdicts_repo_pr_head_sha_key;
 CREATE UNIQUE INDEX IF NOT EXISTS verdicts_repo_pr_sha_ruleset_key
   ON triage.verdicts (repo, pr, head_sha, ruleset);
+
+-- Migration for carried verdicts and the human verdict. The constraints are
+-- dropped and re-added by name, so a fresh table and an old one end up alike.
+ALTER TABLE triage.verdicts ADD COLUMN IF NOT EXISTS carried_from bigint REFERENCES triage.verdicts (id);
+ALTER TABLE triage.verdicts ALTER COLUMN checks DROP NOT NULL;
+ALTER TABLE triage.verdicts DROP CONSTRAINT IF EXISTS verdicts_verdict_check;
+ALTER TABLE triage.verdicts ADD CONSTRAINT verdicts_verdict_check
+  CHECK (verdict IN ('blocked', 'needs-claude', 'review', 'low-risk', 'human'));
+-- A row has its own checks or names the full row that has them, never both.
+ALTER TABLE triage.verdicts DROP CONSTRAINT IF EXISTS verdicts_checks_or_carried;
+ALTER TABLE triage.verdicts ADD CONSTRAINT verdicts_checks_or_carried
+  CHECK ((checks IS NULL) <> (carried_from IS NULL));
 
 CREATE INDEX IF NOT EXISTS verdicts_created_idx ON triage.verdicts (created DESC);
 

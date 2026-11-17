@@ -53,9 +53,12 @@ function byId(result) {
 
 const fixtures = loadFixtures();
 
-test('fixtures directory has the four known-answer cases', () => {
+test('fixtures directory has the known-answer cases', () => {
   const names = fixtures.map((f) => f.file);
-  for (const want of ['caddy-patch.json', 'longhorn-kubeversion.json', 'negative-control.json', 'postgres-major.json']) {
+  for (const want of [
+    'caddy-patch.json', 'longhorn-kubeversion.json', 'negative-control.json', 'postgres-major.json',
+    'tailscale-operator-patch.json', 'n8n-patch.json', 'inventree-minor.json', 'non-renovate-clean.json', 'non-renovate-redaction.json',
+  ]) {
     assert.ok(names.includes(want), `missing fixture ${want}`);
   }
 });
@@ -79,6 +82,15 @@ for (const fx of fixtures) {
     if (fx.expect.negative_control) {
       assert.equal(rules.negativeControl(fx.facts.cluster, CONFIG).result, fx.expect.negative_control);
     }
+    if (fx.expect.dependants) {
+      assert.deepEqual(result.dependants.map((d) => d.id), fx.expect.dependants);
+      for (const d of result.dependants) {
+        assert.deepEqual(Object.keys(d), ['id', 'where', 'check']);
+        assert.ok(result.reasons.includes(`dependant ${d.id} (${d.where}): ${d.check}`), `dependant ${d.id} in reasons`);
+      }
+    }
+    for (const r of fx.expect.reasons_include || []) assert.ok(result.reasons.includes(r), `reason "${r}" in ${JSON.stringify(result.reasons)}`);
+    assert.equal(result.finalise, fx.expect.finalise === true, 'finalise');
   });
 }
 
@@ -238,12 +250,138 @@ test('R5: a Portainer member outside the group branch is blocked', async () => {
   assert.equal(okResult.verdict, 'low-risk', JSON.stringify(okResult.reasons));
 });
 
-test('an ungated chart patch under infrastructure/ is review, not low-risk', async () => {
-  const facts = chartPR('tailscale-operator', '1.104.4', '1.104.7', 'infrastructure/tailscale/helmrelease.yaml');
-  const http = stubHttp({ 'https://pkgs.tailscale.com/helmcharts/index.yaml': indexFor('tailscale-operator', '1.104.7') });
+test('an ungated chart patch under infrastructure/ with no override is review, not low-risk', async () => {
+  const facts = chartPR('external-secrets', '2.14.0', '2.14.1', 'infrastructure/controllers/external-secrets.yaml');
+  const http = stubHttp({ 'https://charts.external-secrets.io/index.yaml': indexFor('external-secrets', '2.14.1') });
   const result = await rules.triagePR(http, facts, CONFIG, rules.newCaches());
   assert.equal(byId(result).R2.result, 'flag');
+  assert.equal(byId(result).R2.evidence.compared.path_class_override, undefined);
   assert.equal(result.verdict, 'review');
+});
+
+// ------------------------------------------------------------ path_class_overrides
+
+const TAILSCALE_INDEX = 'https://pkgs.tailscale.com/helmcharts/index.yaml';
+
+test('override: a Tailscale operator patch under infrastructure/ is low-risk, and says why', async () => {
+  const facts = chartPR('tailscale-operator', '1.104.4', '1.104.7', 'infrastructure/tailscale/helmrelease.yaml');
+  const result = await rules.triagePR(stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '1.104.7') }), facts, CONFIG, rules.newCaches());
+  assert.equal(byId(result).R2.result, 'pass');
+  assert.deepEqual(byId(result).R2.evidence.compared.path_class_override, { package: 'tailscale-operator', datasource: 'helm', path_class: 'infrastructure', update_types: ['patch', 'minor'] });
+  assert.equal(result.verdict, 'low-risk', JSON.stringify(result.reasons));
+  const minor = chartPR('tailscale-operator', '1.104.7', '1.106.0', 'infrastructure/tailscale/helmrelease.yaml');
+  const minorResult = await rules.triagePR(stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '1.106.0') }), minor, CONFIG, rules.newCaches());
+  assert.equal(minorResult.verdict, 'low-risk', JSON.stringify(minorResult.reasons));
+});
+
+test('override: the same Tailscale bump with a wide edit is review (the override lifts only the path reason)', async () => {
+  const facts = chartPR('tailscale-operator', '1.104.4', '1.104.7', 'infrastructure/tailscale/helmrelease.yaml');
+  facts.files.items[0].additions = 3;
+  facts.files.items[0].patch += '\n+      values:\n+        operatorConfig: {}';
+  const result = await rules.triagePR(stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '1.104.7') }), facts, CONFIG, rules.newCaches());
+  assert.equal(byId(result).R2.result, 'flag');
+  assert.equal(byId(result).R2.evidence.compared.path_class_override, undefined);
+  assert.equal(result.verdict, 'review');
+});
+
+test('override: other checks still apply to an overridden Tailscale bump (R6 keyword, R4 fail)', async () => {
+  const facts = chartPR('tailscale-operator', '1.104.4', '1.104.7', 'infrastructure/tailscale/helmrelease.yaml');
+  facts.pr.body += '\n### Release Notes\n\nThe CRD gains a field.\n\n---\n';
+  const http = stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '1.104.7') });
+  const r6 = await rules.triagePR(http, facts, CONFIG, rules.newCaches());
+  assert.equal(byId(r6).R2.result, 'pass');
+  assert.equal(r6.verdict, 'review');
+  const r4 = chartPR('tailscale-operator', '1.104.4', '1.104.7', 'infrastructure/tailscale/helmrelease.yaml');
+  const blocked = await rules.triagePR(stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '1.104.7', '>=99') }), r4, CONFIG, rules.newCaches());
+  assert.equal(blocked.verdict, 'blocked');
+});
+
+test('override: a Tailscale operator major is gated (R3) and goes to needs-claude', async () => {
+  const facts = chartPR('tailscale-operator', '1.104.7', '2.0.0', 'infrastructure/tailscale/helmrelease.yaml');
+  const result = await rules.triagePR(stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '2.0.0') }), facts, CONFIG, rules.newCaches());
+  assert.equal(byId(result).R3.result, 'flag');
+  assert.equal(byId(result).R2.result, 'flag', 'majors are not in the override');
+  assert.equal(result.verdict, 'needs-claude');
+});
+
+// ------------------------------------------------------------ floors and dependants
+
+test('floor: an n8n major is still needs-claude through R3', async () => {
+  const fx = fixtures.find((f) => f.file === 'n8n-patch.json');
+  const facts = JSON.parse(JSON.stringify(fx.facts));
+  facts.pr.body = facts.pr.body.replace('| patch | `2.47.7` → `2.47.8` |', '| major | `2.47.7` → `3.0.0` |');
+  facts.files.items[0].patch = facts.files.items[0].patch.replace('n8n:2.47.8', 'n8n:3.0.0');
+  const http = stubHttp({ 'https://registry-1.docker.io/v2/n8nio/n8n/manifests/3.0.0': fx.http[Object.keys(fx.http)[0]] });
+  const result = await rules.triagePR(http, withConfigSha(facts), CONFIG, rules.newCaches());
+  assert.equal(byId(result).R3.result, 'flag');
+  assert.equal(result.verdict, 'needs-claude');
+});
+
+test('floor: a needs-claude dependant floor lifts a clean patch, and never improves a blocked one', async () => {
+  const cfg = JSON.parse(JSON.stringify(CONFIG));
+  cfg.dependants.caddy[0].floor = 'needs-claude';
+  const fx = fixtures.find((f) => f.file === 'caddy-patch.json');
+  const result = await rules.triagePR(stubHttp(fx.http), withConfigSha(fx.facts), cfg, rules.newCaches());
+  assert.equal(result.verdict, 'needs-claude');
+  assert.ok(result.reasons.includes('floor needs-claude: dependant media-serving of caddy'));
+  const arm = caddyWith((f) => {
+    const key = Object.keys(f.http)[0];
+    f.http[key].body = JSON.stringify({ manifests: [{ platform: { os: 'linux', architecture: 'arm64' } }] });
+  });
+  const blocked = await rules.triagePR(stubHttp(arm.http), withConfigSha(arm.facts), cfg, rules.newCaches());
+  assert.equal(blocked.verdict, 'blocked');
+});
+
+test('dependants: a package with none carries an empty list', async () => {
+  const fx = fixtures.find((f) => f.file === 'postgres-major.json');
+  const result = await rules.triagePR(stubHttp(fx.http || {}), withConfigSha(fx.facts), CONFIG, rules.newCaches());
+  assert.deepEqual(result.dependants, []);
+  assert.ok(!result.reasons.some((r) => r.startsWith('dependant ')));
+});
+
+// ------------------------------------------------------------ non-Renovate PRs
+
+test('non-Renovate: R9 not run leaves a human verdict unfinalised', async () => {
+  const fx = fixtures.find((f) => f.file === 'non-renovate-clean.json');
+  const facts = Object.assign({}, withConfigSha(fx.facts), { patterns: [] });
+  const result = await rules.triagePR(stubHttp({}), facts, CONFIG, rules.newCaches());
+  assert.equal(byId(result).R9.result, 'not_run');
+  assert.equal(result.verdict, 'human');
+  assert.equal(result.finalise, false);
+});
+
+test('non-Renovate: no network call is made', async () => {
+  const fx = fixtures.find((f) => f.file === 'non-renovate-clean.json');
+  let calls = 0;
+  await rules.triagePR(async () => { calls++; return { statusCode: 500 }; }, withConfigSha(fx.facts), CONFIG, rules.newCaches());
+  assert.equal(calls, 0);
+});
+
+// ------------------------------------------------------------ carried verdicts
+
+function previousOf(result, id) {
+  return { id, verdict: result.verdict, results: result.checks.map((c) => ({ id: c.id, result: c.result })) };
+}
+
+test('carry: the same verdict and per-check results give a carried row with no checks', async () => {
+  const fx = fixtures.find((f) => f.file === 'caddy-patch.json');
+  const result = await rules.triagePR(stubHttp(fx.http), withConfigSha(fx.facts), CONFIG, rules.newCaches());
+  assert.deepEqual(rules.carryForward(result, previousOf(result, 41)), { carried_from: 41, checks: null });
+});
+
+test('carry: one check changed gives a full row', async () => {
+  const fx = fixtures.find((f) => f.file === 'caddy-patch.json');
+  const result = await rules.triagePR(stubHttp(fx.http), withConfigSha(fx.facts), CONFIG, rules.newCaches());
+  const prev = previousOf(result, 41);
+  prev.results.find((c) => c.id === 'R7').result = 'flag';
+  assert.deepEqual(rules.carryForward(result, prev), { carried_from: null, checks: result.checks });
+  const otherVerdict = Object.assign(previousOf(result, 41), { verdict: 'review' });
+  assert.equal(rules.carryForward(result, otherVerdict).carried_from, null);
+  const fewer = previousOf(result, 41);
+  fewer.results.pop();
+  assert.equal(rules.carryForward(result, fewer).carried_from, null);
+  assert.equal(rules.carryForward(result, null).carried_from, null);
+  assert.equal(rules.carryForward(result, { id: 41, verdict: 'low-risk', results: null }).carried_from, null);
 });
 
 test('a chart major is gated (R3) and goes to needs-claude', async () => {
@@ -398,6 +536,47 @@ test('config: the one-line repos list (read by SQL) matches the parsed config', 
   assert.doesNotThrow(() => rules.assertReposMatch(CONFIG, ['dazzathewiz/fluxcd']));
   assert.throws(() => rules.assertReposMatch(CONFIG, []), /repos from SQL/);
   assert.deepEqual(rules.reposFromConfigLine('a: 1\nrepos:\n  - x/y\n'), []);
+});
+
+test('config: folded >- scalars read as one line, and # inside them is text', () => {
+  const cfg = rules.parseConfigYaml('a:\n  - id: x\n    check: >-\n      one # two\n      three\n\n      four\n    where: w\nb: 1\n');
+  assert.deepEqual(cfg, { a: [{ id: 'x', check: 'one # two three\nfour', where: 'w' }], b: 1 });
+  assert.match(CONFIG.dependants['inventree/inventree'][0].check, /^REST API changes in the release notes \(API version bumps, removed or renamed fields\) on: part, .* icons$/);
+  assert.throws(() => rules.parseConfigYaml('a: >-\nb: 1\n'), /empty folded scalar/);
+  assert.throws(() => rules.parseConfigYaml('a: |\n  x\n'), /unsupported YAML syntax/);
+});
+
+test('config: the new keys load as written', () => {
+  assert.deepEqual(CONFIG.review_floor_packages, ['n8nio/n8n']);
+  assert.deepEqual(CONFIG.path_class_overrides, [{ package: 'tailscale-operator', datasource: 'helm', path_class: 'infrastructure', update_types: ['patch', 'minor'] }]);
+  assert.deepEqual(Object.keys(CONFIG.dependants), ['inventree/inventree', 'caddy']);
+  assert.deepEqual(CONFIG.dependants['inventree/inventree'].map((d) => [d.id, d.where, d.floor]), [['intake-script', 'off-repo operator workspace', 'review']]);
+  assert.deepEqual(CONFIG.dependants.caddy.map((d) => [d.id, d.where, d.floor]), [['media-serving', 'inventory app', null]]);
+});
+
+test('config: unknown keys and bad packages fail loudly', () => {
+  const bad = (from, to, re) => assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace(from, to)), re, `${from} -> ${to}`);
+  bad('per_run_cap: 10', 'per_run_cap: 10\nper_run_cpa: 5', /unknown key\(s\) per_run_cpa/);
+  bad('    path_class: infrastructure', '    path_class: infrastructure\n    lifts: everything', /path_class_overrides\[0\] has unknown key\(s\) lifts/);
+  bad('    path_class: infrastructure', '    path_class: clusters', /path_class must be one of infrastructure, other/);
+  bad('  - package: tailscale-operator\n    datasource: helm', '  - package: tailscale-operater\n    datasource: helm', /names chart tailscale-operater, which has no helm_index entry/);
+  bad('update_types: [patch, minor]', 'update_types: [patch, major]', /majors stay gated/);
+  bad('review_floor_packages: [n8nio/n8n]', 'review_floor_packages: ["N8N IO"]', /invalid package "N8N IO"/);
+  bad('      floor: review', '      floor: low-risk', /floor must be one of needs-claude, review/);
+  bad('      floor: review', '      floor: review\n      severity: high', /intake-script|unknown key\(s\) severity/);
+  bad('    - id: media-serving', '    - id: intake-script', /repeats id intake-script/);
+  bad('      where: inventory app\n', '', /needs where/);
+});
+
+test('config drift: packages named by floors, overrides and dependants are in the repo', () => {
+  const text = [].concat(walkYaml(path.join(REPO_ROOT, 'apps'), []), walkYaml(path.join(REPO_ROOT, 'infrastructure'), []))
+    .map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+  const named = CONFIG.review_floor_packages.concat(CONFIG.path_class_overrides.map((o) => o.package), Object.keys(CONFIG.dependants));
+  for (const p of named) {
+    const image = new RegExp(`image:\\s*["']?(docker\\.io/)?(library/)?${p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}:`);
+    const chart = new RegExp(`^\\s+chart:\\s*${p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}\\s*$`, 'm');
+    assert.ok(image.test(text) || chart.test(text), `${p} is not an image or chart in apps/ or infrastructure/`);
+  }
 });
 
 function renovateRules() {
