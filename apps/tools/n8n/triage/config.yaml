@@ -1,5 +1,6 @@
 # PR triage rules config. Non-secret; reviewed like any manifest.
-# Parsed by rules.js (block-style YAML subset: maps, lists, [a, b], quoted scalars).
+# Parsed by rules.js (block-style YAML subset: maps, lists, [a, b], quoted
+# scalars, >- folded text).
 
 # off: no GitHub writes. digest | labels come in a later PR.
 # Quoted: YAML 1.1 parsers read a bare off as false.
@@ -72,6 +73,34 @@ needs_claude_packages:
   - k3s-io/k3s
   - traefik
   - postgres
+
+# Verdict: these packages never come out better than review.
+review_floor_packages: [n8nio/n8n]
+
+# R2: lets these updates pass outside apps/. Lifts only the path reason:
+# the change must still be one version line.
+path_class_overrides:
+  - package: tailscale-operator
+    datasource: helm
+    path_class: infrastructure
+    update_types: [patch, minor]
+
+# Things outside the repo that depend on a package. Each entry goes into the
+# verdict's reasons; floor (optional) caps how good the verdict can be.
+dependants:
+  inventree/inventree:
+    - id: intake-script
+      where: off-repo operator workspace
+      floor: review
+      check: >-
+        REST API changes in the release notes (API version bumps, removed
+        or renamed fields) on: part, part/category, stock, stock/location,
+        stock/transfer, parameter, parameter/template, note, attachment,
+        generic/status/custom, contenttype, icons
+  caddy:
+    - id: media-serving
+      where: inventory app
+      check: after rollout, open a part image and a stock attachment
 
 # R6: case-insensitive substrings in Renovate's release notes.
 release_note_keywords:

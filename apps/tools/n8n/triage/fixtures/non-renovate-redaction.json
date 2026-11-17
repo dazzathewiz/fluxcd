@@ -1,0 +1,49 @@
+{
+  "name": "Non-Renovate PR with a redaction hit: blocked, not finalised",
+  "history": "Synthetic. The deny-list value is never echoed into the verdict.",
+  "facts": {
+    "repo": "owner/fluxcd",
+    "now": "2026-11-17T00:00:00Z",
+    "pr": {
+      "number": 301,
+      "html_url": "https://github.com/owner/fluxcd/pull/301",
+      "etag": "W/\"pr-300-etag\"",
+      "head_sha": "7777777777777777777777777777777777777777",
+      "head_ref": "feat/docs-tidy",
+      "user_login": "a-human",
+      "title": "docs: tidy a runbook",
+      "body": "Tidies wording.",
+      "created_at": "2026-11-13T00:00:00Z",
+      "mergeable": true,
+      "mergeable_state": "clean",
+      "draft": false
+    },
+    "files": {
+      "url": "https://api.github.com/repos/owner/fluxcd/pulls/301/files?per_page=100",
+      "etag": "W/\"files-301-etag\"",
+      "items": [
+        {
+          "filename": "docs/example.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -1,1 +1,1 @@\n-old wording\n+bought it from Example-Retailer-Name last week"
+        }
+      ]
+    },
+    "dashboard": null,
+    "cluster": null,
+    "patterns": [
+      "example-retailer-name",
+      "/never-matches-\\d+/"
+    ]
+  },
+  "expect": {
+    "verdict": "blocked",
+    "finalise": false,
+    "checks": {
+      "R9": "fail"
+    },
+    "dependants": []
+  }
+}

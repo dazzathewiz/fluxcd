@@ -52,6 +52,7 @@
   },
   "expect": {
     "verdict": "low-risk",
-    "checks": { "R1": "pass", "R2": "pass", "R3": "pass", "R4": "not_run", "R5": "pass", "R6": "pass", "R7": "pass", "R8": "pass", "R9": "not_run" }
+    "checks": { "R1": "pass", "R2": "pass", "R3": "pass", "R4": "not_run", "R5": "pass", "R6": "pass", "R7": "pass", "R8": "pass", "R9": "not_run" },
+    "dependants": ["media-serving"]
   }
 }

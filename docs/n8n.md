@@ -341,12 +341,46 @@ The first matching verdict wins:
 
 1. **blocked**: R4, R5, R8 or R9 failed.
 2. **needs-claude**: R3 flagged, the package is in `needs_claude_packages`, the
-   change touches CRDs, it touches `clusters/` or `gotk-components`, or it moves a
-   manifest's `apiVersion`.
-3. **review**: R1, R2 or R6 flagged, or a required check didn't run.
+   change touches CRDs, it touches `clusters/` or `gotk-components`, it moves a
+   manifest's `apiVersion`, or a `needs-claude` floor applies.
+3. **review**: R1, R2 or R6 flagged, a required check didn't run, or a `review`
+   floor applies.
 4. **low-risk**: only when R1 is digest, patch or minor on an `apps/` image or an
    ungated chart, R2 is one version line, R3 and R5 are clear, R4 and R8 pass where
    they apply, and R6 has no hits.
+
+**Path-class overrides.** `path_class_overrides` lets named updates pass R2
+outside `apps/`. An entry names a package, its datasource, the path class
+(`infrastructure` or `other`, never `clusters/` or `gotk-components`) and the
+update types (never `major`). It lifts only R2's path reason: the change must
+still be one version line in one file, and every other check applies as usual.
+The Tailscale operator chart's patch and minor bumps are the one override today.
+Its majors stay gated by the Helm-major rule in R3. R2's evidence records the
+override it used.
+
+**Floors.** A floor caps how good a verdict can be. `review_floor_packages` never
+come out better than `review` (n8n today, whose majors still go to
+`needs-claude` through R3). A dependant can carry its own floor. A floor joins the
+reasons at its own level, so it can make a verdict worse, never better.
+
+**Dependants.** `dependants` lists things outside the repo that depend on a
+package. Each entry has an `id`, `where` it lives, what to `check`, and an
+optional `floor`. Every matching entry goes into the verdict's reasons, as
+`dependant <id> (<where>): <check>`, so the review knows what to look at. The
+names are generic, because this repo is public. Details of what depends on what
+stay in the private records.
+
+**Non-Renovate PRs** (author not in `renovate_logins`) are triaged by hand. Only
+R9 runs, and the others are `not_run`, not required. The verdict is **human**,
+inserted with `finalised_at` set, so no later ruleset re-triages it. An R9 hit
+makes it **blocked**, not finalised. If R9 couldn't run (for example, no redaction
+patterns loaded), the verdict is still `human` but left unfinalised, so a later
+ruleset checks it again.
+
+`config.yaml` is validated on load. An unknown key, an invalid package name, an
+override naming a chart with no `helm_index` entry, or a floor that isn't
+`review` or `needs-claude` fails the run. A test checks that every package these
+keys name is an image or chart in the repo.
 
 **API-version changes.** Renovate's `kubernetes-api` updates move a manifest from
 one API version to another, such as `notification.toolkit.fluxcd.io/v1beta3` to
@@ -404,6 +438,24 @@ ruleset. So:
 - Older verdicts stay as history. Rows from before rulesets have an empty
   `ruleset`.
 
+**Carried rows.** When a new ruleset gives the same verdict and the same result
+for every check as the latest row for that head SHA, the new row is *carried*: it
+stores the verdict and reasons, `checks` is NULL, and `carried_from` names the full
+row that holds the checks. A carried row's `carried_from` is always a full row,
+never another carried row. Any changed result is recorded in full. Start run reads
+the latest row per head SHA for the comparison. A carried row still counts as a
+verdict under its ruleset, so each PR is evaluated once per ruleset.
+
+```sh
+kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
+  "select v.pr, v.verdict, v.ruleset, v.carried_from, coalesce(v.checks, src.checks) is not null as has_checks
+     from triage.verdicts v left join triage.verdicts src on src.id = v.carried_from
+     order by v.created desc limit 15;"
+```
+
+When `write_mode` publishes, it should publish only when a verdict changes, and
+never re-label or re-comment because the ruleset changed.
+
 To stop a head SHA being re-triaged, finalise its verdict:
 
 ```sh
@@ -412,7 +464,8 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
 ```
 
 To re-triage a PR under the current ruleset, delete its verdict rows for that
-ruleset.
+ruleset. A full row that a carried row names can't be deleted until the carried
+row is.
 
 ### Redaction patterns
 
