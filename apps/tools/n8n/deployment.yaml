@@ -30,7 +30,7 @@ spec:
       # Applies triage/schema.sql, reloads config.yaml, reseeds the redaction
       # patterns and resets the least-privilege `triage` role. Idempotent.
       - name: triage-schema
-        image: postgres:17.11-alpine
+        image: postgres:17.12-alpine
         command: ["/bin/sh", "-c"]
         args:
         - |
