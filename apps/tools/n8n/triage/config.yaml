@@ -2,9 +2,9 @@
 # Parsed by rules.js (block-style YAML subset: maps, lists, [a, b], quoted
 # scalars, >- folded text).
 
-# off: no GitHub writes. digest | labels come in a later PR.
-# Quoted: YAML 1.1 parsers read a bare off as false.
-write_mode: "off"
+# off: no GitHub writes. digest: one digest issue per repo, edited in place
+# when its body changes. Quoted: YAML 1.1 parsers read a bare off as false.
+write_mode: "digest"
 
 # One line, flow style: the poll workflow's SQL reads this line to list repos,
 # and the rules code checks it against the parsed config.
@@ -66,8 +66,8 @@ removed:
   - rook-ceph
   - rook/ceph
 
-# Verdict: these packages always go to needs-claude.
-needs_claude_packages:
+# Verdict: these packages always go to deep-review.
+deep_review_packages:
   - longhorn
   - fluxcd/flux2
   - k3s-io/k3s

@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS triage.runs (
   -- Per-repo ETag of the open-PR list, for conditional requests.
   list_etags       jsonb NOT NULL DEFAULT '{}'::jsonb,
   -- The ruleset this run triaged with (see the verdicts table).
-  ruleset          text
+  ruleset          text,
+  -- The digest outcome, one per repo (comma-separated): off, skipped-unhealthy,
+  -- skipped-pending, redaction-hit, closed, unchanged, published, failed.
+  digest           text
 );
 
 CREATE TABLE IF NOT EXISTS triage.verdicts (
@@ -51,9 +54,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS verdicts_repo_pr_sha_ruleset_key
 -- dropped and re-added by name, so a fresh table and an old one end up alike.
 ALTER TABLE triage.verdicts ADD COLUMN IF NOT EXISTS carried_from bigint REFERENCES triage.verdicts (id);
 ALTER TABLE triage.verdicts ALTER COLUMN checks DROP NOT NULL;
+-- needs-claude is now deep-review: verdicts name the depth of review, not the
+-- reviewer. The CHECK is dropped, the rows (and any reason naming the old level)
+-- move, and the CHECK comes back without the old value. A second run matches no
+-- rows. There is no way back: an older CHECK would reject the moved rows.
 ALTER TABLE triage.verdicts DROP CONSTRAINT IF EXISTS verdicts_verdict_check;
+UPDATE triage.verdicts SET verdict = 'deep-review' WHERE verdict = 'needs-claude';
+UPDATE triage.verdicts
+SET reasons = (SELECT jsonb_agg(replace(replace(r, 'package needs Claude: ', 'deep-review package: '), 'needs-claude', 'deep-review') ORDER BY n)
+               FROM jsonb_array_elements_text(reasons) WITH ORDINALITY AS e (r, n))
+WHERE jsonb_typeof(reasons) = 'array' AND reasons::text ~ '(needs-claude|needs Claude)';
 ALTER TABLE triage.verdicts ADD CONSTRAINT verdicts_verdict_check
-  CHECK (verdict IN ('blocked', 'needs-claude', 'review', 'low-risk', 'human'));
+  CHECK (verdict IN ('blocked', 'deep-review', 'review', 'low-risk', 'human'));
 -- A row has its own checks or names the full row that has them, never both.
 ALTER TABLE triage.verdicts DROP CONSTRAINT IF EXISTS verdicts_checks_or_carried;
 ALTER TABLE triage.verdicts ADD CONSTRAINT verdicts_checks_or_carried
@@ -74,6 +86,18 @@ CREATE TABLE IF NOT EXISTS triage.config (
   sha256 text NOT NULL,
   loaded timestamptz NOT NULL DEFAULT now()
 );
+
+-- write_mode digest: the one digest issue per repo. body_sha256 is set only
+-- after a readback matched, so a failed write is retried on the next run.
+CREATE TABLE IF NOT EXISTS triage.digest (
+  repo         text PRIMARY KEY,
+  issue_number integer,
+  body_sha256  text,
+  status       text,
+  published_at timestamptz,
+  checked      timestamptz NOT NULL
+);
+ALTER TABLE triage.runs ADD COLUMN IF NOT EXISTS digest text;
 
 -- Written by the triage-heartbeat workflow.
 CREATE TABLE IF NOT EXISTS triage.heartbeat (

@@ -1,9 +1,10 @@
 # n8n
 
 A self-hosted n8n instance in the `tools` namespace, with its own Postgres. It
-runs automated triage of dependency-update PRs. Triage runs in **shadow mode**: it
-reads PRs and records a verdict for each one in Postgres, and writes nothing to the
-source host. See [PR triage](#pr-triage-shadow-mode) below.
+runs automated triage of dependency-update PRs. Triage reads PRs, records a verdict
+for each one in Postgres, and keeps one digest issue per repo up to date. It writes
+nothing else to the source host: no labels, comments, statuses or merges. See
+[PR triage](#pr-triage) below.
 
 ## What's deployed
 
@@ -37,7 +38,7 @@ into Secret `n8n-secrets`:
 | --- | --- | --- |
 | `encryption-key` | `N8N_ENCRYPTION_KEY` | n8n, to encrypt stored credentials |
 | `db-password` | `DB_POSTGRESDB_PASSWORD`, `POSTGRES_PASSWORD`, and hashed into `TRIAGE_DB_PASSWORD` | n8n and Postgres (one source, so they can't drift); the workflows' `triage` role |
-| `github-token` | `GITHUB_TOKEN`, and inside `CREDENTIALS_OVERWRITE_DATA` | The triage workflow's source-host reads |
+| `github-token` | `GITHUB_TOKEN`, and inside `CREDENTIALS_OVERWRITE_DATA` | The triage workflow's source-host reads, and the [digest issue](#the-digest-issue) writes |
 | `redaction-patterns` | `REDACTION_PATTERNS` | Seeded into `triage.redaction_patterns` for the R9 hygiene check |
 
 All four fields must exist before the ExternalSecret syncs. The ExternalSecret
@@ -171,7 +172,9 @@ node apps/tools/n8n/triage/sync-code-nodes.js          # check: exits 1 on drift
 ```
 
 The check also fails if a workflow carries more than one copy, or if any non-GET
-source-host request sits outside the `Write gate` node. The tests include drift
+source-host request isn't one of the two [digest writes](#the-digest-issue), or sits
+anywhere but after the `Write gate` node's true output. It prints each write it
+found. The tests include drift
 checks of `triage/config.yaml` against `renovate.json` and against the
 HelmRepositories in this repo, so a change to either needs the config updated in the
 same PR.
@@ -204,8 +207,9 @@ password, revokes everything and grants back exactly:
 | Object | Privileges | Used by |
 | --- | --- | --- |
 | schema `triage` | `USAGE` | every query |
-| `triage.runs` | `SELECT`, `INSERT`, `UPDATE` | Start run, Finish run, heartbeat |
-| `triage.verdicts` | `SELECT`, `INSERT` | the seen-SHA read, Insert verdict |
+| `triage.runs` | `SELECT`, `INSERT`, `UPDATE` | Start run, Finish run, Record digest, heartbeat |
+| `triage.verdicts` | `SELECT`, `INSERT` | the seen-SHA and current-verdict reads, Insert verdicts |
+| `triage.digest` | `SELECT`, `INSERT`, `UPDATE` | Start run, Record digest |
 | `triage.config`, `triage.redaction_patterns` | `SELECT` | Start run |
 | `triage.heartbeat` | `SELECT`, `INSERT`, `UPDATE` | heartbeat upsert |
 | the two `id` sequences | `USAGE` | inserts |
@@ -232,7 +236,7 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select table_name, string_agg(privilege_type, ', ' order by privilege_type) from information_schema.role_table_grants where grantee = 'triage' group by 1 order by 1;"
 ```
 
-## PR triage (shadow mode)
+## PR triage
 
 `PR triage: poll` runs every 15 minutes:
 
@@ -241,20 +245,26 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
    ETags stored under this ruleset and the PRs already triaged under it. It lists the
    repos from the one-line `repos: [...]` in `config.yaml`.
 2. **Get dashboard** reads the Dependency Dashboard issue.
-3. **List PRs** sends `If-None-Match`. A `304` means nothing changed.
-4. **One item per PR**, **Get PR** and **Get files** read each open PR. When the
+3. **Open PRs**, **Who am I** and **Digest issues** read what the
+   [digest](#the-digest-issue) needs: the open PRs with no ETag, the token's own
+   login, and the issues that login opened.
+4. **List PRs** sends `If-None-Match`. A `304` means nothing changed.
+5. **One item per PR**, **Get PR** and **Get files** read each open PR. When the
    list is unchanged or empty, one placeholder item goes through instead and the two
    reads hit `/rate_limit`, which costs no quota. These reads are the only ones that
    carry the source-host credential, and only to `api.github.com`.
-5. **Cluster version** calls the `PR triage: cluster version` sub-workflow once,
+6. **Cluster version** calls the `PR triage: cluster version` sub-workflow once,
    which returns the live `/version` response. See
    [Cluster version](#cluster-version).
-6. **Triage**, the only Code node, parses the config and checks it lists the same
-   repos, and runs the negative control against that response. It keeps PRs whose
-   `head_sha` has no verdict under this ruleset and no finalised one, oldest first, up to `per_run_cap`. Then it fetches
-   the Helm index and registry manifests and runs R1–R9.
-7. **Insert verdict**, then the **Write gate**.
-8. **Finish run** records the PR count, the negative-control result and the ETags.
+7. **Triage**, the Code node that carries `rules.js`, parses the config and checks it
+   lists the same repos, and runs the negative control against that response. It
+   keeps PRs whose `head_sha` has no verdict under this ruleset and no finalised one,
+   oldest first, up to `per_run_cap`. Then it fetches the Helm index and registry
+   manifests and runs R1–R9, and plans the digest.
+8. **Insert verdicts** inserts them all in one statement.
+9. **Finish run** records the PR count, the negative-control result and the ETags.
+10. The **Write gate** opens only with `write_mode: "digest"`. After it, the digest
+    nodes write the digest issue, read it back and **Record digest**.
 
 So when the PR list changes, every open PR's detail and files are read, and only
 the new head SHAs are triaged. A failed read of a PR being triaged fails the run;
@@ -340,14 +350,22 @@ what was read.
 The first matching verdict wins:
 
 1. **blocked**: R4, R5, R8 or R9 failed.
-2. **needs-claude**: R3 flagged, the package is in `needs_claude_packages`, the
-   change touches CRDs, it touches `clusters/` or `gotk-components`, it moves a
-   manifest's `apiVersion`, or a `needs-claude` floor applies.
-3. **review**: R1, R2 or R6 flagged, a required check didn't run, or a `review`
-   floor applies.
-4. **low-risk**: only when R1 is digest, patch or minor on an `apps/` image or an
-   ungated chart, R2 is one version line, R3 and R5 are clear, R4 and R8 pass where
-   they apply, and R6 has no hits.
+2. **deep-review** (potentially significant): R3 flagged, the package is in
+   `deep_review_packages`, the change touches CRDs, it touches `clusters/` or
+   `gotk-components`, it moves a manifest's `apiVersion`, or a `deep-review` floor
+   applies.
+3. **review** (a light review): R1, R2 or R6 flagged, a required check didn't run,
+   or a `review` floor applies.
+4. **low-risk** (no further review): only when R1 is digest, patch or minor on an
+   `apps/` image or an ungated chart, R2 is one version line, R3 and R5 are clear,
+   R4 and R8 pass where they apply, and R6 has no hits.
+
+`blocked` means the PR can't proceed, and `human` that a person triages it. The
+levels name the depth of review, not who does it. `deep-review` was called
+`needs-claude` until the digest PR. `schema.sql` moved every stored row, and every
+reason that named the old level, and the CHECK no longer allows the old value. So
+that change is fixed forward, never reverted: a reverted CHECK would reject the
+moved rows.
 
 **Path-class overrides.** `path_class_overrides` lets named updates pass R2
 outside `apps/`. An entry names a package, its datasource, the path class
@@ -360,7 +378,7 @@ override it used.
 
 **Floors.** A floor caps how good a verdict can be. `review_floor_packages` never
 come out better than `review` (n8n today, whose majors still go to
-`needs-claude` through R3). A dependant can carry its own floor. A floor joins the
+`deep-review` through R3). A dependant can carry its own floor. A floor joins the
 reasons at its own level, so it can make a verdict worse, never better.
 
 **Dependants.** `dependants` lists things outside the repo that depend on a
@@ -379,15 +397,15 @@ ruleset checks it again.
 
 `config.yaml` is validated on load. An unknown key, an invalid package name, an
 override naming a chart with no `helm_index` entry, or a floor that isn't
-`review` or `needs-claude` fails the run. A test checks that every package these
-keys name is an image or chart in the repo.
+`review` or `deep-review` fails the run, and so does the old `needs_claude_packages`
+key. A test checks that every package these keys name is an image or chart in the repo.
 
 **API-version changes.** Renovate's `kubernetes-api` updates move a manifest from
 one API version to another, such as `notification.toolkit.fluxcd.io/v1beta3` to
 `v1`. Its table calls that a patch, but no package version changes, and a schema
 can drop or rename fields between versions. R1 classifies the change as
 `api-version` and passes when the table names the same move. The verdict is
-needs-claude, with the API group and versions in the reasons.
+deep-review, with the API group and versions in the reasons.
 
 Release notes come from the section Renovate writes into the PR body. If Renovate
 found none, R6 records that and passes.
@@ -396,12 +414,57 @@ found none, R6 records that and passes.
 `kubeVersion >=99`. It must come back `fail`. If it doesn't, the run is recorded with
 `ok = false`, and the heartbeat ignores it.
 
-### write_mode
+### The digest issue
 
-`triage/config.yaml` has `write_mode: off | digest | labels`, default `off`. It's a
-reviewed value: changing it is a PR. With `off`, no node calls any source-host write
-endpoint, and today there are none to call. Every future write node goes after the
-`Write gate` node's true output, and `sync-code-nodes.js` refuses a write that isn't.
+`write_mode` in `triage/config.yaml` is `"off"` or `"digest"`, and it's `"digest"`.
+Changing it is a PR. `labels` fails config validation: it isn't built.
+
+With `digest`, each repo has one issue, `PR triage digest`, that the token's own
+user opened and the workflow edits in place. Its body starts with the marker
+`<!-- pr-triage-digest:v1 -->`. It lists every open PR that isn't a draft, by
+verdict: blocked, deep-review, review, low-risk, then human (unfinalised). A
+finalised human verdict is left out, because a person already has it. Each entry
+shows the PR number, a short head SHA, the date it opened and the reasons, each
+through a fixed template. A dependant's line carries its `check` text from the
+config. A low-risk entry adds a `gh pr merge <n> --merge --admin
+--match-head-commit <sha>` line to run by hand. A non-Renovate PR's title isn't
+shown.
+
+The body is the same bytes for the same PRs and verdicts. It holds no timestamps,
+run IDs or rulesets. **The issue is written only when its sha256 differs from the
+last body read back from it**, so a new ruleset that gives the same verdicts writes
+nothing. The whole body goes through the redaction filter first.
+
+The writes are `POST /repos/{owner}/{repo}/issues` with `{title, body}`, only when
+no issue of the token's user carries the marker, and `PATCH
+/repos/{owner}/{repo}/issues/{n}` with `{body}`. Nothing else: no state, labels,
+assignees, comments, statuses, reviews, refs or merges. `sync-code-nodes.js`
+matches each write node against those two templates exactly and refuses any
+other. The issue is found by `triage.digest.issue_number`, or else by the marker
+among the issues the token's login opened (`GET /user`, then `creator=`), any
+state.
+
+**Kill switch: close the issue.** A closed digest issue is never written or
+reopened. Reopen it to resume. To stop for good, open a PR setting
+`write_mode: "off"`.
+
+`triage.runs.digest` records each run's outcome, one per repo:
+
+| `digest` | Meaning | Request |
+| --- | --- | --- |
+| `off` | `write_mode: "off"` | none |
+| `skipped-unhealthy` | the negative control didn't fail, the cluster version wasn't read, or no redaction patterns loaded | none |
+| `skipped-pending` | an open PR's head SHA has no verdict yet under this ruleset (a re-triage is spanning runs) | none |
+| `redaction-hit` | the body matched a redaction pattern. Only a count is kept. The run is `ok = false` | none |
+| `closed` | the digest issue is closed | none |
+| `unchanged` | the body's sha256 matches the stored one | none |
+| `published` | written, and the readback holds the same body, marker first | write, then read back |
+| `failed` | a digest read, the write or the readback failed. The run is `ok = false`, and no sha is stored, so the next run writes again | write, if it got that far |
+
+Digest reads happen every run in `digest` mode, before Triage. The outcomes
+marked "none" make no request after the gate. A failed digest never stops
+verdicts being recorded, but its run is `ok = false`, which the heartbeat doesn't
+count, so a digest that keeps failing makes the heartbeat go stale.
 
 ### Reading verdicts
 
@@ -409,7 +472,9 @@ endpoint, and today there are none to call. Every future write node goes after t
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select pr, verdict, reasons, ruleset, finalised_at, created from triage.verdicts order by created desc limit 20;"
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
-  "select id, started, finished, pr_count, negative_control, ok, ruleset from triage.runs order by id desc limit 10;"
+  "select id, started, finished, pr_count, negative_control, ok, digest, ruleset from triage.runs order by id desc limit 10;"
+kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
+  "select repo, issue_number, status, published_at, checked from triage.digest;"
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select c->>'id' as check, c->>'result' as result, c->'evidence'->>'source_url' as source, c->'evidence'->>'etag_or_sha' as etag
      from triage.verdicts v, jsonb_array_elements(v.checks) c where v.pr = <number> order by v.created desc limit 9;"
@@ -453,8 +518,8 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
      order by v.created desc limit 15;"
 ```
 
-When `write_mode` publishes, it should publish only when a verdict changes, and
-never re-label or re-comment because the ruleset changed.
+The digest is keyed to its body, not the ruleset, so a ruleset change that gives
+the same verdicts doesn't touch the issue.
 
 To stop a head SHA being re-triaged, finalise its verdict:
 

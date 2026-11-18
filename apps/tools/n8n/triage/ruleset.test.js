@@ -44,20 +44,24 @@ test('Start run builds the ruleset and filters ETags and seen SHAs by it', () =>
   assert.match(q, /run\.ruleset,/);
 });
 
-test('Insert verdict writes the ruleset, carried_from and finalised_at, and conflicts on the ruleset', () => {
-  const n = node('Insert verdict');
+test('Insert verdicts writes the ruleset, carried_from and finalised_at, and conflicts on the ruleset', () => {
+  const n = node('Insert verdicts');
   const q = squash(n.parameters.query);
   assert.match(q, /ON CONFLICT \(repo, pr, head_sha, ruleset\) DO NOTHING/);
-  assert.match(q, /checks, ruleset, carried_from, finalised_at\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6::jsonb, NULLIF\(\$7::jsonb, 'null'::jsonb\), \$8, NULLIF\(\$9::bigint, 0\), CASE WHEN \$10::boolean THEN now\(\) END\)/);
-  assert.match(n.parameters.options.queryReplacement, /JSON\.stringify\(\$json\.checks\), \$json\.ruleset, \$json\.carried_from \|\| 0, \$json\.finalise === true\] \}\}$/);
+  assert.match(q, /jsonb_to_recordset\(\$1::jsonb\) AS x \( run_id bigint, repo text, pr integer, head_sha text, verdict text, reasons jsonb, checks jsonb, ruleset text, carried_from bigint, finalise boolean\)/);
+  assert.match(q, /INSERT INTO triage\.verdicts \(run_id, repo, pr, head_sha, verdict, reasons, checks, ruleset, carried_from, finalised_at\) SELECT run_id, repo, pr, head_sha, verdict, reasons, NULLIF\(checks, 'null'::jsonb\), ruleset, NULLIF\(carried_from, 0\), CASE WHEN finalise THEN now\(\) END FROM v/);
+  // One statement, one output row, so the run goes on to Finish run with no verdicts.
+  assert.match(q, /SELECT count\(\*\) AS inserted FROM ins;$/);
+  assert.equal(n.parameters.options.queryReplacement, '={{ [JSON.stringify($json.verdicts)] }}');
 });
 
 test('the schema allows the human verdict and carried rows with no checks, idempotently', () => {
   const sql = read('triage/schema.sql');
   assert.match(sql, /ALTER TABLE triage\.verdicts ADD COLUMN IF NOT EXISTS carried_from bigint REFERENCES triage\.verdicts \(id\);/);
   assert.match(sql, /ALTER TABLE triage\.verdicts ALTER COLUMN checks DROP NOT NULL;/);
-  // Dropped by name first, then re-added: the live constraint is verdicts_verdict_check.
-  assert.match(squash(sql), /DROP CONSTRAINT IF EXISTS verdicts_verdict_check; ALTER TABLE triage\.verdicts ADD CONSTRAINT verdicts_verdict_check CHECK \(verdict IN \('blocked', 'needs-claude', 'review', 'low-risk', 'human'\)\);/);
+  // Dropped by name first, the rows renamed, then re-added: the live constraint is verdicts_verdict_check.
+  assert.match(squash(sql), /DROP CONSTRAINT IF EXISTS verdicts_verdict_check; UPDATE triage\.verdicts SET verdict = 'deep-review' WHERE verdict = 'needs-claude'; UPDATE triage\.verdicts SET reasons = .*? WHERE jsonb_typeof\(reasons\) = 'array' AND reasons::text ~ '\(needs-claude\|needs Claude\)'; ALTER TABLE triage\.verdicts ADD CONSTRAINT verdicts_verdict_check CHECK \(verdict IN \('blocked', 'deep-review', 'review', 'low-risk', 'human'\)\);/);
+  assert.equal((sql.match(/ADD CONSTRAINT verdicts_verdict_check/g) || []).length, 1, 'one CHECK, without needs-claude');
   assert.match(squash(sql), /DROP CONSTRAINT IF EXISTS verdicts_checks_or_carried; ALTER TABLE triage\.verdicts ADD CONSTRAINT verdicts_checks_or_carried CHECK \(\(checks IS NULL\) <> \(carried_from IS NULL\)\);/);
   const create = sql.slice(sql.indexOf('CREATE TABLE IF NOT EXISTS triage.verdicts'), sql.indexOf(');', sql.indexOf('CREATE TABLE IF NOT EXISTS triage.verdicts')));
   assert.ok(!/CHECK \(verdict IN/.test(create), 'the CHECK is added by name, so a fresh table gets no second, unnamed one');
@@ -101,6 +105,9 @@ async function runDriver(previous) {
     'Get PR': [{ json: { statusCode: 200, headers: { etag: f.pr.etag }, body: prBody } }],
     'Get files': [{ json: { statusCode: 200, headers: { etag: f.files.etag }, body: f.files.items } }],
     'Cluster version': [{ json: { statusCode: 200, headers: {}, body: { gitVersion: 'v1.34.12+k3s1', gitCommit: 'c' } } }],
+    'Open PRs': [{ json: { statusCode: 200, headers: {}, body: [] } }],
+    'Who am I': [{ json: { statusCode: 200, headers: {}, body: { login: 'triage-bot' } } }],
+    'Digest issues': [{ json: { statusCode: 200, headers: {}, body: [] } }],
   };
   const http = async (o) => fx.http[o.url] || { statusCode: 404, headers: {}, body: '' };
   const ctx = vm.createContext({
@@ -110,7 +117,8 @@ async function runDriver(previous) {
   });
   const code = node('Triage').parameters.jsCode;
   const items = await vm.runInContext(`module = { exports: {} }; module.exports = async function VmCodeWrapper() {${code}\n}()`, ctx);
-  return JSON.parse(JSON.stringify(items.map((i) => i.json).filter((j) => j.kind === 'verdict')));
+  assert.equal(items.length, 1, 'one run item, holding the verdicts');
+  return JSON.parse(JSON.stringify(items[0].json.verdicts));
 }
 
 test('the driver carries an unchanged result forward and records a changed one in full', async () => {

@@ -39,6 +39,9 @@ async function runTriage(clusterVersionJson) {
     'Get PR': [{ json: { statusCode: 200, headers: {}, body: { resources: {} } } }],
     'Get files': [{ json: { statusCode: 200, headers: {}, body: { resources: {} } } }],
     'Cluster version': [{ json: clusterVersionJson }],
+    'Open PRs': [{ json: { statusCode: 200, headers: {}, body: [] } }],
+    'Who am I': [{ json: { statusCode: 200, headers: {}, body: { login: 'triage-bot' } } }],
+    'Digest issues': [{ json: { statusCode: 200, headers: {}, body: [] } }],
   };
   const calls = [];
   const ctx = vm.createContext({
@@ -65,6 +68,7 @@ test('the 401 seen live keeps R4 not_run and the run not ok', async () => {
   const { run } = await runTriage(VERSION_401);
   assert.equal(run.negative_control.result, 'not_run');
   assert.equal(run.ok, false);
+  assert.deepEqual(run.digests.map((d) => [d.action, d.digest]), [['skip', 'skipped-unhealthy']], 'an unhealthy run never publishes');
 });
 
 test('a failed sub-workflow (error item) keeps the run finishing, not ok', async () => {

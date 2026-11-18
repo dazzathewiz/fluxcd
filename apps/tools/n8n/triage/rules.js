@@ -6,8 +6,9 @@
 // `node sync-code-nodes.js --write`.
 
 const RESULTS = ['pass', 'flag', 'fail', 'not_run'];
-const VERDICTS = ['blocked', 'needs-claude', 'review', 'low-risk', 'human'];
-const WRITE_MODES = ['off', 'digest', 'labels'];
+const VERDICTS = ['blocked', 'deep-review', 'review', 'low-risk', 'human'];
+// labels is not built yet, so config validation rejects it.
+const WRITE_MODES = ['off', 'digest'];
 const CHECK_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9'];
 const CONFIG_SOURCE = 'git:apps/tools/n8n/triage/config.yaml';
 
@@ -154,14 +155,14 @@ function asList(value) {
 
 const CONFIG_KEYS = [
   'write_mode', 'repos', 'per_run_cap', 'renovate_logins', 'cluster_version_url', 'negative_control_kube_version',
-  'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'needs_claude_packages', 'review_floor_packages',
+  'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'deep_review_packages', 'review_floor_packages',
   'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
 ];
 const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
-// clusters/ and gotk-components always go to needs-claude, and apps/ needs no override.
+// clusters/ and gotk-components always go to deep-review, and apps/ needs no override.
 const OVERRIDABLE_PATH_CLASSES = ['infrastructure', 'other'];
 // A floor caps how good a verdict can be; low-risk would be no floor at all.
-const FLOORS = ['needs-claude', 'review'];
+const FLOORS = ['deep-review', 'review'];
 const PACKAGE_NAME = /^[a-z0-9][a-z0-9._/-]*$/;
 
 function checkKeys(where, obj, allowed) {
@@ -222,7 +223,8 @@ function loadConfig(text) {
   const cfg = parseConfigYaml(text);
   checkKeys('the top level', cfg, CONFIG_KEYS);
   if (!WRITE_MODES.includes(cfg.write_mode)) {
-    throw new Error(`config: write_mode must be one of ${WRITE_MODES.join(', ')}`);
+    const later = cfg.write_mode === 'labels' ? ' (labels is not built yet)' : '';
+    throw new Error(`config: write_mode must be one of ${WRITE_MODES.join(', ')}${later}`);
   }
   const repos = asList(cfg.repos);
   if (repos.length === 0 || !repos.every((r) => /^[\w.-]+\/[\w.-]+$/.test(r))) {
@@ -250,7 +252,7 @@ function loadConfig(text) {
     one_minor_per_pr: asList(cfg.one_minor_per_pr),
     groups: asList(cfg.groups).map((g) => ({ name: g.name, branch: g.branch, packages: asList(g.packages) })),
     removed: asList(cfg.removed),
-    needs_claude_packages: asList(cfg.needs_claude_packages),
+    deep_review_packages: asList(cfg.deep_review_packages),
     review_floor_packages: reviewFloor,
     path_class_overrides: loadPathClassOverrides(cfg.path_class_overrides, helmIndex),
     dependants: loadDependants(cfg.dependants),
@@ -1227,8 +1229,8 @@ function checkR9(facts, ctx) {
 
 // ---------------------------------------------------------------- verdict
 
-function isNeedsClaudePackage(pkg, config) {
-  return config.needs_claude_packages.includes(pkg);
+function isDeepReviewPackage(pkg, config) {
+  return config.deep_review_packages.includes(pkg);
 }
 
 function touchesCrds(facts, ctx) {
@@ -1258,7 +1260,7 @@ function floorsOf(ctx, config, dependants) {
   return out;
 }
 
-// First matching rule wins: blocked, needs-claude, review, low-risk. A floor
+// First matching rule wins: blocked, deep-review, review, low-risk. A floor
 // joins the reasons at its own level, so it can only make a verdict worse.
 function verdictFor(checks, facts, ctx, config, floors) {
   const by = {};
@@ -1272,9 +1274,9 @@ function verdictFor(checks, facts, ctx, config, floors) {
 
   if (by.R3.result === 'flag') reasons.push('R3 gated package (Dependency Dashboard approval)');
   const pkgs = Array.from(new Set(packagesOf(ctx).map((p) => p.package)));
-  const special = pkgs.filter((p) => isNeedsClaudePackage(p, config));
-  if (special.length) reasons.push(`package needs Claude: ${special.join(', ')}`);
-  reasons.push(...floorReasons('needs-claude'));
+  const special = pkgs.filter((p) => isDeepReviewPackage(p, config));
+  if (special.length) reasons.push(`deep-review package: ${special.join(', ')}`);
+  reasons.push(...floorReasons('deep-review'));
   if (touchesCrds(facts, ctx)) reasons.push('touches CRDs');
   const apiMoves = ctx.changes.filter((c) => c.kind === 'api');
   if (apiMoves.length) {
@@ -1282,7 +1284,7 @@ function verdictFor(checks, facts, ctx, config, floors) {
   }
   const classes = (facts.files ? facts.files.items : []).map((f) => pathClass(f.filename));
   if (classes.includes('clusters') || classes.includes('gotk')) reasons.push('touches clusters/ or gotk-components');
-  if (reasons.length) return { verdict: 'needs-claude', reasons };
+  if (reasons.length) return { verdict: 'deep-review', reasons };
 
   if (by.R1.result === 'flag') reasons.push('R1 diff and Renovate table disagree');
   if (by.R2.result === 'flag') reasons.push(`R2 not a single version line in apps/ (${by.R2.path_classes.join(', ')})`);
@@ -1422,8 +1424,187 @@ function selectPRs(lists, seen, config) {
   return { selected, etags, candidates: candidates.length };
 }
 
+// ---------------------------------------------------------------- digest
+
+// write_mode digest: one issue per repo, found by this marker and edited in
+// place. The body is a pure function of the open PRs and their verdicts, so the
+// same inputs give the same bytes, and an unchanged body is never written.
+const DIGEST_MARKER = '<!-- pr-triage-digest:v1 -->';
+const DIGEST_TITLE = 'PR triage digest';
+const DIGEST_HEADER = 'Advisory. Generated by PR triage; verdicts are keyed to the head SHA shown. Merges are always by hand.';
+const DIGEST_SECTIONS = [
+  ['blocked', 'blocked'],
+  ['deep-review', 'deep-review'],
+  ['review', 'review'],
+  ['low-risk', 'low-risk'],
+  ['human', 'human (unfinalised)'],
+];
+// triage.runs.digest, one per repo. failed and redaction-hit set ok = false.
+const DIGEST_OUTCOMES = ['off', 'skipped-unhealthy', 'skipped-pending', 'redaction-hit', 'closed', 'unchanged', 'published', 'failed'];
+
+const R_ID = 'R[1-9]';
+const PKG = '[a-z0-9][a-z0-9._/-]*';
+const PATH_CLASSES = ['apps', 'infrastructure', 'clusters', 'gotk', 'other'];
+const tpl = (s) => new RegExp(`^${s}$`);
+const listOf = (item) => `${item}(?:, ${item})*`;
+
+// The reasons rules.js writes, each as a fixed template. A stored reason that
+// fits none is shown as a placeholder, so no free text reaches the issue.
+const REASON_TEMPLATES = [
+  tpl('(?:R4|R5|R8|R9) fail'),
+  tpl('R3 gated package \\(Dependency Dashboard approval\\)'),
+  tpl(`deep-review package: ${listOf(PKG)}`),
+  tpl(`floor (?:review|deep-review): ${PKG} is never low-risk`),
+  tpl(`floor (?:review|deep-review): dependant [a-z0-9][a-z0-9-]* of ${PKG}`),
+  tpl('touches CRDs'),
+  tpl(`API version change: ${listOf('(?:core|[a-z0-9][a-z0-9.-]*) [a-z0-9]+ -> [a-z0-9]+')}`),
+  tpl('touches clusters/ or gotk-components'),
+  tpl('R1 diff and Renovate table disagree'),
+  tpl(`R2 not a single version line in apps/ \\(${listOf(`(?:${PATH_CLASSES.join('|')})`)}\\)`),
+  tpl(`required checks not run: ${listOf(R_ID)}`),
+  tpl('low-risk conditions not all met'),
+  tpl('all low-risk conditions hold'),
+  tpl('not a Renovate PR: triaged by hand'),
+  tpl('R9 not run: left unfinalised'),
+];
+
+function digestReason(reason, config) {
+  const r = String(reason);
+  if (REASON_TEMPLATES.some((t) => t.test(r))) return r;
+  const kw = r.match(/^R6 release-note keywords: (.+)$/);
+  if (kw && kw[1].split(', ').every((k) => config.release_note_keywords.includes(k))) return r;
+  return 'other reason (see triage.verdicts)';
+}
+
+// A dependant reason is rendered from the config entry its id names.
+function digestDependant(reason, config) {
+  const m = String(reason).match(/^dependant ([a-z0-9][a-z0-9-]*) \(/);
+  if (!m) return null;
+  for (const entries of Object.values(config.dependants || {})) {
+    const d = entries.find((e) => e.id === m[1]);
+    if (d) return `dependant ${d.id} (${d.where}): ${d.check}`;
+  }
+  return 'dependant not in the current config (see triage.verdicts)';
+}
+
+function isRenovateAuthor(pr, config) {
+  return config.renovate_logins.includes(pr.user_login);
+}
+
+// A title goes in a code span, so it can't mention anyone or link anything. A
+// non-Renovate title isn't shown: its text is free, and an R9 hit in it would
+// stop the whole digest.
+function digestTitle(pr, config) {
+  if (!isRenovateAuthor(pr, config)) return '(title not shown: not a Renovate PR)';
+  const t = String(pr.title || '').replace(/`/g, "'").replace(/\s+/g, ' ').trim().slice(0, 200);
+  return `\`${t}\``;
+}
+
+function digestKey(repo, pr) {
+  return `${repo}#${pr.number}@${pr.head_sha}`;
+}
+
+// The open PRs the digest lists: not drafts (selectPRs skips them, so they have
+// no verdict), oldest first.
+function digestPRs(prs) {
+  return (prs || []).filter((p) => !p.draft)
+    .slice().sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.number - b.number);
+}
+
+// Open PRs whose head SHA has no verdict under the current ruleset and none
+// finalised (verdicts holds only those).
+function digestPending(repo, prs, verdicts) {
+  return digestPRs(prs).filter((p) => !(verdicts || {})[digestKey(repo, p)]).map((p) => p.number);
+}
+
+// prs: [{number, title, head_sha, created_at, draft, user_login}].
+// verdicts: {"<repo>#<n>@<sha>": {verdict, reasons, finalised}}, the latest per
+// head SHA. A finalised human verdict is left out: a person has it.
+function renderDigest(repo, prs, verdicts, config) {
+  const sections = {};
+  for (const pr of digestPRs(prs)) {
+    const v = (verdicts || {})[digestKey(repo, pr)];
+    if (!v || !DIGEST_SECTIONS.some(([k]) => k === v.verdict)) continue;
+    if (v.verdict === 'human' && v.finalised) continue;
+    const date = String(pr.created_at || '').slice(0, 10);
+    const lines = [`- #${pr.number} ${digestTitle(pr, config)} · head \`${String(pr.head_sha).slice(0, 7)}\` · opened ${/^\d{4}-\d{2}-\d{2}$/.test(date) ? date : 'unknown'}`];
+    for (const r of v.reasons || []) lines.push(`  - ${digestDependant(r, config) || digestReason(r, config)}`);
+    if (v.verdict === 'low-risk') {
+      // AGENTS.md: PRs merge with merge commits. The head check refuses a merge
+      // if the PR moved on since this verdict.
+      lines.push(`  - \`gh pr merge ${pr.number} --merge --admin --match-head-commit ${pr.head_sha}\``);
+    }
+    (sections[v.verdict] = sections[v.verdict] || []).push(lines.join('\n'));
+  }
+  const out = [DIGEST_MARKER, DIGEST_HEADER];
+  for (const [key, heading] of DIGEST_SECTIONS) {
+    if (sections[key]) out.push(`## ${heading}\n\n${sections[key].join('\n')}`);
+  }
+  if (out.length === 2) out.push('No open PRs to triage.');
+  return out.join('\n\n');
+}
+
+// The issue to edit: the stored number if the token's user opened it, else the
+// oldest of that user's issues whose body starts with the marker. null: none.
+function pickDigestIssue(issues, login, storedNumber) {
+  const mine = (issues || []).filter((i) => i && !i.pull_request && i.user && i.user.login === login && Number.isInteger(i.number));
+  const stored = mine.find((i) => i.number === storedNumber);
+  if (stored) return stored;
+  return mine.filter((i) => String(i.body || '').startsWith(DIGEST_MARKER)).sort((a, b) => a.number - b.number)[0] || null;
+}
+
+// Everything up to the write, from what was read before the Triage node:
+//   healthy   the negative control failed and the cluster version was read
+//   reads     {prs, user, issues}: GitHub responses ({statusCode, body})
+//   verdicts  as for renderDigest
+//   stored    triage.digest's {issue_number, body_sha256}, or null
+// Returns {repo, action: skip | create | edit, digest, ok, ...}. A skip makes
+// no request; digest is its outcome. create and edit carry the body to send.
+function planDigest(input) {
+  const { repo, config } = input;
+  const skip = (digest, extra) => Object.assign({ repo, action: 'skip', digest, ok: !['failed', 'redaction-hit'].includes(digest) }, extra || {});
+  if (!/^[\w.-]+\/[\w.-]+$/.test(String(repo))) throw new Error(`digest: bad repo ${repo}`);
+  if (config.write_mode !== 'digest') return skip('off');
+  const patterns = compilePatterns(input.patterns);
+  if (!input.healthy || patterns.list.length === 0 || patterns.invalid > 0) return skip('skipped-unhealthy');
+  const { prs, user, issues } = input.reads || {};
+  const login = user && user.statusCode === 200 && user.body && typeof user.body.login === 'string' ? user.body.login : null;
+  if (!prs || prs.statusCode !== 200 || !Array.isArray(prs.body) || !login || !issues || issues.statusCode !== 200 || !Array.isArray(issues.body)) {
+    return skip('failed', { reason: 'a digest read failed' });
+  }
+  const open = prs.body.map((p) => ({
+    number: p.number, title: p.title, head_sha: p.head && p.head.sha, created_at: p.created_at, draft: !!p.draft, user_login: p.user ? p.user.login : null,
+  }));
+  const pending = digestPending(repo, open, input.verdicts);
+  if (pending.length) return skip('skipped-pending', { pending });
+  const body = renderDigest(repo, open, input.verdicts, config);
+  // Only a count, never the pattern.
+  const hits = countMatches(body, patterns.list);
+  if (hits) return skip('redaction-hit', { matched_patterns: hits });
+  const sha = sha256Hex(body);
+  const stored = input.stored || {};
+  const target = pickDigestIssue(issues.body, login, stored.issue_number);
+  // Closing the issue pauses writes; it is never reopened from here.
+  if (target && target.state === 'closed') return skip('closed', { issue_number: target.number });
+  if (target && stored.body_sha256 === sha) return skip('unchanged', { issue_number: target.number });
+  return target
+    ? { repo, action: 'edit', digest: null, ok: true, issue_number: target.number, body, body_sha256: sha }
+    : { repo, action: 'create', digest: null, ok: true, issue_number: null, title: DIGEST_TITLE, body, body_sha256: sha };
+}
+
+// The readback after a write: published only if the issue holds the body that
+// was sent, marker first. The Record digest SQL repeats this with sha256().
+function digestReadback(plan, readback) {
+  const r = readback || {};
+  const body = r.statusCode === 200 && r.body && typeof r.body.body === 'string' ? r.body.body : null;
+  const ok = body !== null && body.startsWith(DIGEST_MARKER) && sha256Hex(body) === plan.body_sha256;
+  return { digest: ok ? 'published' : 'failed', ok, issue_number: ok ? r.body.number : plan.issue_number };
+}
+
 const RULES_EXPORTS = {
   RESULTS, VERDICTS, WRITE_MODES, CHECK_IDS,
+  DIGEST_MARKER, DIGEST_TITLE, DIGEST_HEADER, DIGEST_OUTCOMES,
+  renderDigest, digestPending, pickDigestIssue, planDigest, digestReadback,
   parseConfigYaml, loadConfig, reposFromConfigLine, assertReposMatch, parseVersion, compareVersions, satisfies, classifyUpdate,
   parseRenovateTable, extractReleaseNotes, parseImageRef, imageKey, parsePatch, extractChanges,
   pathClass, sha256Hex, parseDashboard, findChartEntry, parseAuthChallenge, amd64InIndex, bodyText, bodyJson,
