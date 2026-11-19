@@ -11,6 +11,17 @@ const HERE = __dirname;
 const REPO_ROOT = path.resolve(HERE, '../../../..');
 const CONFIG_TEXT = fs.readFileSync(path.join(HERE, 'config.yaml'), 'utf8');
 const CONFIG = rules.loadConfig(CONFIG_TEXT);
+// Sets the write_mode line, whatever it says now. Exactly one must match, so a
+// format change fails here instead of running a test in the wrong mode.
+const WRITE_MODE_LINE = /^write_mode: .*$/gm;
+function setWriteModeLine(text, line) {
+  const n = (text.match(WRITE_MODE_LINE) || []).length;
+  assert.equal(n, 1, `config.yaml must have exactly one write_mode line (found ${n})`);
+  return text.replace(WRITE_MODE_LINE, line);
+}
+const withWriteMode = (text, mode) => setWriteModeLine(text, `write_mode: "${mode}"`);
+const OFF_TEXT = withWriteMode(CONFIG_TEXT, 'off');
+const LABELS_TEXT = withWriteMode(CONFIG_TEXT, 'labels');
 
 function stubHttp(map) {
   const calls = {};
@@ -523,12 +534,15 @@ test('selectPRs: oldest first, skip seen SHAs, cap clears the ETag', () => {
 
 // ------------------------------------------------------------ config
 
-test('config: write_mode is off and validated', () => {
-  assert.equal(CONFIG.write_mode, 'off');
+test('config: write_mode is labels and validated', () => {
+  assert.equal(CONFIG.write_mode, 'labels');
+  assert.ok(rules.WRITE_MODES.includes(CONFIG.write_mode));
+  assert.equal(rules.loadConfig(OFF_TEXT).write_mode, 'off');
+  assert.equal(rules.loadConfig(LABELS_TEXT).write_mode, 'labels');
   assert.deepEqual(CONFIG.repos, ['dazzathewiz/fluxcd']);
   assert.equal(CONFIG.per_run_cap, 10);
-  assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace('write_mode: "off"', 'write_mode: "all"')), /write_mode/);
-  assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace('write_mode: "off"', 'write_mode: off\n  bad: indent')));
+  assert.throws(() => rules.loadConfig(withWriteMode(CONFIG_TEXT, 'all')), /write_mode/);
+  assert.throws(() => rules.loadConfig(setWriteModeLine(CONFIG_TEXT, 'write_mode: off\n  bad: indent')));
 });
 
 test('config: the one-line repos list (read by SQL) matches the parsed config', () => {
