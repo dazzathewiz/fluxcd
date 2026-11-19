@@ -44,7 +44,7 @@ async function runTriage(clusterVersionJson) {
   const ctx = vm.createContext({
     helpers: { httpRequest: async (o) => { calls.push(o.url); return { statusCode: 404, headers: {}, body: '' }; } },
     $input: { first: () => out['Cluster version'][0], all: () => out['Cluster version'] },
-    $: (n) => ({ first: () => out[n][0], all: () => out[n] }),
+    $: (n) => ({ first: () => (out[n] || [])[0], all: () => out[n] || [] }),
   });
   const items = await vm.runInContext(`module = { exports: {} }; module.exports = async function VmCodeWrapper() {${triageCode}\n}()`, ctx);
   return { run: items[0].json, calls };

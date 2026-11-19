@@ -296,17 +296,17 @@ test('override: other checks still apply to an overridden Tailscale bump (R6 key
   assert.equal(blocked.verdict, 'blocked');
 });
 
-test('override: a Tailscale operator major is gated (R3) and goes to needs-claude', async () => {
+test('override: a Tailscale operator major is gated (R3) and goes to deep-review', async () => {
   const facts = chartPR('tailscale-operator', '1.104.7', '2.0.0', 'infrastructure/tailscale/helmrelease.yaml');
   const result = await rules.triagePR(stubHttp({ [TAILSCALE_INDEX]: indexFor('tailscale-operator', '2.0.0') }), facts, CONFIG, rules.newCaches());
   assert.equal(byId(result).R3.result, 'flag');
   assert.equal(byId(result).R2.result, 'flag', 'majors are not in the override');
-  assert.equal(result.verdict, 'needs-claude');
+  assert.equal(result.verdict, 'deep-review');
 });
 
 // ------------------------------------------------------------ floors and dependants
 
-test('floor: an n8n major is still needs-claude through R3', async () => {
+test('floor: an n8n major is still deep-review through R3', async () => {
   const fx = fixtures.find((f) => f.file === 'n8n-patch.json');
   const facts = JSON.parse(JSON.stringify(fx.facts));
   facts.pr.body = facts.pr.body.replace('| patch | `2.47.7` → `2.47.8` |', '| major | `2.47.7` → `3.0.0` |');
@@ -314,16 +314,16 @@ test('floor: an n8n major is still needs-claude through R3', async () => {
   const http = stubHttp({ 'https://registry-1.docker.io/v2/n8nio/n8n/manifests/3.0.0': fx.http[Object.keys(fx.http)[0]] });
   const result = await rules.triagePR(http, withConfigSha(facts), CONFIG, rules.newCaches());
   assert.equal(byId(result).R3.result, 'flag');
-  assert.equal(result.verdict, 'needs-claude');
+  assert.equal(result.verdict, 'deep-review');
 });
 
-test('floor: a needs-claude dependant floor lifts a clean patch, and never improves a blocked one', async () => {
+test('floor: a deep-review dependant floor lifts a clean patch, and never improves a blocked one', async () => {
   const cfg = JSON.parse(JSON.stringify(CONFIG));
-  cfg.dependants.caddy[0].floor = 'needs-claude';
+  cfg.dependants.caddy[0].floor = 'deep-review';
   const fx = fixtures.find((f) => f.file === 'caddy-patch.json');
   const result = await rules.triagePR(stubHttp(fx.http), withConfigSha(fx.facts), cfg, rules.newCaches());
-  assert.equal(result.verdict, 'needs-claude');
-  assert.ok(result.reasons.includes('floor needs-claude: dependant media-serving of caddy'));
+  assert.equal(result.verdict, 'deep-review');
+  assert.ok(result.reasons.includes('floor deep-review: dependant media-serving of caddy'));
   const arm = caddyWith((f) => {
     const key = Object.keys(f.http)[0];
     f.http[key].body = JSON.stringify({ manifests: [{ platform: { os: 'linux', architecture: 'arm64' } }] });
@@ -384,18 +384,18 @@ test('carry: one check changed gives a full row', async () => {
   assert.equal(rules.carryForward(result, { id: 41, verdict: 'low-risk', results: null }).carried_from, null);
 });
 
-test('a chart major is gated (R3) and goes to needs-claude', async () => {
+test('a chart major is gated (R3) and goes to deep-review', async () => {
   const facts = chartPR('reflector', '9.1.0', '10.0.77', 'infrastructure/controllers/emberstack.yaml');
   const http = stubHttp({ 'https://emberstack.github.io/helm-charts/index.yaml': indexFor('reflector', '10.0.77') });
   const result = await rules.triagePR(http, facts, CONFIG, rules.newCaches());
   assert.equal(byId(result).R3.result, 'flag');
-  assert.equal(result.verdict, 'needs-claude');
+  assert.equal(result.verdict, 'deep-review');
 });
 
-test('a change under clusters/ goes to needs-claude', async () => {
+test('a change under clusters/ goes to deep-review', async () => {
   const facts = chartPR('reloader', '2.2.19', '2.2.20', 'clusters/home/flux-system/gotk-components.yaml');
   const result = await rules.triagePR(stubHttp({}), facts, CONFIG, rules.newCaches());
-  assert.equal(result.verdict, 'needs-claude');
+  assert.equal(result.verdict, 'deep-review');
 });
 
 test('R9: a deny-list hit on a non-Renovate PR is blocked and never echoes the pattern', async () => {
@@ -562,7 +562,7 @@ test('config: unknown keys and bad packages fail loudly', () => {
   bad('  - package: tailscale-operator\n    datasource: helm', '  - package: tailscale-operater\n    datasource: helm', /names chart tailscale-operater, which has no helm_index entry/);
   bad('update_types: [patch, minor]', 'update_types: [patch, major]', /majors stay gated/);
   bad('review_floor_packages: [n8nio/n8n]', 'review_floor_packages: ["N8N IO"]', /invalid package "N8N IO"/);
-  bad('      floor: review', '      floor: low-risk', /floor must be one of needs-claude, review/);
+  bad('      floor: review', '      floor: low-risk', /floor must be one of deep-review, review/);
   bad('      floor: review', '      floor: review\n      severity: high', /intake-script|unknown key\(s\) severity/);
   bad('    - id: media-serving', '    - id: intake-script', /repeats id intake-script/);
   bad('      where: inventory app\n', '', /needs where/);

@@ -59,6 +59,19 @@ spec:
             secretKeyRef:
               name: n8n-secrets
               key: TRIAGE_DB_PASSWORD
+        # Identifiers, loaded into triage.config by seed.sql.
+        - name: GITHUB_APP_ID
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: GITHUB_APP_ID
+              optional: true
+        - name: GITHUB_APP_INSTALLATION_ID
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: GITHUB_APP_INSTALLATION_ID
+              optional: true
         volumeMounts:
         - name: triage
           mountPath: /triage
@@ -80,9 +93,20 @@ spec:
           # Binary copies of the SA token written to the PVC before binary data
           # moved to tmpfs. Prune can no longer reach them, so remove them here.
           rm -rf /home/node/.n8n/storage/workflows/TriageClusterV01 /home/node/.n8n/binaryData/workflows/TriageClusterV01
+          # The GitHub App key must be an RSA PEM. Checked without printing it.
+          node -e '
+            let ok = false;
+            try {
+              const k = (JSON.parse(process.env.CREDENTIALS_OVERWRITE_DATA || "{}").jwtAuth || {}).privateKey || "";
+              ok = k.startsWith("-----BEGIN") && require("crypto").createPrivateKey(k).asymmetricKeyType === "rsa";
+            } catch (e) {}
+            if (!ok) { console.error("GitHub App private key: not an RSA PEM (check github-app-private-key-b64)"); process.exit(1); }
+            console.log("GitHub App private key: RSA PEM ok");
+          '
           n8n import:credentials --separate --input=/import/credentials
           n8n import:workflow --separate --input=/import/workflows
           n8n publish:workflow --id=TriageClusterV01
+          n8n publish:workflow --id=TriagePublishV01
           n8n publish:workflow --id=TriagePoll000001
           n8n publish:workflow --id=TriageBeat000001
         envFrom:

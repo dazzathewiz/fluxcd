@@ -1,5 +1,5 @@
 {
-  "name": "postgres 17 -> 18: Dashboard-gated major goes to needs-claude",
+  "name": "postgres 17 -> 18: Dashboard-gated major goes to deep-review",
   "history": "Shape of the closed postgres 18 PR: one image line in each of two files.",
   "facts": {
     "repo": "owner/fluxcd",
@@ -77,7 +77,7 @@
     }
   },
   "expect": {
-    "verdict": "needs-claude",
+    "verdict": "deep-review",
     "checks": { "R1": "pass", "R3": "flag", "R4": "not_run", "R5": "pass", "R8": "pass" }
   }
 }

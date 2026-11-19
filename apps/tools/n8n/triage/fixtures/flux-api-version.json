@@ -1,5 +1,5 @@
 {
-  "name": "Flux Alert apiVersion v1beta3 -> v1: an API migration goes to needs-claude",
+  "name": "Flux Alert apiVersion v1beta3 -> v1: an API migration goes to deep-review",
   "history": "Shape of the Renovate PR that moved a notification Alert to notification.toolkit.fluxcd.io/v1. Renovate's table calls it a patch; the diff has no package version.",
   "facts": {
     "repo": "owner/fluxcd",
@@ -45,7 +45,7 @@
   },
   "http": {},
   "expect": {
-    "verdict": "needs-claude",
+    "verdict": "deep-review",
     "checks": { "R1": "pass", "R2": "flag", "R4": "not_run", "R8": "not_run" }
   }
 }

@@ -22,6 +22,7 @@ configMapGenerator:
       - workflows/triage-poll.json
       - workflows/triage-heartbeat.json
       - workflows/triage-cluster-version.json
+      - workflows/triage-publish.json
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled
@@ -42,3 +43,4 @@ configMapGenerator:
     files:
       - credentials/github.json
       - credentials/postgres.json
+      - credentials/github-app-jwt.json
