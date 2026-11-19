@@ -40,7 +40,7 @@ function writeTemplates(labels, context) {
       node: 'Installation token', method: 'POST', path: 'POST /app/installations/{id}/access_tokens',
       url: `=https://api.github.com/app/installations/{{ Number(${A}.installation_id) }}/access_tokens`,
       jsonBody: `={{ JSON.stringify({ repositories: [String(${A}.repo).split('/')[1]], permissions: { issues: 'write', pull_requests: 'write', statuses: 'write', metadata: 'read' } }) }}`,
-      auth: '=Bearer {{ $json.token }}',
+      auth: "=Bearer {{ $('Sign App JWT').first().json.token }}",
     },
     {
       node: 'Create label', method: 'POST', path: 'POST /repos/{r}/labels',

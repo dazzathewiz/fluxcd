@@ -137,14 +137,12 @@ function startRun(db, repo, ruleset, configText, patterns) {
     pubs[k] = { verdict: p.verdict, ruleset: p.ruleset, label: p.label, comment_id: p.comment_id, status_state: p.status_state, human_override: p.human_override, outcome: p.outcome };
     if (p.planned_at) touch(p, p.planned_at);
   }
-  const logins = Object.values(db.publications).filter((p) => p.app_login).sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')));
   return {
     run,
     row: {
       run_id: run.id, ruleset, repo, list_etag: null, config_body: configText, config_sha: 'sha', patterns,
       seen: Array.from(seen), previous: {}, publications: pubs, sha_seen: shaSeen, current_verdicts: current,
       app_id: db.config['github-app-id'] || null, installation_id: db.config['github-app-installation-id'] || null,
-      app_login: logins.length ? logins[0].app_login : null,
     },
   };
 }
@@ -171,12 +169,15 @@ function runPublish(action, github, calls) {
     } else if (n.type === 'n8n-nodes-base.switch') {
       branch = Number(param(n.parameters.output, sc));
       out[at] = [{ json: current }];
+    } else if (n.type === 'n8n-nodes-base.if') {
+      branch = ifResult(n, sc) ? 0 : 1;
+      out[at] = [{ json: current }];
     } else if (n.type === 'n8n-nodes-base.code') {
       out[at] = code(n, out, out[Object.keys(out).pop()], 0);
     } else {
       throw new Error(`unmodelled node type ${n.type}`);
     }
-    if (n.type !== 'n8n-nodes-base.switch') current = out[at][0].json;
+    if (n.type !== 'n8n-nodes-base.switch' && n.type !== 'n8n-nodes-base.if') current = out[at][0].json;
     const nx = next(PUBLISH, at, branch);
     if (!nx.length) return out[at];
     at = nx[0];
@@ -265,12 +266,11 @@ async function runPoll(opts) {
       out.Publish = passed.map((it) => runPublish(it.json, github, calls)[0]);
       out['Publish results'] = code(nodeOf(POLL, 'Publish results'), out, out.Publish, 0);
       for (const it of out['Publish results']) {
-        const [runId, r, pr, sha, outcome, commentId, appLogin] = param(nodeOf(POLL, 'Record publish').parameters.options.queryReplacement, scope(out, it.json, 0));
+        const [runId, r, pr, sha, outcome, commentId] = param(nodeOf(POLL, 'Record publish').parameters.options.queryReplacement, scope(out, it.json, 0));
         const row = db.publications[`${r}#${pr}@${sha}`];
         if (!row || row.run_id !== runId) continue;
         row.outcome = outcome;
         if (commentId) row.comment_id = commentId;
-        if (appLogin) row.app_login = appLogin;
         if (outcome === 'published') {
           Object.assign(row, {
             verdict: row.planned.verdict, ruleset: row.planned.ruleset, label: row.planned.label,

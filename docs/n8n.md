@@ -41,15 +41,15 @@ into Secret `n8n-secrets`:
 | `db-password` | `DB_POSTGRESDB_PASSWORD`, `POSTGRES_PASSWORD`, and hashed into `TRIAGE_DB_PASSWORD` | n8n and Postgres (one source, so they can't drift); the workflows' `triage` role |
 | `github-token` | `GITHUB_TOKEN`, and inside `CREDENTIALS_OVERWRITE_DATA` | The triage workflow's source-host reads |
 | `redaction-patterns` | `REDACTION_PATTERNS` | Seeded into `triage.redaction_patterns` for the R9 hygiene check |
-| `github-app-id` | `GITHUB_APP_ID` | Seeded into `triage.config`; the JWT's `iss`, and how the App's own comments are recognised |
+| `github-app-id` | `GITHUB_APP_ID` | Seeded into `triage.config`; the JWT's `iss` |
 | `github-app-installation-id` | `GITHUB_APP_INSTALLATION_ID` | Seeded into `triage.config`; the installation token exchange |
-| `github-app-private-key-b64` | `GITHUB_APP_PRIVATE_KEY` (decoded), and decoded inside `CREDENTIALS_OVERWRITE_DATA` | Signs the App JWT in the `PR triage: publish` sub-workflow |
+| `github-app-private-key-b64` | Only decoded, inside `CREDENTIALS_OVERWRITE_DATA` (`jwtAuth`) | Signs the App JWT in the `PR triage: publish` sub-workflow |
 
 All seven fields must exist before the ExternalSecret syncs: a missing one stops
 the whole Secret updating. The private key is the App's PEM, base64-encoded onto
 one line, because 1Password password fields flatten line breaks. The template
-decodes it (`b64dec`), so the Secret's `GITHUB_APP_PRIVATE_KEY` and the overwrite
-hold the multi-line PEM, and nothing in the cluster sees the base64 form. The
+decodes it (`b64dec`) into the `jwtAuth` overwrite, the key's only copy in the
+Secret, so n8n gets the multi-line PEM and nothing sees the base64 form. The
 `import-workflows` initContainer checks that the key starts with `-----BEGIN` and
 parses as an RSA key, without printing it, and fails the pod start if not.
 
@@ -473,11 +473,13 @@ the one published, the published one stays, and the comment says it was held.
 | The GitHub App's installation token | Every write: labels, comments, statuses. Nothing else writes |
 | The bot account | Nothing here. It opens PRs in this repo, and applies no labels |
 
-The App is found at run time, not from Git. Its ID comes from 1Password. Its
-comments carry `performed_via_github_app.id`, which is how the poll knows them, and
-its login comes from those comments. Label events don't name the App, so its own
-label events are recognised by that login. Until the App has commented once, every
-triage label event counts as a person's: that can only mean fewer writes.
+The App's slug is `app_slug` in `triage/config.yaml`, and its actor login is
+`<app_slug>[bot]`. Label events name only the actor, so that login is how the
+App's own label events are told apart from a person's, in every `write_mode`:
+`off` already plans with it, so the plan is right before the App has ever
+written. A comment is the App's when its author is that login and
+`performed_via_github_app.slug` is `app_slug`. Nothing learns the login from a
+write response, and the database doesn't store it.
 
 #### Human override
 
@@ -527,9 +529,11 @@ All writes live in the sub-workflow `PR triage: publish`
 (`workflows/triage-publish.json`, ID `TriagePublishV01`). It saves no executions of
 any kind, and only the poll may call it (`callerPolicy: workflowsFromAList`). Each
 call carries one write. It signs a JWT with n8n's JWT node (RS256, the key from the
-`jwtAuth` credential overwrite), exchanges it for an installation token scoped to
-this repository, makes the write, reads it back and returns only statuses and IDs.
-The token never leaves it.
+`jwtAuth` credential overwrite) and calls `GET /app` with it. If that App's `slug`
+isn't `app_slug`, it stops there: no token, no write, and the PR's outcome is
+`failed`, so the run is `ok = false`. Otherwise it exchanges the JWT for an
+installation token scoped to this repository, makes the write, reads it back and
+returns only statuses and IDs. The token never leaves it.
 
 `sync-code-nodes.js` enforces the allowlist. Each write must match its template
 exactly: method, URL, body and headers.
@@ -557,7 +561,7 @@ a Code node there that could make a request, and any execution saving there.
 | `no-op` | Nothing to write |
 | `published` | Every planned write read back as sent |
 | `redaction-hit` | At least one PR's comment hit a pattern and was not published |
-| `failed` | A write or its readback failed. The run is `ok = false` |
+| `failed` | A write or its readback failed, or `GET /app` named a different App. The run is `ok = false` |
 
 Per PR, `triage.publications.outcome` is `planned-only`, `publishing`, `published`,
 `failed`, `up-to-date`, `redaction-hit` or `skipped-<reason>`.
@@ -581,7 +585,8 @@ metadata (read), scoped to this one repository.
 Three fields in the 1Password item `n8n`: `github-app-id`,
 `github-app-installation-id` and `github-app-private-key-b64` (see
 [Secrets](#secrets)). Rotating the key is a 1Password change plus a pod restart.
-The App's name and login aren't in Git.
+The App's slug is `app_slug` in `triage/config.yaml`; renaming the App needs a PR
+changing it, or every write fails at the `GET /app` check.
 
 #### Turning it on, and off
 
@@ -690,7 +695,7 @@ which n8n users can see.
   the volume backups hold it.
 - The DNS record on both local DNS resolvers.
 - The GitHub App, its permissions and its installation: created by hand. Its
-  identifiers and key are in 1Password; its name is kept out of Git.
+  identifiers and key are in 1Password, and its slug is in `config.yaml`.
 - `triage.publications`. Like the verdicts, a working record: the labels,
   comments and statuses on GitHub are the visible state, and the next run plans
   from what it reads there.

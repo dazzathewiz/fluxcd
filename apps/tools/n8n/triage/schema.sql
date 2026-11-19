@@ -117,8 +117,6 @@ CREATE TABLE IF NOT EXISTS triage.publications (
   -- planned-only, publishing, published, failed, redaction-hit, up-to-date or
   -- skipped-<reason>.
   outcome        text,
-  -- The App's login, from a write response, for spotting its own label events.
-  app_login      text,
   PRIMARY KEY (repo, pr, head_sha)
 );
 ALTER TABLE triage.runs ADD COLUMN IF NOT EXISTS publish text;

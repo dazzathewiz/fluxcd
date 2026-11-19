@@ -147,3 +147,7 @@ verdict_labels:
   blocked: "triage:blocked"
 outcome_labels: [merge, merge-watched]
 status_context: "pr-triage/verdict"
+
+# The GitHub App that writes them. Its own label events and comments are
+# the ones by <app_slug>[bot].
+app_slug: dtw-pr-triage

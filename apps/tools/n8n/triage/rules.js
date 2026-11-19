@@ -157,7 +157,7 @@ const CONFIG_KEYS = [
   'write_mode', 'repos', 'per_run_cap', 'renovate_logins', 'cluster_version_url', 'negative_control_kube_version',
   'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'deep_review_packages', 'review_floor_packages',
   'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
-  'verdict_labels', 'outcome_labels', 'status_context',
+  'verdict_labels', 'outcome_labels', 'status_context', 'app_slug',
 ];
 const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
 // clusters/ and gotk-components always go to deep-review, and apps/ needs no override.
@@ -224,6 +224,8 @@ function loadDependants(map) {
 // as well as in config.yaml, so a config edit can't point a write at another label.
 const OUTCOME_LABELS = ['merge', 'merge-watched'];
 const STATUS_CONTEXT = /^[a-z0-9][a-z0-9._/-]{0,99}$/;
+// A GitHub App slug: lowercase letters, digits and inner hyphens.
+const APP_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,32}[a-z0-9])?$/;
 
 function loadLabels(cfg) {
   const v = cfg.verdict_labels;
@@ -236,7 +238,8 @@ function loadLabels(cfg) {
   if (typeof cfg.status_context !== 'string' || !STATUS_CONTEXT.test(cfg.status_context)) {
     throw new Error('config: status_context must be a commit status context such as pr-triage/verdict');
   }
-  return { verdict_labels: Object.assign({}, v), outcome_labels: outcome, status_context: cfg.status_context };
+  if (typeof cfg.app_slug !== 'string' || !APP_SLUG.test(cfg.app_slug)) throw new Error('config: app_slug must be the GitHub App\'s slug');
+  return { verdict_labels: Object.assign({}, v), outcome_labels: outcome, status_context: cfg.status_context, app_slug: cfg.app_slug };
 }
 
 function loadConfig(text) {
@@ -1594,22 +1597,23 @@ function pagedItems(pages) {
   return items;
 }
 
-// A comment is the App's only if GitHub says the App made it.
-function isAppComment(c, appId) {
-  const app = c && c.performed_via_github_app;
-  return !!(app && appId && String(app.id) === String(appId) && c.user && typeof c.user.login === 'string');
+// The App's actor login, from config.yaml's app_slug. Label events name only
+// the actor, so this is how the App's own label events are told apart.
+function appLoginOf(config) {
+  return `${config.app_slug}[bot]`;
 }
 
-// The App's login, from its own comments (label events don't name the App).
-function appLoginFrom(comments, appId) {
-  const c = (comments || []).find((x) => isAppComment(x, appId));
-  return c ? c.user.login : null;
+// A comment is the App's only if its author is the App's login and GitHub
+// says the App made it.
+function isAppComment(c, appLogin) {
+  const app = c && c.performed_via_github_app;
+  return !!(app && c.user && c.user.login === appLogin && `${app.slug}[bot]` === appLogin);
 }
 
 // The App's triage comments on this head SHA, oldest first. The stored comment
 // is read directly; only when it isn't usable are the PR's comments searched.
-function triageComments(read, appId, sha) {
-  const mine = (c) => isAppComment(c, appId) && Number.isInteger(c.id) && (parseMarker(c.body) || {}).sha === sha;
+function triageComments(read, appLogin, sha) {
+  const mine = (c) => isAppComment(c, appLogin) && Number.isInteger(c.id) && (parseMarker(c.body) || {}).sha === sha;
   const stored = read.stored || {};
   if (stored.statusCode === 200 && mine(stored.body)) return { ok: true, comments: [stored.body] };
   if (read.stored_id && ![200, 404, 410].includes(stored.statusCode)) return { ok: false };
@@ -1651,7 +1655,7 @@ function headSince(seenShas, headSha, events) {
 //   verdict     the head SHA's current verdict {verdict, reasons, ruleset}, or null
 //   publication the triage.publications row for this head SHA, or null
 //   labelEvents the PR's issue-event pages [{statusCode, headers, body}]
-//   appLogin    the App's login from the API, or null if it hasn't commented yet
+//   appLogin    the App's login, appLoginOf(config): <app_slug>[bot]
 //   ctx         {config, healthy, patterns, app_id, installation_id}
 // Returns {action: publish | skip, outcome, actions: [...], ...}. A skip makes
 // no request; publish lists the writes in the order they run.
@@ -1661,10 +1665,12 @@ function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) 
   const plan = {
     repo: p.repo, pr: p.number, head_sha: p.head_sha, action: 'skip', outcome: null, reason: null,
     verdict: null, triaged_verdict: null, ruleset: null, label: null, status: null,
-    human_override: false, override_actor: null, override_label: null, app_login: appLogin || null, actions: [],
+    human_override: false, override_actor: null, override_label: null, actions: [],
   };
   const skip = (reason, extra) => Object.assign(plan, { reason, outcome: reason === 'up-to-date' || reason === 'redaction-hit' ? reason : `skipped-${reason}` }, extra || {});
   if (!/^[\w.-]+\/[\w.-]+$/.test(String(p.repo)) || !Number.isInteger(p.number) || !SHA_RE.test(String(p.head_sha)) || !Array.isArray(p.labels)) return skip('bad-input');
+  // The login always comes from config, in every write_mode.
+  if (appLogin !== appLoginOf(config)) return skip('bad-input');
   // Rule 6: an unhealthy run publishes nothing. No patterns, or a bad one, is unhealthy.
   const patterns = compilePatterns(ctx.patterns);
   if (!ctx.healthy || patterns.list.length === 0 || patterns.invalid > 0) return skip('unhealthy');
@@ -1674,7 +1680,7 @@ function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) 
   if (config.write_mode === 'labels' && !(/^\d+$/.test(String(ctx.app_id || '')) && /^\d+$/.test(String(ctx.installation_id || '')))) return skip('no-app');
   const events = pagedItems(labelEvents);
   if (!events) return skip('label-events-incomplete');
-  const found = triageComments(p.comments || {}, ctx.app_id, p.head_sha);
+  const found = triageComments(p.comments || {}, appLogin, p.head_sha);
   if (!found.ok) return skip('comments-incomplete');
 
   const managed = managedLabels(config);
@@ -1737,7 +1743,7 @@ const RULES_EXPORTS = {
   fetchClusterVersion, fetchChartIndex, fetchImage, gatherExternalFacts,
   finalize, evaluate, verdictFor, triagePR, newCaches, negativeControl, selectPRs, compilePatterns, carryForward,
   SEVERITY, STATUS_STATES, LABEL_STYLES, PUBLISH_SKIPS, RUN_PUBLISH, ACTION_TYPES, OUTCOME_LABELS, RATE_LIMIT_URL,
-  publishMarker, parseMarker, managedLabels, renderTriageComment, pagedItems, isAppComment, appLoginFrom,
+  publishMarker, parseMarker, managedLabels, renderTriageComment, pagedItems, isAppComment, appLoginOf,
   triageComments, findOverride, headSince, planPublish,
 };
 

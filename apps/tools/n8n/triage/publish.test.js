@@ -21,7 +21,8 @@ const REPO = 'dazzathewiz/fluxcd';
 const API = `https://api.github.com/repos/${REPO}`;
 const APP_ID = '4242';
 const INSTALLATION = '77';
-const APP_LOGIN = 'triage-app[bot]';
+const APP_SLUG = 'dtw-pr-triage';
+const APP_LOGIN = 'dtw-pr-triage[bot]';
 const PATTERNS = ['/example-private-term/'];
 const RS1 = 'r111111111111.c111111111111';
 const RS2 = 'r222222222222.c222222222222';
@@ -31,7 +32,7 @@ const squash = (s) => s.replace(/\s+/g, ' ');
 // ------------------------------------------------------------ a stubbed GitHub
 
 function makeGithub(db) {
-  const state = { labels: ['bug'], prs: {}, comments: {}, nextComment: 5000, statuses: {}, requests: [], pageSize: 100, gone: new Set(), failWrites: false };
+  const state = { labels: ['bug'], prs: {}, comments: {}, nextComment: 5000, statuses: {}, requests: [], pageSize: 100, gone: new Set(), failWrites: false, appSlug: APP_SLUG };
   let seq = 0;
   const now = () => h.iso(db.clock + (++seq) * 1000);
   const page = (url, all) => {
@@ -59,6 +60,9 @@ function makeGithub(db) {
     const u = new URL(url);
     const p = u.pathname.replace(`/repos/${REPO}`, '');
     let m;
+    if (method === 'GET' && url === 'https://api.github.com/app') {
+      return headers.Authorization === 'Bearer jwt-for-test' ? { statusCode: 200, headers: {}, body: { id: Number(APP_ID), slug: state.appSlug } } : { statusCode: 401, headers: {}, body: {} };
+    }
     if (url === 'https://api.github.com/rate_limit') return { statusCode: method === 'GET' ? 200 : 404, headers: {}, body: { resources: {} } };
     if (method === 'POST' && (m = p.match(/^\/app\/installations\/(\d+)\/access_tokens$/))) {
       const ok = headers.Authorization === 'Bearer jwt-for-test' && m[1] === INSTALLATION;
@@ -89,7 +93,7 @@ function makeGithub(db) {
       if (m[2] === 'events') return page(url, pr.events);
       if (m[2] === 'comments' && method === 'GET') return page(url, pr.comments.map((id) => state.comments[id]).filter(Boolean));
       if (m[2] === 'comments' && method === 'POST') {
-        const c = { id: state.nextComment++, body: body.body, user: { login: APP_LOGIN }, performed_via_github_app: { id: Number(APP_ID), slug: 'triage-app' } };
+        const c = { id: state.nextComment++, body: body.body, user: { login: APP_LOGIN }, performed_via_github_app: { id: Number(APP_ID), slug: APP_SLUG } };
         state.comments[c.id] = c;
         pr.comments.push(c.id);
         return { statusCode: 201, headers: {}, body: c };
@@ -191,7 +195,8 @@ test('each verdict gets its label, one comment and one status; the next run writ
   // Labels created once, each before it is added.
   assert.equal(r.writes.filter((w) => w === 'POST /repos/dazzathewiz/fluxcd/labels').length, 5);
   const db = t.db.publications[`${REPO}#301@${S.b}`];
-  assert.deepEqual([db.verdict, db.ruleset, db.label, db.status_state, db.outcome, db.app_login], ['review', RS1, 'triage:review', 'pending', 'published', APP_LOGIN]);
+  assert.deepEqual([db.verdict, db.ruleset, db.label, db.status_state, db.outcome], ['review', RS1, 'triage:review', 'pending', 'published']);
+  assert.ok(!('app_login' in db), 'the login comes from config, never stored');
   assert.equal(db.comment_id, t.triageComments(301)[0].id);
 
   const again = await t.poll();
@@ -486,27 +491,29 @@ const v = (verdict, ruleset) => ({ verdict, reasons: [], ruleset: ruleset || RS1
 
 test('planPublish: skips name their reason, and malformed input writes nothing', () => {
   const skip = (args, reason) => assert.equal(rules.planPublish(...args).reason, reason);
-  skip([prState(), v('review'), null, noEvents, null, ctx({ healthy: false })], 'unhealthy');
-  skip([prState(), v('review'), null, noEvents, null, ctx({ patterns: ['/(/'] })], 'unhealthy');
-  skip([prState({ state: 'closed' }), v('review'), null, noEvents, null, ctx()], 'closed');
-  skip([prState({ draft: true }), v('review'), null, noEvents, null, ctx()], 'draft');
-  skip([prState(), null, null, noEvents, null, ctx()], 'no-verdict');
-  skip([prState(), v('needs-claude'), null, noEvents, null, ctx()], 'no-verdict');
-  skip([prState(), v('review'), null, null, null, ctx()], 'label-events-incomplete');
-  skip([prState({ comments: { stored_id: 9, stored: { statusCode: 502 }, list: null } }), v('review'), null, noEvents, null, ctx()], 'comments-incomplete');
-  skip([prState({ head_sha: 'nope' }), v('review'), null, noEvents, null, ctx()], 'bad-input');
-  skip([prState(), v('review'), null, noEvents, null, ctx({ config: rules.loadConfig(LABELS_TEXT), app_id: null })], 'no-app');
-  assert.equal(rules.planPublish(prState(), v('review'), null, noEvents, null, ctx({ app_id: null })).action, 'publish', 'off plans without the App');
+  skip([prState(), v('review'), null, noEvents, APP_LOGIN, ctx({ healthy: false })], 'unhealthy');
+  skip([prState(), v('review'), null, noEvents, APP_LOGIN, ctx({ patterns: ['/(/'] })], 'unhealthy');
+  skip([prState({ state: 'closed' }), v('review'), null, noEvents, APP_LOGIN, ctx()], 'closed');
+  skip([prState({ draft: true }), v('review'), null, noEvents, APP_LOGIN, ctx()], 'draft');
+  skip([prState(), null, null, noEvents, APP_LOGIN, ctx()], 'no-verdict');
+  skip([prState(), v('needs-claude'), null, noEvents, APP_LOGIN, ctx()], 'no-verdict');
+  skip([prState(), v('review'), null, null, APP_LOGIN, ctx()], 'label-events-incomplete');
+  skip([prState({ comments: { stored_id: 9, stored: { statusCode: 502 }, list: null } }), v('review'), null, noEvents, APP_LOGIN, ctx()], 'comments-incomplete');
+  skip([prState({ head_sha: 'nope' }), v('review'), null, noEvents, APP_LOGIN, ctx()], 'bad-input');
+  skip([prState(), v('review'), null, noEvents, APP_LOGIN, ctx({ config: rules.loadConfig(LABELS_TEXT), app_id: null })], 'no-app');
+  assert.equal(rules.planPublish(prState(), v('review'), null, noEvents, APP_LOGIN, ctx({ app_id: null })).action, 'publish', 'off plans without the App');
 });
 
 test('planPublish: only the App\'s own comments count, and the App\'s own label events are not overrides', () => {
   const marker = rules.publishMarker(S.a, RS1, 'review');
   const theirs = { id: 7, body: `${marker}\nfake`, user: { login: 'someone' }, performed_via_github_app: null };
-  const p = rules.planPublish(prState({ comments: { stored_id: null, stored: null, list: [{ statusCode: 200, headers: {}, body: [theirs] }] } }), v('review'), null, noEvents, null, ctx());
+  const p = rules.planPublish(prState({ comments: { stored_id: null, stored: null, list: [{ statusCode: 200, headers: {}, body: [theirs] }] } }), v('review'), null, noEvents, APP_LOGIN, ctx());
   assert.equal(p.actions[0].type, 'create_comment');
   const ev = [{ statusCode: 200, headers: {}, body: [{ event: 'labeled', label: { name: 'triage:review' }, actor: { login: APP_LOGIN }, created_at: '2026-11-01T00:00:00Z' }] }];
   assert.equal(rules.planPublish(prState(), v('review'), null, ev, APP_LOGIN, ctx()).human_override, false);
-  assert.equal(rules.planPublish(prState(), v('review'), null, ev, null, ctx()).human_override, true, 'an unknown App login treats every event as a person\'s: fewer writes, not more');
+  assert.equal(rules.planPublish(prState(), v('review'), null, ev, 'someone-else[bot]', ctx()).reason, 'bad-input', 'the login always comes from config');
+  const person = [{ statusCode: 200, headers: {}, body: [{ event: 'labeled', label: { name: 'triage:review' }, actor: { login: 'a-person' }, created_at: '2026-11-01T00:00:00Z' }] }];
+  assert.equal(rules.planPublish(prState(), v('review'), null, person, APP_LOGIN, ctx()).human_override, true);
   const other = [{ statusCode: 200, headers: {}, body: [{ event: 'labeled', label: { name: 'bug' }, actor: { login: 'a-person' }, created_at: '2026-11-01T00:00:00Z' }] }];
   assert.equal(rules.planPublish(prState({ labels: ['bug'] }), v('review'), null, other, APP_LOGIN, ctx()).human_override, false, 'other labels are not ours');
   assert.ok(!rules.planPublish(prState({ labels: ['bug'] }), v('review'), null, noEvents, APP_LOGIN, ctx()).actions.some((a) => a.name === 'bug'), 'never touches another label');
@@ -567,7 +574,7 @@ test('Finish run sums the plans into runs.publish, the values rules.js names', (
 
 test('Start run gives the plans what they need, and the schema and grants hold it', () => {
   const q = squash(poll('Start run').parameters.query);
-  for (const k of ['publications', 'sha_seen', 'current_verdicts', 'app_id', 'installation_id', 'app_login']) assert.match(q, new RegExp(`\\) AS ${k}[, ]`), k);
+  for (const k of ['publications', 'sha_seen', 'current_verdicts', 'app_id', 'installation_id']) assert.match(q, new RegExp(`\\) AS ${k}[, ]`), k);
   assert.match(q, /AND \(v\.ruleset = run\.ruleset OR v\.finalised_at IS NOT NULL\)/);
   const sql = read('triage/schema.sql');
   assert.match(sql, /CREATE TABLE IF NOT EXISTS triage\.publications \(/);
@@ -623,23 +630,23 @@ test('the sub-workflow saves nothing, only the poll may call it, and it returns 
   const gh = makeGithub(db);
   gh.pr(5, S.a);
   const calls = [];
-  const out = h.runPublish({ kind: 'action', type: 'add_label', name: 'triage:review', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, index: 0, count: 1 }, gh.github, calls);
+  const out = h.runPublish({ kind: 'action', type: 'add_label', name: 'triage:review', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, calls);
   assert.equal(out[0].json.ok, true);
   assert.ok(!JSON.stringify(out).includes('inst-token-1') && !JSON.stringify(out).includes('jwt-for-test'));
-  assert.deepEqual(Object.keys(out[0].json).sort(), ['app_login', 'comment_id', 'head_sha', 'index', 'name', 'ok', 'pr', 'readback_status', 'repo', 'run_id', 'token_status', 'type', 'write_status']);
+  assert.deepEqual(Object.keys(out[0].json).sort(), ['app_ok', 'app_status', 'comment_id', 'head_sha', 'index', 'name', 'ok', 'pr', 'readback_status', 'repo', 'run_id', 'token_status', 'type', 'write_status']);
   assert.deepEqual(calls[0].claims.iss, 4242);
   assert.ok(calls[0].claims.exp - calls[0].claims.iat <= 600, 'GitHub allows at most 10 minutes');
   const token = gh.state.requests.find((q) => q.url.endsWith('/access_tokens'));
   assert.deepEqual(token.body, { repositories: ['fluxcd'], permissions: { issues: 'write', pull_requests: 'write', statuses: 'write', metadata: 'read' } });
   // A name outside rule 1 never reaches the label path.
-  const bad = h.runPublish({ kind: 'action', type: 'remove_label', name: 'bug', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, index: 0, count: 1 }, gh.github, []);
+  const bad = h.runPublish({ kind: 'action', type: 'remove_label', name: 'bug', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, []);
   assert.equal(bad[0].json.ok, false);
   assert.ok(!gh.state.requests.some((q) => q.method === 'DELETE' && q.url.includes('/labels/bug')));
   // A failed token exchange writes nothing.
   const before = gh.state.requests.length;
-  const none = h.runPublish({ kind: 'action', type: 'create_comment', body: 'x', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: '1', index: 0, count: 1 }, gh.github, []);
+  const none = h.runPublish({ kind: 'action', type: 'create_comment', body: 'x', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: '1', app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, []);
   assert.equal(none[0].json.ok, false);
-  assert.deepEqual(gh.state.requests.slice(before).map((q) => q.method), ['POST']);
+  assert.deepEqual(gh.state.requests.slice(before).map((q) => `${q.method} ${q.url}`), ['GET https://api.github.com/app', 'POST https://api.github.com/app/installations/1/access_tokens']);
 });
 
 // ------------------------------------------------------------ allowlist
@@ -779,9 +786,9 @@ test('the ExternalSecret decodes the key, and only the decoded form reaches the 
   assert.match(es, /mergePolicy: Replace/);
   const template = es.slice(es.indexOf('    template:'), es.indexOf('\n  data:\n'));
   const outputs = Array.from(template.matchAll(/^ {8}([A-Z0-9_]+):/gm)).map((m) => m[1]);
-  assert.deepEqual(outputs.sort(), ['CREDENTIALS_OVERWRITE_DATA', 'DB_POSTGRESDB_PASSWORD', 'GITHUB_APP_ID', 'GITHUB_APP_INSTALLATION_ID', 'GITHUB_APP_PRIVATE_KEY',
+  assert.deepEqual(outputs.sort(), ['CREDENTIALS_OVERWRITE_DATA', 'DB_POSTGRESDB_PASSWORD', 'GITHUB_APP_ID', 'GITHUB_APP_INSTALLATION_ID',
     'GITHUB_TOKEN', 'N8N_ENCRYPTION_KEY', 'POSTGRES_PASSWORD', 'REDACTION_PATTERNS', 'TRIAGE_DB_PASSWORD']);
-  assert.ok(!outputs.includes('GITHUB_APP_PRIVATE_KEY_B64'));
+  assert.ok(!outputs.some((k) => k.startsWith('GITHUB_APP_PRIVATE_KEY')), 'the key reaches n8n only inside the overwrite');
   // Every 1Password field is a template input; each but the base64 key is passed through.
   const inputs = Array.from(es.matchAll(/- secretKey: ([A-Z0-9_]+)/g)).map((m) => m[1]);
   for (const k of inputs) {
@@ -789,10 +796,81 @@ test('the ExternalSecret decodes the key, and only the decoded form reaches the 
     assert.ok(template.includes(`${k}: '{{ .${k} }}'`), k);
   }
   const decodes = template.match(/\.GITHUB_APP_PRIVATE_KEY_B64 \| b64dec/g);
-  assert.equal(decodes.length, 2, 'the Secret key and the jwtAuth overwrite');
-  assert.match(template, /GITHUB_APP_PRIVATE_KEY: '\{\{ \.GITHUB_APP_PRIVATE_KEY_B64 \| b64dec \}\}'/);
+  assert.equal(decodes.length, 1, 'decoded once, for the jwtAuth overwrite');
+  assert.match(template, /"jwtAuth":\{"privateKey":\{\{ \.GITHUB_APP_PRIVATE_KEY_B64 \| b64dec \| toJson \}\}\}/);
   assert.ok(!/github-app-private-key\n/.test(es), 'the old field name is gone');
   for (const f of ['deployment.yaml', 'triage/seed.sql', 'workflows/triage-publish.json', 'workflows/triage-poll.json']) {
-    assert.ok(!read(f).includes('GITHUB_APP_PRIVATE_KEY_B64'), `${f} never sees the base64 form`);
+    assert.ok(!read(f).includes('GITHUB_APP_PRIVATE_KEY'), `${f} names no copy of the key`);
   }
+});
+
+// ------------------------------------------------------------ the App's login, from config
+
+test('config: app_slug is validated, and the App login is <app_slug>[bot]', () => {
+  assert.equal(CONFIG.app_slug, APP_SLUG);
+  assert.equal(rules.appLoginOf(CONFIG), APP_LOGIN);
+  for (const bad of ['Dtw-PR', 'dtw_pr', '-dtw', 'dtw-pr-triage[bot]', '']) {
+    assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace(`app_slug: ${APP_SLUG}`, `app_slug: "${bad}"`)), /app_slug/, bad);
+  }
+  assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace(`app_slug: ${APP_SLUG}\n`, '')), /app_slug/);
+  // PR read URLs reads the same slug with its one-line pattern.
+  const out = { 'Start run': [{ json: { config_body: CONFIG_TEXT, publications: {} } }], 'Get PR': [{ json: {} }] };
+  const urls = h.code(h.nodeOf(h.POLL, 'PR read URLs'), out, [{ json: {} }], 0);
+  assert.equal(urls[0].json.app_login, APP_LOGIN);
+});
+
+test('write_mode off: label events by <app_slug>[bot] count as the App\'s, before it has ever written', async () => {
+  const t = env();
+  t.gh.pr(440, S.a);
+  // The App's label, and no App comment anywhere (nothing to learn a login from).
+  t.gh.state.prs[440].labels.push('triage:review');
+  t.gh.state.prs[440].events.push({ id: 1, event: 'labeled', label: { name: 'triage:review' }, actor: { login: APP_LOGIN }, created_at: h.iso(t.db.clock) });
+  t.verdict(440, S.a, 'deep-review', RS1, ['touches CRDs']);
+  const r = await t.poll({ config: CONFIG_TEXT });
+  assert.deepEqual(r.appCalls, []);
+  assert.equal(r.plans[0].human_override, false);
+  assert.deepEqual(r.plans[0].actions.map((a) => a.type + (a.name ? `:${a.name}` : '')), [
+    'create_comment', 'set_status', 'ensure_label:triage:deep-review', 'remove_label:triage:review', 'add_label:triage:deep-review',
+  ]);
+  // The same event by anyone else is an override.
+  t.gh.state.prs[440].events[0].actor.login = 'a-person';
+  const p = await t.poll({ config: CONFIG_TEXT });
+  assert.equal(p.plans[0].human_override, true);
+  assert.deepEqual(p.plans[0].actions.map((a) => a.type), ['create_comment']);
+});
+
+test('the first publish run on a PR treats its own label events as the App\'s', async () => {
+  const t = env();
+  t.gh.pr(450, S.a);
+  t.verdict(450, S.a, 'review');
+  const first = await t.poll();
+  assert.equal(first.run.publish, 'published');
+  assert.ok(t.gh.state.prs[450].events.some((e) => e.event === 'labeled' && e.actor.login === APP_LOGIN));
+  // Even with its comment gone, its label events stay its own.
+  t.gh.state.gone.add(t.triageComments(450)[0].id);
+  t.gh.state.prs[450].comments = [];
+  t.verdict(450, S.a, 'deep-review', RS2, ['touches CRDs']);
+  const r = await t.poll({ ruleset: RS2 });
+  assert.equal(r.plans[0].human_override, false);
+  assert.deepEqual(t.managed(450), ['triage:deep-review']);
+});
+
+test('a slug mismatch at GET /app writes nothing and marks the run not ok', async () => {
+  const t = env();
+  t.gh.pr(460, S.a);
+  t.verdict(460, S.a, 'review');
+  t.gh.state.appSlug = 'some-other-app';
+  const r = await t.poll();
+  assert.deepEqual(r.writes, [], 'not even the token exchange');
+  assert.ok(r.requests.some((q) => q.method === 'GET' && q.url === 'https://api.github.com/app'));
+  assert.ok(r.out.Publish.every((i) => i.json.app_ok === false && i.json.ok === false));
+  assert.equal(t.db.publications[`${REPO}#460@${S.a}`].outcome, 'failed');
+  assert.equal(r.run.publish, 'failed');
+  assert.equal(r.run.ok, false);
+  assert.deepEqual(t.managed(460), []);
+  // GET /app is a read: the allowlist is unchanged.
+  const chk = h.nodeOf(h.PUBLISH, 'Check App');
+  assert.deepEqual([chk.parameters.method, chk.parameters.url], ['GET', '=https://api.github.com/app']);
+  assert.deepEqual(h.PUBLISH.connections['Sign App JWT'].main[0].map((l) => l.node), ['Check App']);
+  assert.deepEqual(h.PUBLISH.connections['App matches'].main.map((b) => b.map((l) => l.node)), [['Installation token'], ['Result']]);
 });
