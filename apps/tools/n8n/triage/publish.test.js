@@ -15,8 +15,19 @@ const h = require('./poll-harness.js');
 const N8N = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(N8N, p), 'utf8');
 const CONFIG_TEXT = read('triage/config.yaml');
-const CONFIG = rules.loadConfig(CONFIG_TEXT);
-const LABELS_TEXT = CONFIG_TEXT.replace('write_mode: "off"', 'write_mode: "labels"');
+// Sets the write_mode line, whatever it says now. Exactly one must match, so a
+// format change fails here instead of running a test in the wrong mode.
+const WRITE_MODE_LINE = /^write_mode: .*$/gm;
+function setWriteModeLine(text, line) {
+  const n = (text.match(WRITE_MODE_LINE) || []).length;
+  assert.equal(n, 1, `config.yaml must have exactly one write_mode line (found ${n})`);
+  return text.replace(WRITE_MODE_LINE, line);
+}
+const withWriteMode = (text, mode) => setWriteModeLine(text, `write_mode: "${mode}"`);
+const OFF_TEXT = withWriteMode(CONFIG_TEXT, 'off');
+const LABELS_TEXT = withWriteMode(CONFIG_TEXT, 'labels');
+// The off parse: planPublish's default ctx and the off cases plan without the App.
+const CONFIG = rules.loadConfig(OFF_TEXT);
 const REPO = 'dazzathewiz/fluxcd';
 const API = `https://api.github.com/repos/${REPO}`;
 const APP_ID = '4242';
@@ -429,7 +440,7 @@ test('write_mode off: planned-only, the plan is stored, and no App call is made'
   const t = env();
   t.gh.pr(420, S.a);
   t.verdict(420, S.a, 'review');
-  const r = await t.poll({ config: CONFIG_TEXT });
+  const r = await t.poll({ config: OFF_TEXT });
   assert.deepEqual(r.writes, []);
   assert.deepEqual(r.appCalls, []);
   assert.deepEqual(r.calls, [], 'the JWT is never signed');
@@ -596,7 +607,7 @@ test('the rename migrates rows and reasons idempotently, and the old verdict is 
 test('config: labels is a valid write_mode, digest is not, and the label names are pinned to rule 1', () => {
   assert.equal(rules.loadConfig(LABELS_TEXT).write_mode, 'labels');
   assert.deepEqual(rules.WRITE_MODES, ['off', 'labels']);
-  assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace('write_mode: "off"', 'write_mode: "digest"')), /write_mode/);
+  assert.throws(() => rules.loadConfig(withWriteMode(CONFIG_TEXT, 'digest')), /write_mode/);
   assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace('review: "triage:review"', 'review: "bug"')), /triage:review/);
   assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace('outcome_labels: [merge, merge-watched]', 'outcome_labels: [merge, bug]')), /outcome_labels/);
   assert.deepEqual(rules.managedLabels(CONFIG), ['triage:blocked', 'triage:deep-review', 'triage:review', 'triage:low-risk', 'triage:human', 'merge', 'merge-watched']);
@@ -826,7 +837,7 @@ test('write_mode off: label events by <app_slug>[bot] count as the App\'s, befor
   t.gh.state.prs[440].labels.push('triage:review');
   t.gh.state.prs[440].events.push({ id: 1, event: 'labeled', label: { name: 'triage:review' }, actor: { login: APP_LOGIN }, created_at: h.iso(t.db.clock) });
   t.verdict(440, S.a, 'deep-review', RS1, ['touches CRDs']);
-  const r = await t.poll({ config: CONFIG_TEXT });
+  const r = await t.poll({ config: OFF_TEXT });
   assert.deepEqual(r.appCalls, []);
   assert.equal(r.plans[0].human_override, false);
   assert.deepEqual(r.plans[0].actions.map((a) => a.type + (a.name ? `:${a.name}` : '')), [
@@ -834,7 +845,7 @@ test('write_mode off: label events by <app_slug>[bot] count as the App\'s, befor
   ]);
   // The same event by anyone else is an override.
   t.gh.state.prs[440].events[0].actor.login = 'a-person';
-  const p = await t.poll({ config: CONFIG_TEXT });
+  const p = await t.poll({ config: OFF_TEXT });
   assert.equal(p.plans[0].human_override, true);
   assert.deepEqual(p.plans[0].actions.map((a) => a.type), ['create_comment']);
 });

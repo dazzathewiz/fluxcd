@@ -5,7 +5,7 @@
 # off: no GitHub writes; each run records the plan in triage.publications.
 # labels: the GitHub App applies it (label, comment, commit status).
 # Quoted: YAML 1.1 parsers read a bare off as false.
-write_mode: "off"
+write_mode: "labels"
 
 # One line, flow style: the poll workflow's SQL reads this line to list repos,
 # and the rules code checks it against the parsed config.
