@@ -57,7 +57,7 @@ test('the schema allows the human verdict and carried rows with no checks, idemp
   assert.match(sql, /ALTER TABLE triage\.verdicts ADD COLUMN IF NOT EXISTS carried_from bigint REFERENCES triage\.verdicts \(id\);/);
   assert.match(sql, /ALTER TABLE triage\.verdicts ALTER COLUMN checks DROP NOT NULL;/);
   // Dropped by name first, then re-added: the live constraint is verdicts_verdict_check.
-  assert.match(squash(sql), /DROP CONSTRAINT IF EXISTS verdicts_verdict_check; ALTER TABLE triage\.verdicts ADD CONSTRAINT verdicts_verdict_check CHECK \(verdict IN \('blocked', 'needs-claude', 'review', 'low-risk', 'human'\)\);/);
+  assert.match(squash(sql), /DROP CONSTRAINT IF EXISTS verdicts_verdict_check; (UPDATE triage\.verdicts [^;]+; )*ALTER TABLE triage\.verdicts ADD CONSTRAINT verdicts_verdict_check CHECK \(verdict IN \('blocked', 'deep-review', 'review', 'low-risk', 'human'\)\);/);
   assert.match(squash(sql), /DROP CONSTRAINT IF EXISTS verdicts_checks_or_carried; ALTER TABLE triage\.verdicts ADD CONSTRAINT verdicts_checks_or_carried CHECK \(\(checks IS NULL\) <> \(carried_from IS NULL\)\);/);
   const create = sql.slice(sql.indexOf('CREATE TABLE IF NOT EXISTS triage.verdicts'), sql.indexOf(');', sql.indexOf('CREATE TABLE IF NOT EXISTS triage.verdicts')));
   assert.ok(!/CHECK \(verdict IN/.test(create), 'the CHECK is added by name, so a fresh table gets no second, unnamed one');
@@ -106,7 +106,7 @@ async function runDriver(previous) {
   const ctx = vm.createContext({
     helpers: { httpRequest: http },
     $input: { first: () => out['Cluster version'][0], all: () => out['Cluster version'] },
-    $: (n) => ({ first: () => out[n][0], all: () => out[n] }),
+    $: (n) => ({ first: () => (out[n] || [])[0], all: () => out[n] || [] }),
   });
   const code = node('Triage').parameters.jsCode;
   const items = await vm.runInContext(`module = { exports: {} }; module.exports = async function VmCodeWrapper() {${code}\n}()`, ctx);

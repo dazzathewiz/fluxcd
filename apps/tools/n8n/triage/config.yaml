@@ -2,7 +2,8 @@
 # Parsed by rules.js (block-style YAML subset: maps, lists, [a, b], quoted
 # scalars, >- folded text).
 
-# off: no GitHub writes. digest | labels come in a later PR.
+# off: no GitHub writes; each run records the plan in triage.publications.
+# labels: the GitHub App applies it (label, comment, commit status).
 # Quoted: YAML 1.1 parsers read a bare off as false.
 write_mode: "off"
 
@@ -66,8 +67,8 @@ removed:
   - rook-ceph
   - rook/ceph
 
-# Verdict: these packages always go to needs-claude.
-needs_claude_packages:
+# Verdict: these packages always go to deep-review.
+deep_review_packages:
   - longhorn
   - fluxcd/flux2
   - k3s-io/k3s
@@ -135,3 +136,18 @@ helm_index:
   traefik: "https://helm.traefik.io/traefik"
   node-feature-discovery: "https://kubernetes-sigs.github.io/node-feature-discovery/charts"
   reflector: "https://emberstack.github.io/helm-charts"
+
+# write_mode labels: the only labels the App adds or removes (rules.js pins
+# these names), and the commit status context it sets.
+verdict_labels:
+  low-risk: "triage:low-risk"
+  review: "triage:review"
+  deep-review: "triage:deep-review"
+  human: "triage:human"
+  blocked: "triage:blocked"
+outcome_labels: [merge, merge-watched]
+status_context: "pr-triage/verdict"
+
+# The GitHub App that writes them. Its own label events and comments are
+# the ones by <app_slug>[bot].
+app_slug: dtw-pr-triage

@@ -35,6 +35,8 @@ GRANT SELECT, INSERT, UPDATE ON triage.runs TO triage;
 GRANT SELECT, INSERT ON triage.verdicts TO triage;
 -- Loaded by this initContainer; the workflows only read them.
 GRANT SELECT ON triage.config, triage.redaction_patterns TO triage;
+-- Record plan upserts a row per open PR; Record publish updates it.
+GRANT SELECT, INSERT, UPDATE ON triage.publications TO triage;
 -- The heartbeat upserts one row.
 GRANT SELECT, INSERT, UPDATE ON triage.heartbeat TO triage;
 GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq TO triage;

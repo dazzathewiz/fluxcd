@@ -1,0 +1,849 @@
+{
+  "id": "TriagePublishV01",
+  "name": "PR triage: publish (unsaved)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "5e1a2b3c-0001-4b00-9000-000000000001",
+      "name": "When called by the poll",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "One planned write per call, from the poll's Write gate. callerPolicy lets only the poll call this."
+    },
+    {
+      "parameters": {
+        "operation": "sign",
+        "useJson": true,
+        "claimsJson": "={{ JSON.stringify({ iat: Math.floor(Date.now() / 1000) - 60, exp: Math.floor(Date.now() / 1000) + 540, iss: /^\\d+$/.test(String($('When called by the poll').first().json.app_id)) ? Number($('When called by the poll').first().json.app_id) : '' }) }}",
+        "options": {
+          "algorithm": "RS256"
+        }
+      },
+      "id": "5e1a2b3c-0002-4b00-9000-000000000002",
+      "name": "Sign App JWT",
+      "type": "n8n-nodes-base.jwt",
+      "typeVersion": 1,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "jwtAuth": {
+          "id": "triageAppJwt0001",
+          "name": "GitHub App JWT (triage, credential overwrite)"
+        }
+      },
+      "notes": "RS256 with the App private key from the jwtAuth credential overwrite. Valid for 9 minutes."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/app",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0016-4b00-9000-000000000016",
+      "name": "Check App",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "notes": "GET /app with the JWT: the App the key belongs to. Its slug must be config.yaml's app_slug."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "5e1a2b3c-0017-4b00-9000-0000000000a1",
+              "leftValue": "={{ $json.statusCode === 200 && !!$json.body && $json.body.slug === $('When called by the poll').first().json.app_slug }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5e1a2b3c-0017-4b00-9000-000000000017",
+      "name": "App matches",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "notes": "A different App, or no answer: no token is requested and nothing is written."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/app/installations/{{ Number($('When called by the poll').first().json.installation_id) }}/access_tokens",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Sign App JWT').first().json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ repositories: [String($('When called by the poll').first().json.repo).split('/')[1]], permissions: { issues: 'write', pull_requests: 'write', statuses: 'write', metadata: 'read' } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0003-4b00-9000-000000000003",
+      "name": "Installation token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "notes": "Scoped to the one repository and the write permissions the plan needs. Expires after an hour; never returned to the poll."
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 7,
+        "output": "={{ $('Installation token').first().json.statusCode === 201 && typeof ($('Installation token').first().json.body || {}).token === 'string' ? ['create_comment', 'edit_comment', 'set_status', 'ensure_label', 'remove_label', 'add_label'].indexOf($('When called by the poll').first().json.type) + 1 : 0 }}"
+      },
+      "id": "5e1a2b3c-0004-4b00-9000-000000000004",
+      "name": "Route write",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1100,
+        300
+      ],
+      "notes": "0: no token or an unknown write type, straight to Result. 1-6: one output per write type."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/issues/{{ Number($('When called by the poll').first().json.pr) }}/comments",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: $('When called by the poll').first().json.body }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0005-4b00-9000-000000000005",
+      "name": "Create comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/issues/comments/{{ Number($('When called by the poll').first().json.comment_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: $('When called by the poll').first().json.body }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0006-4b00-9000-000000000006",
+      "name": "Edit comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/statuses/{{ $('When called by the poll').first().json.sha }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ state: $('When called by the poll').first().json.state, context: 'pr-triage/verdict', description: $('When called by the poll').first().json.description }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0007-4b00-9000-000000000007",
+      "name": "Set status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: ['triage:blocked', 'triage:deep-review', 'triage:review', 'triage:low-risk', 'triage:human', 'merge', 'merge-watched'].includes($('When called by the poll').first().json.name) ? $('When called by the poll').first().json.name : '', color: $('When called by the poll').first().json.color, description: $('When called by the poll').first().json.description }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0008-4b00-9000-000000000008",
+      "name": "Create label",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        360
+      ],
+      "notes": "A 422 (already exists) counts as done when the readback finds the label."
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ ['triage:blocked', 'triage:deep-review', 'triage:review', 'triage:low-risk', 'triage:human', 'merge', 'merge-watched'].includes($('When called by the poll').first().json.name) ? 'https://api.github.com/repos/' + $('When called by the poll').first().json.repo + '/issues/' + Number($('When called by the poll').first().json.pr) + '/labels/' + encodeURIComponent($('When called by the poll').first().json.name) : 'https://api.github.com/rate_limit' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0009-4b00-9000-000000000009",
+      "name": "Remove label",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        480
+      ],
+      "notes": "Only rule-1 names reach the label path; anything else is sent to /rate_limit, which refuses a DELETE."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/issues/{{ Number($('When called by the poll').first().json.pr) }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ labels: ['triage:blocked', 'triage:deep-review', 'triage:review', 'triage:low-risk', 'triage:human', 'merge', 'merge-watched'].includes($('When called by the poll').first().json.name) ? [$('When called by the poll').first().json.name] : [] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0010-4b00-9000-000000000010",
+      "name": "Add label",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ Number(($json.body || {}).id) > 0 ? 'https://api.github.com/repos/' + $('When called by the poll').first().json.repo + '/issues/comments/' + Number($json.body.id) : 'https://api.github.com/rate_limit' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0011-4b00-9000-000000000011",
+      "name": "Read back comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/commits/{{ $('When called by the poll').first().json.sha }}/statuses?per_page=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0012-4b00-9000-000000000012",
+      "name": "Read back statuses",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/labels/{{ encodeURIComponent($('When called by the poll').first().json.name) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0013-4b00-9000-000000000013",
+      "name": "Read back repo label",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('When called by the poll').first().json.repo }}/issues/{{ Number($('When called by the poll').first().json.pr) }}/labels?per_page=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "=token {{ $('Installation token').first().json.body.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "5e1a2b3c-0014-4b00-9000-000000000014",
+      "name": "Read back PR labels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only data the poll gets back: statuses and IDs for one write. It builds a\n// new object, so no token, key or response body leaves this workflow.\nconst a = $('When called by the poll').first().json;\n// The App the JWT belongs to must be config.yaml's app_slug, or nothing ran.\nconst app = $('Check App').first().json || {};\nconst appOk = app.statusCode === 200 && !!app.body && app.body.slug === a.app_slug;\nconst tok = appOk ? $('Installation token').first().json : {};\nconst back = $input.first().json || {};\nconst WRITE = {\n  create_comment: 'Create comment', edit_comment: 'Edit comment', set_status: 'Set status',\n  ensure_label: 'Create label', remove_label: 'Remove label', add_label: 'Add label',\n};\n// Rule 1: a label write counts only for these names.\nconst LABELS = ['triage:blocked', 'triage:deep-review', 'triage:review', 'triage:low-risk', 'triage:human', 'merge', 'merge-watched'];\nconst out = {\n  run_id: a.run_id, repo: a.repo, pr: a.pr, head_sha: a.head_sha, index: a.index, type: a.type, name: a.name || null,\n  app_status: app.statusCode, app_ok: appOk, token_status: tok.statusCode || null, write_status: null, readback_status: null, ok: false, comment_id: null,\n};\nif (!appOk) return [{ json: out }];\nif (!(tok.statusCode === 201 && WRITE[a.type])) return [{ json: out }];\nif (/label$/.test(a.type) && !LABELS.includes(a.name)) return [{ json: out }];\nconst w = $(WRITE[a.type]).first().json || {};\nconst b = back.body;\nout.write_status = w.statusCode;\nout.readback_status = back.statusCode;\nconst fromApp = (x) => !!(x && x.performed_via_github_app && x.performed_via_github_app.slug === a.app_slug && x.user && x.user.login === `${a.app_slug}[bot]`);\nconst names = Array.isArray(b) ? b.map((l) => l && l.name) : [];\nif (a.type === 'create_comment' || a.type === 'edit_comment') {\n  const wrote = a.type === 'create_comment' ? w.statusCode === 201 : w.statusCode === 200;\n  out.ok = wrote && back.statusCode === 200 && !!b && b.body === a.body && fromApp(b)\n    && (a.type === 'create_comment' || b.id === Number(a.comment_id));\n  if (out.ok) out.comment_id = b.id;\n} else if (a.type === 'set_status') {\n  const s = Array.isArray(b) ? b.find((x) => x && x.context === 'pr-triage/verdict') : null;\n  out.ok = w.statusCode === 201 && back.statusCode === 200 && !!s && s.state === a.state && s.description === a.description;\n} else if (a.type === 'ensure_label') {\n  out.ok = (w.statusCode === 201 || w.statusCode === 422) && back.statusCode === 200 && !!b && b.name === a.name;\n} else if (a.type === 'add_label') {\n  out.ok = w.statusCode === 200 && back.statusCode === 200 && names.includes(a.name);\n} else if (a.type === 'remove_label') {\n  out.ok = (w.statusCode === 200 || w.statusCode === 404) && back.statusCode === 200 && Array.isArray(b) && !names.includes(a.name);\n}\nreturn [{ json: out }];\n"
+      },
+      "id": "5e1a2b3c-0015-4b00-9000-000000000015",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        300
+      ],
+      "notes": "Last node: its output is all the poll receives."
+    }
+  ],
+  "connections": {
+    "When called by the poll": {
+      "main": [
+        [
+          {
+            "node": "Sign App JWT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign App JWT": {
+      "main": [
+        [
+          {
+            "node": "Check App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Installation token": {
+      "main": [
+        [
+          {
+            "node": "Route write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route write": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create comment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit comment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create label",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Remove label",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create comment": {
+      "main": [
+        [
+          {
+            "node": "Read back comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit comment": {
+      "main": [
+        [
+          {
+            "node": "Read back comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set status": {
+      "main": [
+        [
+          {
+            "node": "Read back statuses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create label": {
+      "main": [
+        [
+          {
+            "node": "Read back repo label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove label": {
+      "main": [
+        [
+          {
+            "node": "Read back PR labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label": {
+      "main": [
+        [
+          {
+            "node": "Read back PR labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read back comment": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read back statuses": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read back repo label": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read back PR labels": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check App": {
+      "main": [
+        [
+          {
+            "node": "App matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "App matches": {
+      "main": [
+        [
+          {
+            "node": "Installation token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromAList",
+    "callerIds": "TriagePoll000001",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "pinData": {},
+  "active": false
+}

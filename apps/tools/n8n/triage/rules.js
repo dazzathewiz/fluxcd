@@ -1,13 +1,14 @@
 'use strict';
 // PR triage rules R1-R9. Pure functions: no n8n APIs, no require().
 // Network access is injected as `http(opts) -> {statusCode, headers, body}`.
-// The triage-poll workflow's one Code node (Triage) carries a verbatim copy of
+// The triage-poll workflow's Triage Code node carries a verbatim copy of
 // this file (check with sync-code-nodes.js). Edit here, then run
 // `node sync-code-nodes.js --write`.
 
 const RESULTS = ['pass', 'flag', 'fail', 'not_run'];
-const VERDICTS = ['blocked', 'needs-claude', 'review', 'low-risk', 'human'];
-const WRITE_MODES = ['off', 'digest', 'labels'];
+const VERDICTS = ['blocked', 'deep-review', 'review', 'low-risk', 'human'];
+// off: plans are recorded, nothing is written. labels: the GitHub App writes them.
+const WRITE_MODES = ['off', 'labels'];
 const CHECK_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9'];
 const CONFIG_SOURCE = 'git:apps/tools/n8n/triage/config.yaml';
 
@@ -154,14 +155,15 @@ function asList(value) {
 
 const CONFIG_KEYS = [
   'write_mode', 'repos', 'per_run_cap', 'renovate_logins', 'cluster_version_url', 'negative_control_kube_version',
-  'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'needs_claude_packages', 'review_floor_packages',
+  'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'deep_review_packages', 'review_floor_packages',
   'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
+  'verdict_labels', 'outcome_labels', 'status_context', 'app_slug',
 ];
 const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
-// clusters/ and gotk-components always go to needs-claude, and apps/ needs no override.
+// clusters/ and gotk-components always go to deep-review, and apps/ needs no override.
 const OVERRIDABLE_PATH_CLASSES = ['infrastructure', 'other'];
 // A floor caps how good a verdict can be; low-risk would be no floor at all.
-const FLOORS = ['needs-claude', 'review'];
+const FLOORS = ['deep-review', 'review'];
 const PACKAGE_NAME = /^[a-z0-9][a-z0-9._/-]*$/;
 
 function checkKeys(where, obj, allowed) {
@@ -218,6 +220,28 @@ function loadDependants(map) {
   return out;
 }
 
+// Rule 1: the only labels the App ever adds or removes. The names are fixed here
+// as well as in config.yaml, so a config edit can't point a write at another label.
+const OUTCOME_LABELS = ['merge', 'merge-watched'];
+const STATUS_CONTEXT = /^[a-z0-9][a-z0-9._/-]{0,99}$/;
+// A GitHub App slug: lowercase letters, digits and inner hyphens.
+const APP_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,32}[a-z0-9])?$/;
+
+function loadLabels(cfg) {
+  const v = cfg.verdict_labels;
+  checkKeys('verdict_labels', v, VERDICTS);
+  for (const verdict of VERDICTS) {
+    if (v[verdict] !== `triage:${verdict}`) throw new Error(`config: verdict_labels.${verdict} must be triage:${verdict}`);
+  }
+  const outcome = asList(cfg.outcome_labels);
+  if (outcome.join(',') !== OUTCOME_LABELS.join(',')) throw new Error(`config: outcome_labels must be [${OUTCOME_LABELS.join(', ')}]`);
+  if (typeof cfg.status_context !== 'string' || !STATUS_CONTEXT.test(cfg.status_context)) {
+    throw new Error('config: status_context must be a commit status context such as pr-triage/verdict');
+  }
+  if (typeof cfg.app_slug !== 'string' || !APP_SLUG.test(cfg.app_slug)) throw new Error('config: app_slug must be the GitHub App\'s slug');
+  return { verdict_labels: Object.assign({}, v), outcome_labels: outcome, status_context: cfg.status_context, app_slug: cfg.app_slug };
+}
+
 function loadConfig(text) {
   const cfg = parseConfigYaml(text);
   checkKeys('the top level', cfg, CONFIG_KEYS);
@@ -234,7 +258,7 @@ function loadConfig(text) {
   const helmIndex = cfg.helm_index || {};
   const reviewFloor = asList(cfg.review_floor_packages);
   reviewFloor.forEach((p, i) => checkPackage(`review_floor_packages[${i}]`, p));
-  return {
+  return Object.assign({
     write_mode: cfg.write_mode,
     repos,
     per_run_cap: cfg.per_run_cap,
@@ -250,14 +274,14 @@ function loadConfig(text) {
     one_minor_per_pr: asList(cfg.one_minor_per_pr),
     groups: asList(cfg.groups).map((g) => ({ name: g.name, branch: g.branch, packages: asList(g.packages) })),
     removed: asList(cfg.removed),
-    needs_claude_packages: asList(cfg.needs_claude_packages),
+    deep_review_packages: asList(cfg.deep_review_packages),
     review_floor_packages: reviewFloor,
     path_class_overrides: loadPathClassOverrides(cfg.path_class_overrides, helmIndex),
     dependants: loadDependants(cfg.dependants),
     release_note_keywords: asList(cfg.release_note_keywords),
     low_risk_update_types: asList(cfg.low_risk_update_types),
     helm_index: helmIndex,
-  };
+  }, loadLabels(cfg));
 }
 
 // The poll workflow's Start run SQL lists repos with this same pattern
@@ -1227,8 +1251,8 @@ function checkR9(facts, ctx) {
 
 // ---------------------------------------------------------------- verdict
 
-function isNeedsClaudePackage(pkg, config) {
-  return config.needs_claude_packages.includes(pkg);
+function isDeepReviewPackage(pkg, config) {
+  return config.deep_review_packages.includes(pkg);
 }
 
 function touchesCrds(facts, ctx) {
@@ -1258,7 +1282,7 @@ function floorsOf(ctx, config, dependants) {
   return out;
 }
 
-// First matching rule wins: blocked, needs-claude, review, low-risk. A floor
+// First matching rule wins: blocked, deep-review, review, low-risk. A floor
 // joins the reasons at its own level, so it can only make a verdict worse.
 function verdictFor(checks, facts, ctx, config, floors) {
   const by = {};
@@ -1272,9 +1296,9 @@ function verdictFor(checks, facts, ctx, config, floors) {
 
   if (by.R3.result === 'flag') reasons.push('R3 gated package (Dependency Dashboard approval)');
   const pkgs = Array.from(new Set(packagesOf(ctx).map((p) => p.package)));
-  const special = pkgs.filter((p) => isNeedsClaudePackage(p, config));
-  if (special.length) reasons.push(`package needs Claude: ${special.join(', ')}`);
-  reasons.push(...floorReasons('needs-claude'));
+  const special = pkgs.filter((p) => isDeepReviewPackage(p, config));
+  if (special.length) reasons.push(`deep-review package: ${special.join(', ')}`);
+  reasons.push(...floorReasons('deep-review'));
   if (touchesCrds(facts, ctx)) reasons.push('touches CRDs');
   const apiMoves = ctx.changes.filter((c) => c.kind === 'api');
   if (apiMoves.length) {
@@ -1282,7 +1306,7 @@ function verdictFor(checks, facts, ctx, config, floors) {
   }
   const classes = (facts.files ? facts.files.items : []).map((f) => pathClass(f.filename));
   if (classes.includes('clusters') || classes.includes('gotk')) reasons.push('touches clusters/ or gotk-components');
-  if (reasons.length) return { verdict: 'needs-claude', reasons };
+  if (reasons.length) return { verdict: 'deep-review', reasons };
 
   if (by.R1.result === 'flag') reasons.push('R1 diff and Renovate table disagree');
   if (by.R2.result === 'flag') reasons.push(`R2 not a single version line in apps/ (${by.R2.path_classes.join(', ')})`);
@@ -1422,6 +1446,295 @@ function selectPRs(lists, seen, config) {
   return { selected, etags, candidates: candidates.length };
 }
 
+// ---------------------------------------------------------------- publish (write_mode labels)
+
+// Each open PR gets one triage:<verdict> label, one triage comment and one
+// commit status, all written by the GitHub App in the TriagePublishV01
+// sub-workflow. planPublish turns what was read into the exact writes; it
+// never writes anything itself.
+
+// Escalation order. On one head SHA the automation only moves rightwards.
+const SEVERITY = ['low-risk', 'review', 'deep-review', 'human', 'blocked'];
+const STATUS_STATES = { 'low-risk': 'success', review: 'pending', 'deep-review': 'pending', human: 'pending', blocked: 'failure' };
+const VERDICT_MEANING = {
+  'low-risk': 'Low risk: this is the merge signal.',
+  review: 'Needs a review: merge it, or escalate to deep-review.',
+  'deep-review': 'Needs a deep review: merge it, or hand it to a person.',
+  human: 'A person decides: merge it, or apply a merge label.',
+  blocked: 'Blocked: no further action on this commit.',
+};
+const STATUS_DESCRIPTIONS = {
+  'low-risk': 'low-risk: the merge signal',
+  review: 'review: needs a review before merge',
+  'deep-review': 'deep-review: needs a deep review before merge',
+  human: 'human: a person decides',
+  blocked: 'blocked: no further action on this commit',
+};
+const LABEL_STYLES = {
+  'triage:low-risk': { color: '0e8a16', description: 'PR triage: low risk, the merge signal' },
+  'triage:review': { color: 'fbca04', description: 'PR triage: needs a review' },
+  'triage:deep-review': { color: 'd93f0b', description: 'PR triage: needs a deep review' },
+  'triage:human': { color: '5319e7', description: 'PR triage: a person decides' },
+  'triage:blocked': { color: 'b60205', description: 'PR triage: blocked' },
+};
+// The publications.outcome values a plan can start with. Record publish turns
+// publishing into published or failed.
+const PUBLISH_SKIPS = ['unhealthy', 'closed', 'draft', 'no-verdict', 'no-app', 'label-events-incomplete', 'comments-incomplete', 'bad-input'];
+// triage.runs.publish.
+const RUN_PUBLISH = ['planned-only', 'skipped-unhealthy', 'no-op', 'published', 'redaction-hit', 'failed'];
+const ACTION_TYPES = ['create_comment', 'edit_comment', 'set_status', 'ensure_label', 'remove_label', 'add_label'];
+const MARKER_RE = /^<!-- pr-triage:v1 sha=([0-9a-f]{40}) ruleset=([A-Za-z0-9._-]{1,64}) verdict=([a-z-]+) -->/;
+const RULESET_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const SHA_RE = /^[0-9a-f]{40}$/;
+const RATE_LIMIT_URL = 'https://api.github.com/rate_limit';
+
+function publishMarker(sha, ruleset, verdict) {
+  return `<!-- pr-triage:v1 sha=${sha} ruleset=${ruleset} verdict=${verdict} -->`;
+}
+
+function parseMarker(body) {
+  const m = String(body || '').match(MARKER_RE);
+  return m ? { sha: m[1], ruleset: m[2], verdict: m[3] } : null;
+}
+
+function managedLabels(config) {
+  return VERDICTS.map((v) => config.verdict_labels[v]).concat(config.outcome_labels);
+}
+
+function severity(verdict) {
+  return SEVERITY.indexOf(verdict);
+}
+
+// The reasons rules.js writes, each as a fixed template. A stored reason that
+// fits none is shown as a placeholder, so no free text reaches the comment.
+const R_ID = 'R[1-9]';
+const PKG = '[a-z0-9][a-z0-9._/-]*';
+const PATH_CLASSES = ['apps', 'infrastructure', 'clusters', 'gotk', 'other'];
+const tpl = (s) => new RegExp(`^${s}$`);
+const listOf = (item) => `${item}(?:, ${item})*`;
+const REASON_TEMPLATES = [
+  tpl('(?:R4|R5|R8|R9) fail'),
+  tpl('R3 gated package \\(Dependency Dashboard approval\\)'),
+  tpl(`deep-review package: ${listOf(PKG)}`),
+  tpl(`floor (?:review|deep-review): ${PKG} is never low-risk`),
+  tpl(`floor (?:review|deep-review): dependant [a-z0-9][a-z0-9-]* of ${PKG}`),
+  tpl('touches CRDs'),
+  tpl(`API version change: ${listOf('(?:core|[a-z0-9][a-z0-9.-]*) [a-z0-9]+ -> [a-z0-9]+')}`),
+  tpl('touches clusters/ or gotk-components'),
+  tpl('R1 diff and Renovate table disagree'),
+  tpl(`R2 not a single version line in apps/ \\(${listOf(`(?:${PATH_CLASSES.join('|')})`)}\\)`),
+  tpl(`required checks not run: ${listOf(R_ID)}`),
+  tpl('low-risk conditions not all met'),
+  tpl('all low-risk conditions hold'),
+  tpl('not a Renovate PR: triaged by hand'),
+  tpl('R9 not run: left unfinalised'),
+];
+
+function templatedReason(reason, config) {
+  const r = String(reason);
+  if (REASON_TEMPLATES.some((t) => t.test(r))) return r;
+  const kw = r.match(/^R6 release-note keywords: (.+)$/);
+  if (kw && kw[1].split(', ').every((k) => config.release_note_keywords.includes(k))) return r;
+  return 'other reason (see triage.verdicts)';
+}
+
+// A dependant reason is rendered from the config entry its id names.
+function templatedDependant(reason, config) {
+  const m = String(reason).match(/^dependant ([a-z0-9][a-z0-9-]*) \(/);
+  if (!m) return null;
+  for (const entries of Object.values(config.dependants || {})) {
+    const d = entries.find((e) => e.id === m[1]);
+    if (d) return `${d.id} (${d.where}): ${d.check}`;
+  }
+  return 'a dependant not in the current config (see triage.verdicts)';
+}
+
+// PR and issue references are written without #, so a comment never links
+// or notifies anything.
+function withoutHashRefs(text) {
+  return String(text).replace(/#(\d)/g, 'PR $1').replace(/@(?=[A-Za-z0-9])/g, '@​');
+}
+
+// The triage comment: the marker first, then fixed templates only. The same
+// inputs give the same bytes, so an unchanged comment is never edited.
+function renderTriageComment(input, config) {
+  const { head_sha: sha, ruleset, verdict, triaged_verdict: triaged } = input;
+  const why = [];
+  const deps = [];
+  for (const r of input.reasons || []) {
+    const d = templatedDependant(r, config);
+    if (d) deps.push(d);
+    else why.push(templatedReason(r, config));
+  }
+  const lines = [
+    `### PR triage: \`${verdict}\``,
+    '',
+    `Commit \`${sha.slice(0, 12)}\`, ruleset \`${ruleset}\`. ${VERDICT_MEANING[verdict]}`,
+  ];
+  if (why.length) lines.push('', '**Why**', ...why.map((r) => `- ${r}`));
+  if (deps.length) lines.push('', '**Check outside the repo**', ...deps.map((d) => `- ${d}`));
+  if (triaged && triaged !== verdict) {
+    lines.push('', `Held at \`${verdict}\`: this ruleset gave \`${triaged}\`, and triage only escalates a commit.`);
+  }
+  if (input.override) {
+    lines.push('', 'A triage or outcome label on this commit was changed by hand, so triage leaves the labels alone until the next commit.');
+  }
+  lines.push('', '<sub>Written by the PR triage automation for this commit only. A new commit is triaged again. Merges are by hand.</sub>');
+  return `${publishMarker(sha, ruleset, verdict)}\n${withoutHashRefs(lines.join('\n'))}`;
+}
+
+// Pages from a Link-paginated read: complete only if every page read and the
+// last has no next link. Returns the items, or null.
+function pagedItems(pages) {
+  if (!Array.isArray(pages) || pages.length === 0) return null;
+  const items = [];
+  for (const p of pages) {
+    if (!p || p.statusCode !== 200 || !Array.isArray(p.body)) return null;
+    items.push(...p.body);
+  }
+  const last = pages[pages.length - 1];
+  if (/<[^>]+>;\s*rel="next"/.test(String(header(last.headers, 'link') || ''))) return null;
+  return items;
+}
+
+// The App's actor login, from config.yaml's app_slug. Label events name only
+// the actor, so this is how the App's own label events are told apart.
+function appLoginOf(config) {
+  return `${config.app_slug}[bot]`;
+}
+
+// A comment is the App's only if its author is the App's login and GitHub
+// says the App made it.
+function isAppComment(c, appLogin) {
+  const app = c && c.performed_via_github_app;
+  return !!(app && c.user && c.user.login === appLogin && `${app.slug}[bot]` === appLogin);
+}
+
+// The App's triage comments on this head SHA, oldest first. The stored comment
+// is read directly; only when it isn't usable are the PR's comments searched.
+function triageComments(read, appLogin, sha) {
+  const mine = (c) => isAppComment(c, appLogin) && Number.isInteger(c.id) && (parseMarker(c.body) || {}).sha === sha;
+  const stored = read.stored || {};
+  if (stored.statusCode === 200 && mine(stored.body)) return { ok: true, comments: [stored.body] };
+  if (read.stored_id && ![200, 404, 410].includes(stored.statusCode)) return { ok: false };
+  const listed = pagedItems(read.list);
+  if (!listed) return { ok: false };
+  return { ok: true, comments: listed.filter(mine).sort((a, b) => a.id - b.id) };
+}
+
+// A triage or outcome label added or removed on this head SHA by anyone but
+// the App. since is when the poll last saw another head SHA of the PR (or the
+// latest force push): earlier events belong to an earlier commit.
+function findOverride(events, appLogin, managed, since) {
+  const from = since ? Date.parse(since) : null;
+  const hits = (events || []).filter((e) => e && (e.event === 'labeled' || e.event === 'unlabeled')
+    && e.label && managed.includes(e.label.name)
+    && (from === null || Date.parse(e.created_at) >= from)
+    && !(appLogin && e.actor && e.actor.login === appLogin));
+  if (!hits.length) return null;
+  const last = hits.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || (a.id || 0) - (b.id || 0))[hits.length - 1];
+  return { actor: last.actor ? last.actor.login : null, label: last.label.name, event: last.event };
+}
+
+// The start of this head SHA's window: the last time the poll saw another head
+// SHA of the PR, or the latest force push, whichever is later.
+function headSince(seenShas, headSha, events) {
+  let t = null;
+  for (const [sha, at] of Object.entries(seenShas || {})) {
+    if (sha !== headSha && at && (t === null || Date.parse(at) > Date.parse(t))) t = at;
+  }
+  for (const e of events || []) {
+    if (e && e.event === 'head_ref_force_pushed' && e.created_at && (t === null || Date.parse(e.created_at) > Date.parse(t))) t = e.created_at;
+  }
+  return t;
+}
+
+// Rules 1-6 for one open PR.
+//   prState     {repo, number, head_sha, state, draft, labels: [name],
+//                repo_labels: [name] | null, since, comments: {stored_id, stored, list}}
+//   verdict     the head SHA's current verdict {verdict, reasons, ruleset}, or null
+//   publication the triage.publications row for this head SHA, or null
+//   labelEvents the PR's issue-event pages [{statusCode, headers, body}]
+//   appLogin    the App's login, appLoginOf(config): <app_slug>[bot]
+//   ctx         {config, healthy, patterns, app_id, installation_id}
+// Returns {action: publish | skip, outcome, actions: [...], ...}. A skip makes
+// no request; publish lists the writes in the order they run.
+function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) {
+  const config = ctx.config;
+  const p = prState || {};
+  const plan = {
+    repo: p.repo, pr: p.number, head_sha: p.head_sha, action: 'skip', outcome: null, reason: null,
+    verdict: null, triaged_verdict: null, ruleset: null, label: null, status: null,
+    human_override: false, override_actor: null, override_label: null, actions: [],
+  };
+  const skip = (reason, extra) => Object.assign(plan, { reason, outcome: reason === 'up-to-date' || reason === 'redaction-hit' ? reason : `skipped-${reason}` }, extra || {});
+  if (!/^[\w.-]+\/[\w.-]+$/.test(String(p.repo)) || !Number.isInteger(p.number) || !SHA_RE.test(String(p.head_sha)) || !Array.isArray(p.labels)) return skip('bad-input');
+  // The login always comes from config, in every write_mode.
+  if (appLogin !== appLoginOf(config)) return skip('bad-input');
+  // Rule 6: an unhealthy run publishes nothing. No patterns, or a bad one, is unhealthy.
+  const patterns = compilePatterns(ctx.patterns);
+  if (!ctx.healthy || patterns.list.length === 0 || patterns.invalid > 0) return skip('unhealthy');
+  if (p.state && p.state !== 'open') return skip('closed');
+  if (p.draft) return skip('draft');
+  if (!verdict || !VERDICTS.includes(verdict.verdict) || !RULESET_RE.test(String(verdict.ruleset || ''))) return skip('no-verdict');
+  if (config.write_mode === 'labels' && !(/^\d+$/.test(String(ctx.app_id || '')) && /^\d+$/.test(String(ctx.installation_id || '')))) return skip('no-app');
+  const events = pagedItems(labelEvents);
+  if (!events) return skip('label-events-incomplete');
+  const found = triageComments(p.comments || {}, appLogin, p.head_sha);
+  if (!found.ok) return skip('comments-incomplete');
+
+  const managed = managedLabels(config);
+  const published = publication && VERDICTS.includes(publication.verdict) ? publication : null;
+  const triaged = verdict.verdict;
+  // Rule 2: on one head SHA the automation only escalates.
+  const eff = published && severity(published.verdict) > severity(triaged) ? published.verdict : triaged;
+  const label = config.verdict_labels[eff];
+  const override = findOverride(events, appLogin, managed, p.since);
+  const status = { state: STATUS_STATES[eff], context: config.status_context, description: STATUS_DESCRIPTIONS[eff] };
+  const body = renderTriageComment({ head_sha: p.head_sha, ruleset: verdict.ruleset, verdict: eff, triaged_verdict: triaged, reasons: verdict.reasons, override: !!override }, config);
+  Object.assign(plan, {
+    verdict: eff, triaged_verdict: triaged, ruleset: verdict.ruleset,
+    label: override ? (published ? published.label || null : null) : label,
+    status: override ? null : status,
+    human_override: !!override, override_actor: override ? override.actor : null, override_label: override ? override.label : null,
+  });
+  // Rule 6: a redaction hit publishes nothing. Only a count is kept.
+  const hits = countMatches(`${body}\n${status.description}`, patterns.list);
+  if (hits) return skip('redaction-hit', { matched_patterns: hits, label: null, status: null });
+
+  const actions = [];
+  // The comment. Same verdict: edit in place. Changed verdict or new head SHA:
+  // a new comment, unless an earlier try already posted this verdict's one.
+  // Under an override the comment is all that changes.
+  const mine = found.comments;
+  const forVerdict = mine.filter((c) => parseMarker(c.body).verdict === eff).pop();
+  const target = override ? mine[mine.length - 1] : forVerdict;
+  // An override alone is not a re-triage: with nothing new published here
+  // (same verdict, same ruleset), the comment stays as it is.
+  const retriage = !published || published.verdict !== eff || published.ruleset !== verdict.ruleset;
+  if (!target) actions.push({ type: 'create_comment', body });
+  else if (target.body !== body && (retriage || !override)) actions.push({ type: 'edit_comment', comment_id: target.id, body });
+
+  if (!override) {
+    const sameVerdict = !!published && published.verdict === eff;
+    if (!sameVerdict || published.ruleset !== verdict.ruleset || published.status_state !== status.state) {
+      actions.push(Object.assign({ type: 'set_status', sha: p.head_sha }, status));
+    }
+    // Rule 4. Same verdict: no label change. Changed verdict or new head SHA:
+    // swap to the verdict label and drop every other verdict and outcome label.
+    if (!sameVerdict) {
+      const current = p.labels.filter((n) => managed.includes(n));
+      if (!current.includes(label)) {
+        if (!(p.repo_labels || []).includes(label)) actions.push(Object.assign({ type: 'ensure_label', name: label }, LABEL_STYLES[label]));
+      }
+      for (const n of current) if (n !== label) actions.push({ type: 'remove_label', name: n });
+      if (!current.includes(label)) actions.push({ type: 'add_label', name: label });
+    }
+  }
+  if (!actions.length) return skip('up-to-date');
+  return Object.assign(plan, { action: 'publish', outcome: config.write_mode === 'labels' ? 'publishing' : 'planned-only', actions });
+}
+
 const RULES_EXPORTS = {
   RESULTS, VERDICTS, WRITE_MODES, CHECK_IDS,
   parseConfigYaml, loadConfig, reposFromConfigLine, assertReposMatch, parseVersion, compareVersions, satisfies, classifyUpdate,
@@ -1429,6 +1742,9 @@ const RULES_EXPORTS = {
   pathClass, sha256Hex, parseDashboard, findChartEntry, parseAuthChallenge, amd64InIndex, bodyText, bodyJson,
   fetchClusterVersion, fetchChartIndex, fetchImage, gatherExternalFacts,
   finalize, evaluate, verdictFor, triagePR, newCaches, negativeControl, selectPRs, compilePatterns, carryForward,
+  SEVERITY, STATUS_STATES, LABEL_STYLES, PUBLISH_SKIPS, RUN_PUBLISH, ACTION_TYPES, OUTCOME_LABELS, RATE_LIMIT_URL,
+  publishMarker, parseMarker, managedLabels, renderTriageComment, pagedItems, isAppComment, appLoginOf,
+  triageComments, findOverride, headSince, planPublish,
 };
 
 if (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {

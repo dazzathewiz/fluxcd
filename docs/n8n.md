@@ -1,9 +1,11 @@
 # n8n
 
 A self-hosted n8n instance in the `tools` namespace, with its own Postgres. It
-runs automated triage of dependency-update PRs. Triage runs in **shadow mode**: it
-reads PRs and records a verdict for each one in Postgres, and writes nothing to the
-source host. See [PR triage](#pr-triage-shadow-mode) below.
+runs automated triage of dependency-update PRs. It reads PRs and records a verdict
+for each one in Postgres. With `write_mode: "labels"` it also publishes each verdict
+on the PR (a label, a comment and a commit status) through a GitHub App. It ships
+with `write_mode: "off"`, which records what it would publish and writes nothing to
+the source host. See [PR triage](#pr-triage) and [write_mode](#write_mode) below.
 
 ## What's deployed
 
@@ -39,11 +41,23 @@ into Secret `n8n-secrets`:
 | `db-password` | `DB_POSTGRESDB_PASSWORD`, `POSTGRES_PASSWORD`, and hashed into `TRIAGE_DB_PASSWORD` | n8n and Postgres (one source, so they can't drift); the workflows' `triage` role |
 | `github-token` | `GITHUB_TOKEN`, and inside `CREDENTIALS_OVERWRITE_DATA` | The triage workflow's source-host reads |
 | `redaction-patterns` | `REDACTION_PATTERNS` | Seeded into `triage.redaction_patterns` for the R9 hygiene check |
+| `github-app-id` | `GITHUB_APP_ID` | Seeded into `triage.config`; the JWT's `iss` |
+| `github-app-installation-id` | `GITHUB_APP_INSTALLATION_ID` | Seeded into `triage.config`; the installation token exchange |
+| `github-app-private-key-b64` | Only decoded, inside `CREDENTIALS_OVERWRITE_DATA` (`jwtAuth`) | Signs the App JWT in the `PR triage: publish` sub-workflow |
 
-All four fields must exist before the ExternalSecret syncs. The ExternalSecret
-also templates two more keys. `CREDENTIALS_OVERWRITE_DATA` is built from
-`github-token` and `db-password`, and `TRIAGE_DB_PASSWORD` is derived from
-`db-password`. It uses `mergePolicy: Merge` so the plain keys stay alongside them.
+All seven fields must exist before the ExternalSecret syncs: a missing one stops
+the whole Secret updating. The private key is the App's PEM, base64-encoded onto
+one line, because 1Password password fields flatten line breaks. The template
+decodes it (`b64dec`) into the `jwtAuth` overwrite, the key's only copy in the
+Secret, so n8n gets the multi-line PEM and nothing sees the base64 form. The
+`import-workflows` initContainer checks that the key starts with `-----BEGIN` and
+parses as an RSA key, without printing it, and fails the pod start if not.
+
+The ExternalSecret uses `mergePolicy: Replace` and templates every key the
+Secret holds. Most are passed through unchanged. `CREDENTIALS_OVERWRITE_DATA` is
+built from `github-token`, `db-password` and `github-app-private-key-b64`, and
+`TRIAGE_DB_PASSWORD` is derived from `db-password`. The 1Password fields are only
+template inputs, so a field that no template names never reaches the Secret.
 See [Credential overwrites](#credential-overwrites) and
 [The `triage` database role](#the-triage-database-role).
 
@@ -131,7 +145,7 @@ forward.
 The workflows live in `apps/tools/n8n/workflows/`, one JSON file each, with a fixed
 `id`. On every pod start the `import-workflows` initContainer runs:
 
-1. `n8n import:credentials --separate` for the two credential records in
+1. `n8n import:credentials --separate` for the three credential records in
    `credentials/`
 2. `n8n import:workflow --separate` for every workflow file
 3. `n8n publish:workflow --id=<id>` for each workflow
@@ -159,9 +173,10 @@ substitution turns every JS template literal `${...}` into an empty string.
 ### Triage rules code
 
 The check logic is one plain JS module, `triage/rules.js`: pure functions, no n8n
-APIs, with network access passed in. The poll workflow has one Code node, `Triage`,
-which carries a verbatim copy between `BEGIN rules.js` / `END rules.js` markers,
-followed by a short driver. Every other node only reads data and passes it on. Before
+APIs, with network access passed in. The poll workflow's `Triage` Code node
+carries a verbatim copy between `BEGIN rules.js` / `END rules.js` markers,
+followed by a short driver. The other Code nodes only build URLs or reshape items;
+none decides a verdict or a write. Before
 pushing a change to either:
 
 ```sh
@@ -170,16 +185,18 @@ node apps/tools/n8n/triage/sync-code-nodes.js --write  # copy rules.js into the 
 node apps/tools/n8n/triage/sync-code-nodes.js          # check: exits 1 on drift
 ```
 
-The check also fails if a workflow carries more than one copy, or if any non-GET
-source-host request sits outside the `Write gate` node. The tests include drift
+The check also fails if a workflow carries more than one copy, and it enforces the
+write allowlist (see [Where the writes are](#where-the-writes-are)). It prints
+every write and where it sits. The tests include drift
 checks of `triage/config.yaml` against `renovate.json` and against the
 HelmRepositories in this repo, so a change to either needs the config updated in the
 same PR.
 
 ## Credential overwrites
 
-The workflows use two stored credentials, a `githubApi` and a `postgres`, imported
-from `credentials/` with every secret field empty. n8n fills empty fields at run
+The workflows use three stored credentials, a `githubApi`, a `postgres` and a
+`jwtAuth` (PEM key, RS256), imported from `credentials/` with every secret field
+empty. n8n fills empty fields at run
 time from `CREDENTIALS_OVERWRITE_DATA`, a JSON object keyed by credential type that
 the ExternalSecret templates from 1Password. So the credential records in the
 database hold no secret, and rotating the token is a 1Password change plus a pod
@@ -207,6 +224,7 @@ password, revokes everything and grants back exactly:
 | `triage.runs` | `SELECT`, `INSERT`, `UPDATE` | Start run, Finish run, heartbeat |
 | `triage.verdicts` | `SELECT`, `INSERT` | the seen-SHA read, Insert verdict |
 | `triage.config`, `triage.redaction_patterns` | `SELECT` | Start run |
+| `triage.publications` | `SELECT`, `INSERT`, `UPDATE` | Start run, Record plan, Record publish, Finish run |
 | `triage.heartbeat` | `SELECT`, `INSERT`, `UPDATE` | heartbeat upsert |
 | the two `id` sequences | `USAGE` | inserts |
 
@@ -232,7 +250,7 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select table_name, string_agg(privilege_type, ', ' order by privilege_type) from information_schema.role_table_grants where grantee = 'triage' group by 1 order by 1;"
 ```
 
-## PR triage (shadow mode)
+## PR triage
 
 `PR triage: poll` runs every 15 minutes:
 
@@ -240,21 +258,37 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
    `triage.runs` row, and reads the config, the redaction patterns, the PR-list
    ETags stored under this ruleset and the PRs already triaged under it. It lists the
    repos from the one-line `repos: [...]` in `config.yaml`.
-2. **Get dashboard** reads the Dependency Dashboard issue.
+2. **Get dashboard** reads the Dependency Dashboard issue, and **Repo labels** the
+   repository's labels.
 3. **List PRs** sends `If-None-Match`. A `304` means nothing changed.
-4. **One item per PR**, **Get PR** and **Get files** read each open PR. When the
-   list is unchanged or empty, one placeholder item goes through instead and the two
-   reads hit `/rate_limit`, which costs no quota. These reads are the only ones that
-   carry the source-host credential, and only to `api.github.com`.
+4. **One item per PR**, **Get PR** and **Get files** read each open PR, its labels
+   included. **PR read URLs** works out the per-PR reads below. **Label events**
+   reads the PR's issue events, every page (it follows `Link`; a last page that
+   still has a next link counts as unread). **Stored comment** reads the triage
+   comment whose ID `triage.publications` holds, directly. Only when that isn't the
+   App's comment for this head SHA does **PR comments** read every page of the PR's
+   comments. When the list is unchanged or empty, one placeholder item goes through
+   instead and the reads hit `/rate_limit`, which costs no quota. These reads carry
+   the read-only source-host credential, and only to `api.github.com`.
 5. **Cluster version** calls the `PR triage: cluster version` sub-workflow once,
    which returns the live `/version` response. See
    [Cluster version](#cluster-version).
-6. **Triage**, the only Code node, parses the config and checks it lists the same
+6. **Triage** parses the config and checks it lists the same
    repos, and runs the negative control against that response. It keeps PRs whose
    `head_sha` has no verdict under this ruleset and no finalised one, oldest first, up to `per_run_cap`. Then it fetches
    the Helm index and registry manifests and runs R1–R9.
-7. **Insert verdict**, then the **Write gate**.
-8. **Finish run** records the PR count, the negative-control result and the ETags.
+   Then it plans the publish for every open PR it read (`planPublish` in
+   `rules.js`). Planning only reads.
+7. Three branches follow, top to bottom (n8n's v1 execution order runs one
+   branch to the end before the next):
+   - **Insert verdict**.
+   - **Record plan** upserts `triage.publications.planned`. **One item per action**
+     splits each plan into its writes, then the **Write gate**. Only its true
+     output (`write_mode` is `labels`, and the run is healthy) leads to
+     **Publish**, which runs the `PR triage: publish` sub-workflow once per write.
+     **Publish results** and **Record publish** record the outcome.
+   - **Finish run** records the PR count, the negative-control result, the ETags
+     and `runs.publish`.
 
 So when the PR list changes, every open PR's detail and files are read, and only
 the new head SHAs are triaged. A failed read of a PR being triaged fails the run;
@@ -340,9 +374,11 @@ what was read.
 The first matching verdict wins:
 
 1. **blocked**: R4, R5, R8 or R9 failed.
-2. **needs-claude**: R3 flagged, the package is in `needs_claude_packages`, the
+2. **deep-review**: R3 flagged, the package is in `deep_review_packages`, the
    change touches CRDs, it touches `clusters/` or `gotk-components`, it moves a
-   manifest's `apiVersion`, or a `needs-claude` floor applies.
+   manifest's `apiVersion`, or a `deep-review` floor applies. This verdict was
+   called `needs-claude` until the labels PR; `schema.sql` moved the stored rows
+   and reasons, and `needs_claude_packages` is now an unknown key.
 3. **review**: R1, R2 or R6 flagged, a required check didn't run, or a `review`
    floor applies.
 4. **low-risk**: only when R1 is digest, patch or minor on an `apps/` image or an
@@ -360,7 +396,7 @@ override it used.
 
 **Floors.** A floor caps how good a verdict can be. `review_floor_packages` never
 come out better than `review` (n8n today, whose majors still go to
-`needs-claude` through R3). A dependant can carry its own floor. A floor joins the
+`deep-review` through R3). A dependant can carry its own floor. A floor joins the
 reasons at its own level, so it can make a verdict worse, never better.
 
 **Dependants.** `dependants` lists things outside the repo that depend on a
@@ -379,7 +415,7 @@ ruleset checks it again.
 
 `config.yaml` is validated on load. An unknown key, an invalid package name, an
 override naming a chart with no `helm_index` entry, or a floor that isn't
-`review` or `needs-claude` fails the run. A test checks that every package these
+`review` or `deep-review` fails the run. A test checks that every package these
 keys name is an image or chart in the repo.
 
 **API-version changes.** Renovate's `kubernetes-api` updates move a manifest from
@@ -387,7 +423,7 @@ one API version to another, such as `notification.toolkit.fluxcd.io/v1beta3` to
 `v1`. Its table calls that a patch, but no package version changes, and a schema
 can drop or rename fields between versions. R1 classifies the change as
 `api-version` and passes when the table names the same move. The verdict is
-needs-claude, with the API group and versions in the reasons.
+deep-review, with the API group and versions in the reasons.
 
 Release notes come from the section Renovate writes into the PR body. If Renovate
 found none, R6 records that and passes.
@@ -398,10 +434,169 @@ found none, R6 records that and passes.
 
 ### write_mode
 
-`triage/config.yaml` has `write_mode: off | digest | labels`, default `off`. It's a
-reviewed value: changing it is a PR. With `off`, no node calls any source-host write
-endpoint, and today there are none to call. Every future write node goes after the
-`Write gate` node's true output, and `sync-code-nodes.js` refuses a write that isn't.
+`triage/config.yaml` has `write_mode: off | labels`, default `off`. It's a reviewed
+value: changing it is a PR.
+
+- **off** (shipped): every run plans what it would publish and stores it in
+  `triage.publications.planned`, then sets `runs.publish = 'planned-only'`. No
+  node calls a source-host write endpoint, and the App's key is never used.
+- **labels**: the planned writes run, through the GitHub App.
+
+#### What each open PR gets
+
+One `triage:<verdict>` label, one triage comment, and one `pr-triage/verdict`
+commit status on the head commit. The App writes all three. These are the only
+labels it ever adds or removes:
+
+| Verdict label | Meaning | Status | Next move |
+| --- | --- | --- | --- |
+| `triage:low-risk` | The merge signal | `success` | A person merges |
+| `triage:review` | Needs a review | `pending` | Merge, or escalate to deep-review |
+| `triage:deep-review` | Needs a deep review | `pending` | Merge, or hand to a person; never back to review |
+| `triage:human` | A person decides | `pending` | A person merges or applies a merge label |
+| `triage:blocked` | Blocked | `failure` | No further action on this commit |
+
+Outcome labels: `merge` and `merge-watched`. The App never adds them; it removes
+them when the verdict changes or the head SHA moves. Closing a PR is valid from
+every state. n8n never merges or closes anything. `rules.js` pins all seven names,
+so a config edit can't point a write at another label.
+
+**Automation only escalates.** On one head SHA the order is low-risk, review,
+deep-review, human, blocked. When a new ruleset gives a less severe verdict than
+the one published, the published one stays, and the comment says it was held.
+
+#### Identities
+
+| Identity | Does |
+| --- | --- |
+| The read-only token (`github-token`) | Every read in the poll |
+| The GitHub App's installation token | Every write: labels, comments, statuses. Nothing else writes |
+| The bot account | Nothing here. It opens PRs in this repo, and applies no labels |
+
+The App's slug is `app_slug` in `triage/config.yaml`, and its actor login is
+`<app_slug>[bot]`. Label events name only the actor, so that login is how the
+App's own label events are told apart from a person's, in every `write_mode`:
+`off` already plans with it, so the plan is right before the App has ever
+written. A comment is the App's when its author is that login and
+`performed_via_github_app.slug` is `app_slug`. Nothing learns the login from a
+write response, and the database doesn't store it.
+
+#### Human override
+
+A triage or outcome label added or removed by anyone but the App, as the PR's
+label events show, is an override **for that head SHA**. From then on n8n doesn't
+add, remove or change triage labels on that SHA, and sets no status. A ruleset
+change only edits the comment. `triage.publications.human_override` is set, with
+the actor and label as evidence. The actor stays in the database, never in the
+comment. A new head SHA ends the override.
+
+Events belong to a head SHA from the later of the last time the poll saw another
+head SHA of the PR and the latest force push. Earlier events belong to an earlier
+commit.
+
+#### Re-triage and the commit binding
+
+Everything is keyed to `(repo, pr, head_sha)`. The comment starts with
+`<!-- pr-triage:v1 sha=<head> ruleset=<rs> verdict=<v> -->`, and the status is set
+on that commit, so a verdict never outlives the commit it judged. A re-triage
+happens on a new head SHA or a new ruleset:
+
+- **Changed verdict:** swap the label, remove `merge` and `merge-watched`, post a
+  new comment, set the status.
+- **Same verdict:** edit the existing comment in place and re-set the status. No
+  label change.
+- **New head SHA:** remove the verdict and outcome labels, then triage fresh. The
+  override ends.
+
+An unchanged PR under unchanged rules makes no write at all.
+
+The comment is built from fixed templates only. A reason that fits none shows as
+`other reason (see triage.verdicts)`, and PR references are written without `#`.
+The comment and status text go through the redaction patterns, and a hit
+publishes nothing for that PR.
+
+**Fail safe.** A run publishes nothing when the negative control isn't `fail`,
+the cluster version couldn't be read (so R4 can't run), or no redaction patterns
+loaded. A PR whose label events or comments couldn't all be read is skipped. A
+failed write is recorded, never retried in the same run, and never blocks a PR.
+The run clears its ETags, so the next run reads every PR again and plans from
+what was last published. The published columns change only once every write of a
+plan read back as sent.
+
+#### Where the writes are
+
+All writes live in the sub-workflow `PR triage: publish`
+(`workflows/triage-publish.json`, ID `TriagePublishV01`). It saves no executions of
+any kind, and only the poll may call it (`callerPolicy: workflowsFromAList`). Each
+call carries one write. It signs a JWT with n8n's JWT node (RS256, the key from the
+`jwtAuth` credential overwrite) and calls `GET /app` with it. If that App's `slug`
+isn't `app_slug`, it stops there: no token, no write, and the PR's outcome is
+`failed`, so the run is `ok = false`. Otherwise it exchanges the JWT for an
+installation token scoped to this repository, makes the write, reads it back and
+returns only statuses and IDs. The token never leaves it.
+
+`sync-code-nodes.js` enforces the allowlist. Each write must match its template
+exactly: method, URL, body and headers.
+
+| Write | Node |
+| --- | --- |
+| `POST /app/installations/{id}/access_tokens` | Installation token |
+| `POST /repos/{r}/labels` | Create label |
+| `POST /repos/{r}/issues/{n}/labels` | Add label |
+| `DELETE /repos/{r}/issues/{n}/labels/{name}` | Remove label (rule-1 names only) |
+| `POST /repos/{r}/issues/{n}/comments` | Create comment |
+| `PATCH /repos/{r}/issues/comments/{id}` | Edit comment (body only) |
+| `POST /repos/{r}/statuses/{sha}` | Set status |
+
+It refuses any other non-GET request in the sub-workflow, any GitHub write
+outside it, a call into it that doesn't come through the `Write gate` true output,
+a Code node there that could make a request, and any execution saving there.
+
+#### `runs.publish`
+
+| Value | Meaning |
+| --- | --- |
+| `planned-only` | `write_mode` is `off`. The plans are in `triage.publications` |
+| `skipped-unhealthy` | Fail safe: nothing published |
+| `no-op` | Nothing to write |
+| `published` | Every planned write read back as sent |
+| `redaction-hit` | At least one PR's comment hit a pattern and was not published |
+| `failed` | A write or its readback failed, or `GET /app` named a different App. The run is `ok = false` |
+
+Per PR, `triage.publications.outcome` is `planned-only`, `publishing`, `published`,
+`failed`, `up-to-date`, `redaction-hit` or `skipped-<reason>`.
+
+#### The GitHub App
+
+Created by hand under the owner's account, installed on this repository only. No
+webhook, no events. Permissions, checked against GitHub's
+"Permissions required for GitHub Apps":
+
+- **Pull requests: write**, for labels (create, add, remove) and comments on PRs.
+  The issues endpoints accept Pull requests or Issues, so Issues: write also
+  works and isn't needed besides.
+- **Commit statuses: write**, for `POST /repos/{r}/statuses/{sha}` and the
+  readback.
+- **Metadata: read**, which every App has.
+
+The installation token asks for issues, pull requests and statuses (write) and
+metadata (read), scoped to this one repository.
+
+Three fields in the 1Password item `n8n`: `github-app-id`,
+`github-app-installation-id` and `github-app-private-key-b64` (see
+[Secrets](#secrets)). Rotating the key is a 1Password change plus a pod restart.
+The App's slug is `app_slug` in `triage/config.yaml`; renaming the App needs a PR
+changing it, or every write fails at the `GET /app` check.
+
+#### Turning it on, and off
+
+On: a one-line PR setting `write_mode: "labels"` in `triage/config.yaml`. That
+changes the ruleset, so the next run re-triages and publishes every open PR. Each
+gets one label, one comment and one status. The run after that makes no writes.
+
+Off: a one-line PR setting `write_mode: "off"`. Labels, comments and statuses
+already written stay. This is fix-forward. Don't revert the labels PR: its
+migration moved the stored verdicts.
 
 ### Reading verdicts
 
@@ -409,7 +604,9 @@ endpoint, and today there are none to call. Every future write node goes after t
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select pr, verdict, reasons, ruleset, finalised_at, created from triage.verdicts order by created desc limit 20;"
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
-  "select id, started, finished, pr_count, negative_control, ok, ruleset from triage.runs order by id desc limit 10;"
+  "select id, started, finished, pr_count, negative_control, ok, publish, ruleset from triage.runs order by id desc limit 10;"
+kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
+  "select pr, left(head_sha, 12), verdict, label, status_state, human_override, outcome, planned_at from triage.publications order by planned_at desc limit 20;"
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select c->>'id' as check, c->>'result' as result, c->'evidence'->>'source_url' as source, c->'evidence'->>'etag_or_sha' as etag
      from triage.verdicts v, jsonb_array_elements(v.checks) c where v.pr = <number> order by v.created desc limit 9;"
@@ -453,8 +650,9 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
      order by v.created desc limit 15;"
 ```
 
-When `write_mode` publishes, it should publish only when a verdict changes, and
-never re-label or re-comment because the ruleset changed.
+With `write_mode: "labels"`, a new ruleset that gives the same verdict edits the
+comment in place and re-sets the status, and never changes a label. See
+[Re-triage and the commit binding](#re-triage-and-the-commit-binding).
 
 To stop a head SHA being re-triaged, finalise its verdict:
 
@@ -496,3 +694,8 @@ which n8n users can see.
   re-polling rebuilds it for open PRs. A `finalised_at` set by hand isn't rebuilt;
   the volume backups hold it.
 - The DNS record on both local DNS resolvers.
+- The GitHub App, its permissions and its installation: created by hand. Its
+  identifiers and key are in 1Password, and its slug is in `config.yaml`.
+- `triage.publications`. Like the verdicts, a working record: the labels,
+  comments and statuses on GitHub are the visible state, and the next run plans
+  from what it reads there.
