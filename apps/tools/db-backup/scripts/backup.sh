@@ -16,6 +16,7 @@ N8N_EXCLUDE="--exclude-table-data=triage.alert_target --exclude-table-data=triag
 backup_db() { # db host password [pg_dump args]
   db=$1 dir="$OUT/$1"
   export PGHOST="$2" PGUSER="$1" PGDATABASE="$1" PGPASSWORD="$3"
+  wait_ready "$2" || { echo "$db: database not reachable"; return 1; }
   shift 3
   mkdir -p "$dir" || return 1
 

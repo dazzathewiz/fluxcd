@@ -1,4 +1,4 @@
-# Sourced by backup.sh, restore-test.sh and retention.test.js. POSIX sh.
+# Sourced by backup.sh, restore-test.sh and the *.test.js files. POSIX sh.
 # Dumps are <dir>/<db>-<UTC yyyymmddThhmmZ>.dump, so name order is time order.
 
 KEEP=${KEEP:-14}
@@ -23,4 +23,23 @@ prune() { # dir db
     rm -f "$1/$f" "$1/$f.sha256" || return 1
   done || return 1
   find "$1" -maxdepth 1 -name "$2-*.dump.tmp" -mtime +0 -exec rm -f {} + || return 1
+}
+
+# Poll pg_isready every 2 s until the database answers or the timeout passes.
+# A fresh pod's IP can take a moment to be admitted by an ingress NetworkPolicy.
+wait_ready() { # host [timeout_s]
+  limit=${2:-${WAIT_READY:-90}}
+  start=$(date +%s)
+  while :; do
+    if pg_isready -q -h "$1" -p 5432 -t 2; then
+      echo "$1: reachable after $(($(date +%s) - start))s"
+      return 0
+    fi
+    waited=$(($(date +%s) - start))
+    if [ "$waited" -ge "$limit" ]; then
+      echo "$1: not reachable after ${waited}s"
+      return 1
+    fi
+    sleep 2
+  done
 }
