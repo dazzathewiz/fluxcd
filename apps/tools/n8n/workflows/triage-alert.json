@@ -1,0 +1,132 @@
+{
+  "id": "TriageAlertV01",
+  "name": "PR triage: alert (unsaved)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7a1e0c4d-0001-4c00-9000-000000000001",
+      "name": "When called by the heartbeat",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "One ping per heartbeat run. callerPolicy lets only the heartbeat call this."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (SELECT url FROM triage.alert_target WHERE name = 'home-assistant') AS url;",
+        "options": {}
+      },
+      "id": "7a1e0c4d-0002-4c00-9000-000000000002",
+      "name": "Read target",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      },
+      "notes": "The webhook URL, seeded from the Secret. Only this workflow reads it, and it saves no executions."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url || '' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: 'pr-triage', last_success: $('When called by the heartbeat').first().json.last_success || null, stale: $('When called by the heartbeat').first().json.stale === true, checked: $('When called by the heartbeat').first().json.checked }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "7a1e0c4d-0003-4c00-9000-000000000003",
+      "name": "POST",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "notes": "10 s timeout, one retry on a network error. Any HTTP status is returned, not thrown."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only data the heartbeat gets back: the status code, or null on a\n// network error. A new object, so no URL, error text or body leaves here.\nconst r = $input.first().json || {};\nreturn [{ json: { status: Number.isInteger(r.statusCode) ? r.statusCode : null } }];"
+      },
+      "id": "7a1e0c4d-0004-4c00-9000-000000000004",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When called by the heartbeat": {
+      "main": [
+        [
+          {
+            "node": "Read target",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read target": {
+      "main": [
+        [
+          {
+            "node": "POST",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromAList",
+    "callerIds": "TriageBeat000001",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "pinData": {},
+  "active": false
+}

@@ -58,6 +58,13 @@ spec:
     ports:
     - protocol: TCP
       port: 6443
+  # Home Assistant: the triage heartbeat ping. Address from global-secrets.
+  - to:
+    - ipBlock:
+        cidr: ${HOST_HOMEASSISTANT}/32
+    ports:
+    - protocol: TCP
+      port: 8123
   # Internet only, no private ranges
   - to:
     - ipBlock:

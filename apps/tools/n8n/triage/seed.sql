@@ -2,11 +2,13 @@
 -- REDACTION_PATTERNS comes from the Secret as env: one pattern per line,
 -- blank lines and lines starting with # ignored. GITHUB_APP_ID and
 -- GITHUB_APP_INSTALLATION_ID come from the same Secret; a missing one removes
--- its row, and write_mode labels then publishes nothing.
+-- its row, and write_mode labels then publishes nothing. HA_HEARTBEAT_URL
+-- (same Secret) becomes the one triage.alert_target row; missing, there is none.
 
 \getenv patterns REDACTION_PATTERNS
 \getenv app_id GITHUB_APP_ID
 \getenv installation_id GITHUB_APP_INSTALLATION_ID
+\getenv ha_url HA_HEARTBEAT_URL
 -- An unset variable would reach the SQL as literal text.
 \if :{?app_id}
 \else
@@ -15,6 +17,10 @@
 \if :{?installation_id}
 \else
   \set installation_id ''
+\endif
+\if :{?ha_url}
+\else
+  \set ha_url ''
 \endif
 \set config `cat /triage/config.yaml`
 \set rules `cat /triage/rules.js`
@@ -48,7 +54,14 @@ FROM (VALUES ('github-app-id', :'app_id'),
              ('github-app-installation-id', :'installation_id')) AS v (name, body)
 WHERE btrim(v.body) ~ '^[0-9]+$';
 
+-- The heartbeat webhook. Never printed.
+DELETE FROM triage.alert_target;
+INSERT INTO triage.alert_target (name, url)
+SELECT 'home-assistant', btrim(:'ha_url')
+WHERE btrim(:'ha_url') ~ '^https?://[^/[:space:]]+/[^[:space:]]+$';
+
 COMMIT;
 
 SELECT count(*) AS redaction_patterns FROM triage.redaction_patterns;
+SELECT count(*) AS alert_targets FROM triage.alert_target;
 SELECT name, CASE WHEN name LIKE 'github-app-%' THEN 'set' ELSE sha256 END AS sha256 FROM triage.config ORDER BY name;

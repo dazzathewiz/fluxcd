@@ -45,19 +45,106 @@
     },
     {
       "id": "0b7c1d8e-0103-4a00-9000-000000000103",
-      "name": "Alert Home Assistant (P2)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "Ping payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         440,
         300
       ],
-      "disabled": true,
-      "notes": "P2: alert when stale is true. Disabled until the webhook ID is in the Secret.",
       "parameters": {
-        "method": "POST",
-        "url": "",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Exactly what Home Assistant gets: four keys, timestamps ISO-8601 UTC.\nconst r = $input.first().json || {};\nconst iso = (t) => (t === null || t === undefined || t === '' ? null : new Date(t).toISOString());\nreturn [{ json: { source: 'pr-triage', last_success: iso(r.last_success), stale: r.stale === true, checked: iso(r.checked) } }];"
+      }
+    },
+    {
+      "id": "0b7c1d8e-0104-4a00-9000-000000000104",
+      "name": "Ping Home Assistant",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        660,
+        300
+      ],
+      "notes": "Runs the unsaved sub-workflow that holds the webhook URL, so the URL never enters this workflow's saved run data. It returns the status code only.",
+      "parameters": {
+        "source": "database",
+        "workflowId": "TriageAlertV01",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "0b7c1d8e-0105-4a00-9000-000000000105",
+      "name": "Record ping",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE triage.heartbeat\nSET last_ping = now(), ping_status = NULLIF($1::integer, 0)\nWHERE name = 'triage-poll'\nRETURNING last_ping, ping_status;",
+        "options": {
+          "queryReplacement": "={{ [Number.isInteger($json.status) ? $json.status : 0] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      },
+      "notes": "ping_status is the HTTP status, or NULL on a network error."
+    },
+    {
+      "id": "0b7c1d8e-0106-4a00-9000-000000000106",
+      "name": "Ping ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "0b7c1d8e-0106-4a00-9000-0000000001a1",
+              "leftValue": "={{ $json.ping_status >= 200 && $json.ping_status < 300 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
         "options": {}
+      }
+    },
+    {
+      "id": "0b7c1d8e-0107-4a00-9000-000000000107",
+      "name": "Ping failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        400
+      ],
+      "notes": "Fails this execution only. triage.runs and the poll are untouched.",
+      "parameters": {
+        "errorMessage": "=Home Assistant ping failed (status {{ $json.ping_status === null ? 'none' : $json.ping_status }})"
       }
     }
   ],
@@ -77,7 +164,52 @@
       "main": [
         [
           {
-            "node": "Alert Home Assistant (P2)",
+            "node": "Ping payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ping payload": {
+      "main": [
+        [
+          {
+            "node": "Ping Home Assistant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ping Home Assistant": {
+      "main": [
+        [
+          {
+            "node": "Record ping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record ping": {
+      "main": [
+        [
+          {
+            "node": "Ping ok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ping ok?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Ping failed",
             "type": "main",
             "index": 0
           }

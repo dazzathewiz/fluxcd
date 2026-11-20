@@ -44,8 +44,9 @@ into Secret `n8n-secrets`:
 | `github-app-id` | `GITHUB_APP_ID` | Seeded into `triage.config`; the JWT's `iss` |
 | `github-app-installation-id` | `GITHUB_APP_INSTALLATION_ID` | Seeded into `triage.config`; the installation token exchange |
 | `github-app-private-key-b64` | Only decoded, inside `CREDENTIALS_OVERWRITE_DATA` (`jwtAuth`) | Signs the App JWT in the `PR triage: publish` sub-workflow |
+| `ha-heartbeat-url` | `HA_HEARTBEAT_URL` | Seeded into `triage.alert_target`; see [Dead-man](#dead-man) |
 
-All seven fields must exist before the ExternalSecret syncs: a missing one stops
+All eight fields must exist before the ExternalSecret syncs: a missing one stops
 the whole Secret updating. The private key is the App's PEM, base64-encoded onto
 one line, because 1Password password fields flatten line breaks. The template
 decodes it (`b64dec`) into the `jwtAuth` overwrite, the key's only copy in the
@@ -92,15 +93,19 @@ servers don't run with `--disable-network-policy`.
   - DNS to CoreDNS
   - TCP 5432 to `n8n-db`
   - TCP 6443 to the control-plane VIP and each control-plane node
+  - TCP 8123 to the home automation server, for the [dead-man](#dead-man) ping
   - Anything outside `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`
 - **n8n-db:** ingress on 5432 from `n8n` only. Egress is DNS only.
 
-So n8n can reach the internet and the k3s API, and it can't reach anything else on
-the LAN or in the cluster.
+So n8n can reach the internet, the k3s API and that one port, and it can't reach
+anything else on the LAN or in the cluster.
 
-**The API addresses are literal IPs.** No cluster var holds them. Rebuilding or
-re-addressing a control-plane node means updating this policy, and the symptom of
-a stale entry is API calls from n8n timing out.
+**The API addresses are literal IPs.** No cluster var holds them. The home
+automation server's address is outside the cluster, so it comes from the SOPS var
+`HOST_HOMEASSISTANT` in `global-secrets`. Rebuilding or re-addressing a
+control-plane node means updating this policy, and re-addressing the home
+automation server means updating that var. The symptom of a stale entry is
+requests from n8n timing out.
 
 ## First run
 
@@ -294,8 +299,35 @@ So when the PR list changes, every open PR's detail and files are read, and only
 the new head SHAs are triaged. A failed read of a PR being triaged fails the run;
 the run stays unfinished, no ETag is stored, and the next run retries.
 
-`PR triage: heartbeat` runs every 30 minutes and writes the last successful run time
-to `triage.heartbeat`. Its alert node is disabled until the alerting phase.
+`PR triage: heartbeat` runs every 30 minutes, writes the last successful run time
+to `triage.heartbeat`, and pings Home Assistant; see [Dead-man](#dead-man).
+
+### Dead-man
+
+Every heartbeat run POSTs one JSON object to a Home Assistant webhook:
+
+```json
+{"source": "pr-triage", "last_success": "<ISO-8601 UTC or null>", "stale": false, "checked": "<ISO-8601 UTC>"}
+```
+
+`stale` is true when no run has succeeded in 2 hours. Home Assistant alerts on two
+things: a ping that says `stale`, and no ping at all for longer than a couple of
+intervals, which means n8n itself is down. The receiver, the watchdog and the phone
+notification live in Home Assistant, outside this repo.
+
+- **The URL is a secret.** The webhook ID is in it. It comes from the 1Password
+  field `ha-heartbeat-url`, and the `triage-schema` initContainer seeds it into
+  `triage.alert_target` on every pod start (a missing field leaves the table
+  empty). No credential type can carry a request URL, so a credential overwrite
+  doesn't fit.
+- **Only `PR triage: alert (unsaved)` (`TriageAlertV01`) reads it.** The heartbeat
+  calls it once per run with the four keys above. It reads the URL, POSTs with a
+  10 s timeout and one retry on a network error, and returns only the HTTP status.
+  It saves no executions, and its caller policy admits only the heartbeat. The
+  tests check that no other workflow names the table.
+- **The heartbeat records the result** in `triage.heartbeat.last_ping` and
+  `ping_status` (the status, or NULL on a network error). A status outside 2xx
+  then fails that heartbeat execution. The poll and `triage.runs` are untouched.
 
 ### Cluster version
 
@@ -694,6 +726,8 @@ which n8n users can see.
   re-polling rebuilds it for open PRs. A `finalised_at` set by hand isn't rebuilt;
   the volume backups hold it.
 - The DNS record on both local DNS resolvers.
+- The Home Assistant side of the [dead-man](#dead-man): the webhook receiver,
+  the watchdog and the notification, built by hand in Home Assistant.
 - The GitHub App, its permissions and its installation: created by hand. Its
   identifiers and key are in 1Password, and its slug is in `config.yaml`.
 - `triage.publications`. Like the verdicts, a working record: the labels,

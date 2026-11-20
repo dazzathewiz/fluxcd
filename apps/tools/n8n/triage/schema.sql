@@ -131,3 +131,13 @@ CREATE TABLE IF NOT EXISTS triage.heartbeat (
   last_success timestamptz,
   checked      timestamptz NOT NULL
 );
+-- The heartbeat's last ping to Home Assistant: when, and the HTTP status (NULL
+-- on a network error).
+ALTER TABLE triage.heartbeat ADD COLUMN IF NOT EXISTS last_ping timestamptz, ADD COLUMN IF NOT EXISTS ping_status integer;
+
+-- The Home Assistant webhook URL, reseeded from the Secret on every pod start.
+-- Only the TriageAlertV01 sub-workflow reads it.
+CREATE TABLE IF NOT EXISTS triage.alert_target (
+  name text PRIMARY KEY,
+  url  text NOT NULL
+);
