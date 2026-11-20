@@ -1,0 +1,15 @@
+---
+# Logical dumps of n8n-db and inventory-db. Offsite through the default
+# Longhorn recurring-job group, like every other volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-backup
+  namespace: tools
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-diskencrypt-global
+  resources:
+    requests:
+      storage: 5Gi

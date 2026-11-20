@@ -1,0 +1,76 @@
+---
+# Run by hand; see docs/db-backup.md. Restores the newest dumps into a
+# throwaway server in an emptyDir. No network: the server listens on a Unix
+# socket only, and the NetworkPolicy denies all traffic.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-restore-test
+  namespace: tools
+  labels:
+    app: db-restore-test
+spec:
+  suspend: true
+  schedule: "0 0 1 1 *"
+  timeZone: Australia/Brisbane
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: db-restore-test
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
+            runAsNonRoot: true
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: restore-test
+            image: postgres:17.12-alpine
+            command: ["/bin/sh", "/scripts/restore-test.sh"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: backup
+              mountPath: /backup
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+            - name: tmp
+              mountPath: /tmp
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+          volumes:
+          - name: scripts
+            configMap:
+              name: db-backup-scripts
+          - name: backup
+            persistentVolumeClaim:
+              claimName: db-backup
+              readOnly: true
+          - name: scratch
+            emptyDir:
+              sizeLimit: 10Gi
+          - name: tmp
+            emptyDir:
+              sizeLimit: 64Mi

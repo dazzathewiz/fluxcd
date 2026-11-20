@@ -119,12 +119,13 @@ does not opt out, so no labelling scheme is needed. Those backups land offsite
 in object storage. Given the reclaim-policy behaviour described in `AGENTS.md`,
 they are the actual protection for this data.
 
-**A logical database dump is a separate, still-outstanding piece of work.** A
-Longhorn volume backup of a running Postgres is crash-consistent -- recoverable,
-because the write-ahead log replays, but not the same thing as a dump you can
-restore onto any Postgres anywhere. For a dataset whose purpose includes being
-producible as an itemised record after a loss, the portable form matters. That
-job is tracked separately and is not in this deployment.
+**A nightly logical dump runs as well.** A Longhorn volume backup of a running
+Postgres is crash-consistent -- recoverable, because the write-ahead log
+replays, but not the same thing as a dump you can restore onto any Postgres
+anywhere. For a dataset whose purpose includes being producible as an itemised
+record after a loss, the portable form matters. The `db-backup` CronJob checks
+the database with `pg_amcheck` and dumps it each night; see
+[db-backup.md](db-backup.md).
 
 ### This app stops being safe to revert once data entry begins
 
@@ -152,9 +153,10 @@ protection that is not there.
   Postgres 17 and states newer versions are not guaranteed, and a Postgres major
   upgrade needs a dump and restore regardless -- the data directory is not
   forward-compatible and the container refuses to start against one written by
-  an older major. Dependency automation holds Postgres majors for explicit
-  approval rather than opening a PR, so `18-alpine` won't arrive as an ordinary
-  bump. Approving it is the start of a migration, not a routine upgrade.
+  an older major. [db-backup.md](db-backup.md) has the dump and the restore.
+  Dependency automation holds Postgres majors for explicit approval rather than
+  opening a PR, so `18-alpine` won't arrive as an ordinary bump. Approving it is
+  the start of a migration, not a routine upgrade.
 
 ## Not declarative
 

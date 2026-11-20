@@ -95,7 +95,8 @@ servers don't run with `--disable-network-policy`.
   - TCP 6443 to the control-plane VIP and each control-plane node
   - TCP 8123 to the home automation server, for the [dead-man](#dead-man) ping
   - Anything outside `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`
-- **n8n-db:** ingress on 5432 from `n8n` only. Egress is DNS only.
+- **n8n-db:** ingress on 5432 from `n8n` and from the nightly dump (`app:
+  db-backup`, see [db-backup.md](db-backup.md)). Egress is DNS only.
 
 So n8n can reach the internet, the k3s API and that one port, and it can't reach
 anything else on the LAN or in the cluster.
@@ -125,6 +126,8 @@ Longhorn recurring-job group with no label. The backing PVs are reclaimed with
 `Delete`, so pruning a PVC deletes its volume.
 
 - `n8n-db` holds workflows, credentials (encrypted), users and execution history.
+  A nightly `pg_dump`, checked with `pg_amcheck`, also goes to its own volume;
+  see [db-backup.md](db-backup.md).
 - `n8n-data` holds n8n's local config, including the copy of the encryption key.
   Binary data is not on it: it lives in a memory-backed `emptyDir`. See
   [Cluster version](#cluster-version).
@@ -715,7 +718,7 @@ which n8n users can see.
 - The `import-workflows` initContainer uses the same image as n8n, so both bump in
   one PR.
 - Postgres majors are held for approval on the Dependency Dashboard. A major needs
-  a dump and restore.
+  a dump and restore; [db-backup.md](db-backup.md) has the dump and the restore.
 
 ## Not declarative
 
