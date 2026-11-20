@@ -21,20 +21,23 @@ Longhorn's `daily-backups` RecurringJob (11:00 UTC), so each offsite backup
 carries that night's dumps. One attempt (`backoffLimit: 0`), a 30-minute
 deadline, and no overlap. For each database, as that database's owner user:
 
-1. `pg_amcheck --install-missing --heapallindexed`. The first run installs the
+1. Wait up to 90 s for `pg_isready`, polling every 2 s, and log how long it
+   took. A fresh Job pod's IP takes a moment to be admitted by `n8n-db`'s
+   NetworkPolicy, so connecting at once can be refused.
+2. `pg_amcheck --install-missing --heapallindexed`. The first run installs the
    `amcheck` extension in the database.
-2. `pg_dump -Fc` to `<db>-<UTC yyyymmddThhmmZ>.dump.tmp`, then
+3. `pg_dump -Fc` to `<db>-<UTC yyyymmddThhmmZ>.dump.tmp`, then
    `pg_restore --list` on it. Only when both succeed is it renamed to `.dump`,
    with a `.sha256` written beside it.
-3. Keep the newest 14 dumps (by name, which is by time) and delete older ones
+4. Keep the newest 14 dumps (by name, which is by time) and delete older ones
    with their `.sha256`. `.tmp` files older than a day are deleted.
 
 One database failing doesn't stop the other. The job exits non-zero if either
 failed.
 
 The script is `apps/tools/db-backup/scripts/backup.sh`. It's mounted from a
-generated ConfigMap with Flux substitution disabled. The retention and naming
-logic in `scripts/lib.sh` has tests: `node --test apps/tools/db-backup/`.
+generated ConfigMap with Flux substitution disabled. The retention, naming and
+wait logic in `scripts/lib.sh` has tests: `node --test apps/tools/db-backup/`.
 
 **Two n8n tables are dumped without their rows:** `triage.alert_target` (the
 Home Assistant webhook URL) and `triage.redaction_patterns`. Both are secrets,
