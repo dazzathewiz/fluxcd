@@ -1,0 +1,61 @@
+---
+# db-backup: no ingress; egress to DNS, the two databases and the Home
+# Assistant webhook.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-backup
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: db-backup
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+  # DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Databases
+  - to:
+    - podSelector:
+        matchLabels:
+          app: n8n-db
+    - podSelector:
+        matchLabels:
+          app: inventory-db
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Home Assistant: the result ping. Address from global-secrets.
+  - to:
+    - ipBlock:
+        cidr: ${HOST_HOMEASSISTANT}/32
+    ports:
+    - protocol: TCP
+      port: 8123
+---
+# db-restore-test: no traffic either way.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-restore-test
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: db-restore-test
+  policyTypes:
+    - Ingress
+    - Egress

@@ -74,7 +74,7 @@ spec:
           - 172.16.0.0/12
           - 192.168.0.0/16
 ---
-# n8n-db: ingress from n8n only, egress DNS only.
+# n8n-db: ingress from n8n and the nightly dump, egress DNS only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -92,6 +92,13 @@ spec:
     - podSelector:
         matchLabels:
           app: n8n
+    ports:
+    - protocol: TCP
+      port: 5432
+  - from:
+    - podSelector:
+        matchLabels:
+          app: db-backup
     ports:
     - protocol: TCP
       port: 5432
