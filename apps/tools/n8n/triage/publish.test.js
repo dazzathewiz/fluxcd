@@ -798,7 +798,7 @@ test('the ExternalSecret decodes the key, and only the decoded form reaches the 
   const template = es.slice(es.indexOf('    template:'), es.indexOf('\n  data:\n'));
   const outputs = Array.from(template.matchAll(/^ {8}([A-Z0-9_]+):/gm)).map((m) => m[1]);
   assert.deepEqual(outputs.sort(), ['CREDENTIALS_OVERWRITE_DATA', 'DB_POSTGRESDB_PASSWORD', 'GITHUB_APP_ID', 'GITHUB_APP_INSTALLATION_ID',
-    'GITHUB_TOKEN', 'N8N_ENCRYPTION_KEY', 'POSTGRES_PASSWORD', 'REDACTION_PATTERNS', 'TRIAGE_DB_PASSWORD']);
+    'GITHUB_TOKEN', 'HA_HEARTBEAT_URL', 'N8N_ENCRYPTION_KEY', 'POSTGRES_PASSWORD', 'REDACTION_PATTERNS', 'TRIAGE_DB_PASSWORD']);
   assert.ok(!outputs.some((k) => k.startsWith('GITHUB_APP_PRIVATE_KEY')), 'the key reaches n8n only inside the overwrite');
   // Every 1Password field is a template input; each but the base64 key is passed through.
   const inputs = Array.from(es.matchAll(/- secretKey: ([A-Z0-9_]+)/g)).map((m) => m[1]);

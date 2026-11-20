@@ -37,8 +37,10 @@ GRANT SELECT, INSERT ON triage.verdicts TO triage;
 GRANT SELECT ON triage.config, triage.redaction_patterns TO triage;
 -- Record plan upserts a row per open PR; Record publish updates it.
 GRANT SELECT, INSERT, UPDATE ON triage.publications TO triage;
--- The heartbeat upserts one row.
+-- The heartbeat upserts one row, then records its ping (last_ping, ping_status).
 GRANT SELECT, INSERT, UPDATE ON triage.heartbeat TO triage;
+-- TriageAlertV01 reads the heartbeat webhook URL.
+GRANT SELECT ON triage.alert_target TO triage;
 GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq TO triage;
 
 COMMIT;

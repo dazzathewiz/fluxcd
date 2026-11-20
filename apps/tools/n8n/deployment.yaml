@@ -28,7 +28,8 @@ spec:
         runAsNonRoot: true
       initContainers:
       # Applies triage/schema.sql, reloads config.yaml, reseeds the redaction
-      # patterns and resets the least-privilege `triage` role. Idempotent.
+      # patterns and the heartbeat URL, and resets the least-privilege `triage`
+      # role. Idempotent.
       - name: triage-schema
         image: postgres:17.12-alpine
         command: ["/bin/sh", "-c"]
@@ -72,6 +73,13 @@ spec:
               name: n8n-secrets
               key: GITHUB_APP_INSTALLATION_ID
               optional: true
+        # Seeded into triage.alert_target; read only by TriageAlertV01.
+        - name: HA_HEARTBEAT_URL
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: HA_HEARTBEAT_URL
+              optional: true
         volumeMounts:
         - name: triage
           mountPath: /triage
@@ -107,6 +115,7 @@ spec:
           n8n import:workflow --separate --input=/import/workflows
           n8n publish:workflow --id=TriageClusterV01
           n8n publish:workflow --id=TriagePublishV01
+          n8n publish:workflow --id=TriageAlertV01
           n8n publish:workflow --id=TriagePoll000001
           n8n publish:workflow --id=TriageBeat000001
         envFrom:
