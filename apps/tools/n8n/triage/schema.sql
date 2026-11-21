@@ -141,3 +141,61 @@ CREATE TABLE IF NOT EXISTS triage.alert_target (
   name text PRIMARY KEY,
   url  text NOT NULL
 );
+
+-- R10: one row per merge commit watched after a merge to the default branch.
+-- Additive only: a revert leaves these tables behind, unused.
+CREATE TABLE IF NOT EXISTS triage.watches (
+  id                 bigserial PRIMARY KEY,
+  repo               text NOT NULL,
+  pr                 integer NOT NULL,
+  merge_sha          text NOT NULL,
+  merged_at          timestamptz NOT NULL,
+  merged_by          text,
+  -- planWatch's targets and notes.
+  targets            jsonb NOT NULL DEFAULT '[]'::jsonb,
+  notes              jsonb NOT NULL DEFAULT '[]'::jsonb,
+  status             text NOT NULL DEFAULT 'pending'
+                     CONSTRAINT watches_status_check CHECK (status IN ('pending', 'ok', 'failed', 'timeout')),
+  fix_forward        boolean NOT NULL DEFAULT false,
+  fix_forward_source text,
+  -- Per target, the failing condition and how many checks in a row saw it.
+  fail_streak        jsonb NOT NULL DEFAULT '{}'::jsonb,
+  last_detail        jsonb,
+  -- planWatchPublish's plan, with the write mode it was made under.
+  planned_actions    jsonb,
+  published          boolean NOT NULL DEFAULT false,
+  publish_outcome    text,
+  -- The watcher run that last planned its publish.
+  run_id             bigint,
+  -- The Home Assistant alert on failed or timeout: at most one 2xx per watch.
+  alerted_at         timestamptz,
+  alert_status       integer,
+  alert_attempts     integer NOT NULL DEFAULT 0,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  checked_at         timestamptz,
+  finished_at        timestamptz,
+  CONSTRAINT watches_repo_pr_merge_sha_key UNIQUE (repo, pr, merge_sha)
+);
+CREATE INDEX IF NOT EXISTS watches_status_idx ON triage.watches (status, finished_at);
+
+-- Per repo: the newest merged_at the watcher has taken in, and the ETag of
+-- the closed-PR listing it read.
+CREATE TABLE IF NOT EXISTS triage.watch_cursor (
+  repo       text PRIMARY KEY,
+  merged_at  timestamptz NOT NULL,
+  list_etag  text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- One row per watcher run. The heartbeat reads the last ok one.
+CREATE TABLE IF NOT EXISTS triage.watch_runs (
+  id          bigserial PRIMARY KEY,
+  started     timestamptz NOT NULL DEFAULT now(),
+  finished    timestamptz,
+  ok          boolean,
+  new_merges  integer,
+  checked     integer,
+  published   integer
+);
+
+ALTER TABLE triage.heartbeat ADD COLUMN IF NOT EXISTS watch_last_success timestamptz;

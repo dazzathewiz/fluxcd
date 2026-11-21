@@ -631,10 +631,10 @@ test('the App key comes from 1Password base64, is decoded in the template, and c
   assert.match(read('kustomization.yaml'), /- workflows\/triage-publish\.json\n[\s\S]*- credentials\/github-app-jwt\.json/);
 });
 
-test('the sub-workflow saves nothing, only the poll may call it, and it returns no token', () => {
+test('the sub-workflow saves nothing, only the poll and the watcher may call it, and it returns no token', () => {
   const s = h.PUBLISH.settings;
   assert.deepEqual([s.saveDataSuccessExecution, s.saveDataErrorExecution, s.saveManualExecutions, s.saveExecutionProgress], ['none', 'none', false, false]);
-  assert.deepEqual([s.callerPolicy, s.callerIds], ['workflowsFromAList', 'TriagePoll000001']);
+  assert.deepEqual([s.callerPolicy, s.callerIds], ['workflowsFromAList', 'TriagePoll000001,TriageWatch00001']);
   const jwt = h.nodeOf(h.PUBLISH, 'Sign App JWT');
   assert.deepEqual([jwt.type, jwt.parameters.operation, jwt.parameters.options.algorithm], ['n8n-nodes-base.jwt', 'sign', 'RS256']);
   const db = h.newDb();
@@ -653,6 +653,16 @@ test('the sub-workflow saves nothing, only the poll may call it, and it returns 
   const bad = h.runPublish({ kind: 'action', type: 'remove_label', name: 'bug', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, []);
   assert.equal(bad[0].json.ok, false);
   assert.ok(!gh.state.requests.some((q) => q.method === 'DELETE' && q.url.includes('/labels/bug')));
+  // R10's label writes take only its two labels, and the triage writes never take them.
+  const act = (type, name) => h.runPublish({ kind: 'action', type, name, color: '0e8a16', description: 'd', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, [])[0].json;
+  assert.equal(act('watch_ensure_label', 'triage:post-merge-ok').ok, true);
+  assert.equal(act('watch_add_label', 'triage:post-merge-ok').ok, true);
+  assert.ok(gh.state.prs[5].labels.includes('triage:post-merge-ok'));
+  for (const [type, name] of [['watch_add_label', 'triage:review'], ['watch_add_label', 'merge'], ['add_label', 'triage:post-merge-failed'], ['watch_ensure_label', 'bug']]) {
+    const n = gh.state.requests.length;
+    assert.equal(act(type, name).ok, false, `${type} ${name}`);
+    assert.ok(!gh.state.requests.slice(n).some((q) => q.method === 'POST' && q.url.includes('/labels') && JSON.stringify(q.body).includes(name)), `${type} ${name} reached GitHub`);
+  }
   // A failed token exchange writes nothing.
   const before = gh.state.requests.length;
   const none = h.runPublish({ kind: 'action', type: 'create_comment', body: 'x', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: '1', app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, []);
@@ -664,19 +674,43 @@ test('the sub-workflow saves nothing, only the poll may call it, and it returns 
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const LABELS = rules.managedLabels(CONFIG);
-const problems = (wf) => checkWrites(wf, LABELS, CONFIG.status_context).problems.join('\n');
+const WATCH_LABELS = Object.values(rules.WATCH_LABELS);
+const problems = (wf) => checkWrites(wf, LABELS, CONFIG.status_context, WATCH_LABELS).problems.join('\n');
+const WATCH = JSON.parse(read('workflows/triage-watch.json'));
 
-test('allowlist: exactly the seven writes, all in the sub-workflow, reached through the gate', () => {
-  const pub = checkWrites(h.PUBLISH, LABELS, CONFIG.status_context);
+test('allowlist: exactly the nine writes, all in the sub-workflow, reached through the gate', () => {
+  const pub = checkWrites(h.PUBLISH, LABELS, CONFIG.status_context, WATCH_LABELS);
   assert.deepEqual(pub.problems, []);
-  assert.deepEqual(pub.writes.map((w) => w.path).sort(), writeTemplates(LABELS, CONFIG.status_context).map((t) => t.path).sort());
+  assert.deepEqual(pub.writes.map((w) => w.path).sort(), writeTemplates(LABELS, CONFIG.status_context, WATCH_LABELS).map((t) => t.path).sort());
   assert.deepEqual(pub.writes.map((w) => w.path).sort(), [
     'DELETE /repos/{r}/issues/{n}/labels/{name}', 'PATCH /repos/{r}/issues/comments/{id}', 'POST /app/installations/{id}/access_tokens',
-    'POST /repos/{r}/issues/{n}/comments', 'POST /repos/{r}/issues/{n}/labels', 'POST /repos/{r}/labels', 'POST /repos/{r}/statuses/{sha}',
+    'POST /repos/{r}/issues/{n}/comments', 'POST /repos/{r}/issues/{n}/labels', 'POST /repos/{r}/issues/{n}/labels (R10 labels only)',
+    'POST /repos/{r}/labels', 'POST /repos/{r}/labels (R10 labels only)', 'POST /repos/{r}/statuses/{sha}',
   ]);
-  const poll = checkWrites(h.POLL, LABELS, CONFIG.status_context);
+  const poll = checkWrites(h.POLL, LABELS, CONFIG.status_context, WATCH_LABELS);
   assert.deepEqual(poll.problems, []);
   assert.deepEqual(poll.writes.map((w) => w.node), ['Publish']);
+  const watch = checkWrites(WATCH, LABELS, CONFIG.status_context, WATCH_LABELS);
+  assert.deepEqual(watch.problems, []);
+  assert.deepEqual(watch.writes.map((w) => w.node), ['Publish']);
+});
+
+test('allowlist: the watch label writes take only the two R10 labels', () => {
+  assert.deepEqual(WATCH_LABELS, ['triage:post-merge-ok', 'triage:post-merge-failed']);
+  for (const node of ['Create watch label', 'Add watch label']) {
+    const wider = clone(h.PUBLISH);
+    const n = wider.nodes.find((x) => x.name === node);
+    n.parameters.jsonBody = n.parameters.jsonBody.replace("'triage:post-merge-failed']", "'triage:post-merge-failed', 'merge']");
+    assert.match(problems(wider), new RegExp(`"${node}" is a POST .* matches no allowed write`));
+  }
+  // The watcher can't call around its gate either.
+  const around = clone(WATCH);
+  around.connections['One item per action'].main = [[{ node: 'Publish', type: 'main', index: 0 }]];
+  assert.match(problems(around), /"Publish" calls TriagePublishV01 outside the "Write gate" node's true output/);
+  // And no other workflow may call it.
+  const other = clone(WATCH);
+  other.id = 'SomethingElse001';
+  assert.match(problems(other), /calls TriagePublishV01 from SomethingElse001; only TriagePoll000001 and TriageWatch00001 may/);
 });
 
 test('allowlist: a merge is refused', () => {
@@ -727,13 +761,16 @@ test('allowlist: any write outside the sub-workflow is refused, and so is a call
   assert.match(problems(falseOut), /outside the "Write gate" node's true output/);
 });
 
-test('allowlist: the sub-workflow must stay unsaved, poll-only and request-free in its Code', () => {
+test('allowlist: the sub-workflow must stay unsaved, caller-limited and request-free in its Code', () => {
   const saved = clone(h.PUBLISH);
   saved.settings.saveDataErrorExecution = 'all';
   assert.match(problems(saved), /must save no executions/);
   const open = clone(h.PUBLISH);
   open.settings.callerPolicy = 'any';
-  assert.match(problems(open), /callable by TriagePoll000001 only/);
+  assert.match(problems(open), /callable by TriagePoll000001 and TriageWatch00001 only/);
+  const one = clone(h.PUBLISH);
+  one.settings.callerIds = 'TriagePoll000001';
+  assert.match(problems(one), /callable by TriagePoll000001 and TriageWatch00001 only/);
   const hook = clone(h.PUBLISH);
   hook.nodes.push({ name: 'Hook', type: 'n8n-nodes-base.webhook', parameters: {} });
   assert.match(problems(hook), /one trigger/);

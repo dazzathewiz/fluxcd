@@ -8,9 +8,9 @@
 //     sub-workflow, where every non-GET (to any host) must be one of the
 //     writeTemplates exactly (method, URL, body, headers), so nothing can merge,
 //     edit a PR or issue, review, or touch refs;
-//   - that sub-workflow saves no executions, is callable only by the poll, and
-//     its Code nodes make no requests;
-//   - the poll reaches it only through the Write gate's true output.
+//   - that sub-workflow saves no executions, is callable only by the poll and
+//     the watcher, and its Code nodes make no requests;
+//   - each caller reaches it only through its Write gate's true output.
 // Run before every push (this repo has no CI):
 //   node apps/tools/n8n/triage/sync-code-nodes.js           # check, exit 1 on drift
 //   node apps/tools/n8n/triage/sync-code-nodes.js --write   # copy rules.js into the nodes
@@ -23,6 +23,8 @@ const END = '\n// ==== END rules.js ====\n';
 const GATE_NODE = 'Write gate';
 const PUBLISH_ID = 'TriagePublishV01';
 const POLL_ID = 'TriagePoll000001';
+const WATCH_ID = 'TriageWatch00001';
+const CALLERS = [POLL_ID, WATCH_ID];
 
 // The poll's caller-side trigger, as the expressions write it.
 const A = "$('When called by the poll').first().json";
@@ -31,9 +33,11 @@ const HEADERS = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version':
 const APP_TOKEN = `=token {{ ${TOKEN}.body.token }}`;
 
 // The only writes any workflow may make. labels are rule 1's names and context
-// the status context, both from config.yaml (rules.js pins them).
-function writeTemplates(labels, context) {
+// the status context, both from config.yaml (rules.js pins them). watchLabels
+// are R10's two labels (rules.js WATCH_LABELS).
+function writeTemplates(labels, context, watchLabels) {
   const list = `[${labels.map((l) => `'${l}'`).join(', ')}]`;
+  const wlist = `[${(watchLabels || []).map((l) => `'${l}'`).join(', ')}]`;
   const repo = `'https://api.github.com/repos/' + ${A}.repo`;
   return [
     {
@@ -71,6 +75,16 @@ function writeTemplates(labels, context) {
       node: 'Set status', method: 'POST', path: 'POST /repos/{r}/statuses/{sha}',
       url: `=https://api.github.com/repos/{{ ${A}.repo }}/statuses/{{ ${A}.sha }}`,
       jsonBody: `={{ JSON.stringify({ state: ${A}.state, context: '${context}', description: ${A}.description }) }}`,
+    },
+    {
+      node: 'Create watch label', method: 'POST', path: 'POST /repos/{r}/labels (R10 labels only)',
+      url: `=https://api.github.com/repos/{{ ${A}.repo }}/labels`,
+      jsonBody: `={{ JSON.stringify({ name: ${wlist}.includes(${A}.name) ? ${A}.name : '', color: ${A}.color, description: ${A}.description }) }}`,
+    },
+    {
+      node: 'Add watch label', method: 'POST', path: 'POST /repos/{r}/issues/{n}/labels (R10 labels only)',
+      url: `=https://api.github.com/repos/{{ ${A}.repo }}/issues/{{ Number(${A}.pr) }}/labels`,
+      jsonBody: `={{ JSON.stringify({ labels: ${wlist}.includes(${A}.name) ? [${A}.name] : [] }) }}`,
     },
   ].map((t) => Object.assign({ auth: APP_TOKEN }, t));
 }
@@ -110,10 +124,10 @@ const headerMap = (p) => {
 
 // Problems with one workflow's requests, and the writes that pass.
 // labels and context: from config.yaml.
-function checkWrites(wf, labels, context) {
+function checkWrites(wf, labels, context, watchLabels) {
   const problems = [];
   const writes = [];
-  const templates = writeTemplates(labels, context);
+  const templates = writeTemplates(labels, context, watchLabels);
   const isPublish = wf.id === PUBLISH_ID;
   for (const node of wf.nodes) {
     const p = node.parameters || {};
@@ -154,8 +168,8 @@ function checkWrites(wf, labels, context) {
     if (isPublish && node.type === 'n8n-nodes-base.code' && /\b(helpers|fetch|require|XMLHttpRequest|httpRequest)\b/.test(String(p.jsCode || ''))) {
       problems.push(`"${node.name}" is a Code node in ${PUBLISH_ID} that could make a request`);
     }
-    if (node.type === 'n8n-nodes-base.executeWorkflow' && String(p.workflowId && p.workflowId.value !== undefined ? p.workflowId.value : p.workflowId) === PUBLISH_ID && wf.id !== POLL_ID) {
-      problems.push(`"${node.name}" calls ${PUBLISH_ID} from ${wf.id}; only the poll may`);
+    if (node.type === 'n8n-nodes-base.executeWorkflow' && String(p.workflowId && p.workflowId.value !== undefined ? p.workflowId.value : p.workflowId) === PUBLISH_ID && !CALLERS.includes(wf.id)) {
+      problems.push(`"${node.name}" calls ${PUBLISH_ID} from ${wf.id}; only ${CALLERS.join(' and ')} may`);
     }
   }
   if (isPublish) {
@@ -163,7 +177,7 @@ function checkWrites(wf, labels, context) {
     if (s.saveDataSuccessExecution !== 'none' || s.saveDataErrorExecution !== 'none' || s.saveManualExecutions !== false || s.saveExecutionProgress !== false) {
       problems.push(`${PUBLISH_ID} handles the App token, so it must save no executions`);
     }
-    if (s.callerPolicy !== 'workflowsFromAList' || String(s.callerIds) !== POLL_ID) problems.push(`${PUBLISH_ID} must be callable by ${POLL_ID} only`);
+    if (s.callerPolicy !== 'workflowsFromAList' || String(s.callerIds) !== CALLERS.join(',')) problems.push(`${PUBLISH_ID} must be callable by ${CALLERS.join(' and ')} only`);
     const triggers = wf.nodes.filter((n) => /trigger$/i.test(n.type) || n.type === 'n8n-nodes-base.webhook');
     if (triggers.length !== 1 || triggers[0].type !== 'n8n-nodes-base.executeWorkflowTrigger') problems.push(`${PUBLISH_ID} must have one trigger, the Execute Workflow trigger`);
     for (const t of templates) {
@@ -191,7 +205,7 @@ function checkWrites(wf, labels, context) {
   return { problems, writes };
 }
 
-module.exports = { PUBLISH_ID, writeTemplates, checkWrites };
+module.exports = { PUBLISH_ID, POLL_ID, WATCH_ID, CALLERS, writeTemplates, checkWrites };
 if (require.main !== module) return;
 
 const here = __dirname;
@@ -201,6 +215,7 @@ const write = process.argv.includes('--write');
 const rulesModule = require('./rules.js');
 const config = rulesModule.loadConfig(fs.readFileSync(path.join(here, 'config.yaml'), 'utf8'));
 const LABELS = rulesModule.managedLabels(config);
+const WATCH_LABELS = Object.values(rulesModule.WATCH_LABELS);
 
 let problems = 0;
 let copies = 0;
@@ -255,7 +270,7 @@ for (const file of files) {
   }
 
   if (wf.id === PUBLISH_ID) publishSeen = true;
-  const checked = checkWrites(wf, LABELS, config.status_context);
+  const checked = checkWrites(wf, LABELS, config.status_context, WATCH_LABELS);
   for (const p of checked.problems) fail(`${file}: ${p}`);
   for (const w of checked.writes) found.push(`${file}: ${w.path} in "${w.node}"`);
 
@@ -268,4 +283,5 @@ if (copies === 0) fail('no Code node carries rules.js');
 if (!publishSeen) fail(`no workflow has id ${PUBLISH_ID}`);
 if (problems) process.exit(1);
 for (const f of found) console.log(`write: ${f}`);
-console.log(`ok: ${copies} Code node(s) match rules.js; ${found.length - 1} write(s), all in ${PUBLISH_ID}, reached only through "${GATE_NODE}" (true)`);
+const calls = found.filter((f) => f.includes(`${PUBLISH_ID}, after`)).length;
+console.log(`ok: ${copies} Code node(s) match rules.js; ${found.length - calls} write(s), all in ${PUBLISH_ID}, reached from ${calls} call(s), each only through "${GATE_NODE}" (true)`);

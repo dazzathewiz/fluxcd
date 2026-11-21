@@ -158,6 +158,7 @@ const CONFIG_KEYS = [
   'gated', 'caps', 'one_minor_per_pr', 'groups', 'removed', 'deep_review_packages', 'review_floor_packages',
   'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
   'verdict_labels', 'outcome_labels', 'status_context', 'app_slug',
+  'watch_write_mode', 'watch_timeout_min', 'watch_stale_min', 'watch_kustomizations', 'fix_forward_packages',
 ];
 const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
 // clusters/ and gotk-components always go to deep-review, and apps/ needs no override.
@@ -281,7 +282,48 @@ function loadConfig(text) {
     release_note_keywords: asList(cfg.release_note_keywords),
     low_risk_update_types: asList(cfg.low_risk_update_types),
     helm_index: helmIndex,
-  }, loadLabels(cfg));
+  }, loadLabels(cfg), loadWatchConfig(cfg));
+}
+
+// R10's keys. watch_kustomizations maps a path prefix to the Flux
+// Kustomization that applies it; target_namespace mirrors its targetNamespace.
+const DNS_LABEL = /^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$/;
+const WATCH_PATH = /^(?:[a-z0-9][a-z0-9._-]*\/)+$/;
+
+function loadWatchConfig(cfg) {
+  if (!WRITE_MODES.includes(cfg.watch_write_mode)) throw new Error(`config: watch_write_mode must be one of ${WRITE_MODES.join(', ')}`);
+  for (const k of ['watch_timeout_min', 'watch_stale_min']) {
+    if (!Number.isInteger(cfg[k]) || cfg[k] < 5 || cfg[k] > 1440) throw new Error(`config: ${k} must be a whole number of minutes, 5 to 1440`);
+  }
+  const seen = new Set();
+  const kustomizations = asList(cfg.watch_kustomizations).map((k, i) => {
+    const where = `watch_kustomizations[${i}]`;
+    checkKeys(where, k, ['path', 'name', 'target_namespace']);
+    if (typeof k.path !== 'string' || !WATCH_PATH.test(k.path)) throw new Error(`config: ${where} path must be a repo directory ending in /`);
+    if (typeof k.name !== 'string' || !DNS_LABEL.test(k.name)) throw new Error(`config: ${where} name must be a Kustomization name`);
+    if (k.target_namespace !== undefined && !(typeof k.target_namespace === 'string' && DNS_LABEL.test(k.target_namespace))) {
+      throw new Error(`config: ${where} target_namespace must be a namespace name`);
+    }
+    if (seen.has(k.path)) throw new Error(`config: ${where} repeats path ${k.path}`);
+    seen.add(k.path);
+    return { path: k.path, name: k.name, target_namespace: k.target_namespace || null };
+  });
+  if (kustomizations.length === 0) throw new Error('config: watch_kustomizations must list at least one path');
+  const ff = asList(cfg.fix_forward_packages);
+  ff.forEach((p, i) => checkPackage(`fix_forward_packages[${i}]`, p));
+  return {
+    watch_write_mode: cfg.watch_write_mode,
+    watch_timeout_min: cfg.watch_timeout_min,
+    watch_stale_min: cfg.watch_stale_min,
+    watch_kustomizations: kustomizations,
+    fix_forward_packages: ff,
+  };
+}
+
+// The heartbeat's SQL reads watch_stale_min with this same pattern.
+function watchStaleFromConfigLine(text) {
+  const m = ('\n' + String(text)).match(/\nwatch_stale_min:\s*(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
 }
 
 // The poll workflow's Start run SQL lists repos with this same pattern
@@ -1735,6 +1777,433 @@ function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) 
   return Object.assign(plan, { action: 'publish', outcome: config.write_mode === 'labels' ? 'publishing' : 'planned-only', actions });
 }
 
+// ------------------------------------------------- R10: post-merge watch
+// After a merge to the default branch: did Flux apply it, did each HelmRelease
+// it changed upgrade, and did each Deployment or StatefulSet whose image changed
+// finish rolling out. Alert-only: nothing here reverts anything.
+
+const WATCH_STATUSES = ['pending', 'ok', 'failed', 'timeout'];
+const WATCH_LABELS = { ok: 'triage:post-merge-ok', failed: 'triage:post-merge-failed' };
+const WATCH_LABEL_STYLES = {
+  'triage:post-merge-ok': { color: '0e8a16', description: 'PR triage: the merge rolled out' },
+  'triage:post-merge-failed': { color: 'b60205', description: 'PR triage: the merge did not roll out' },
+};
+const WATCH_MARKER_RE = /^<!-- pr-triage-watch:v1 sha=([0-9a-f]{40}) status=(failed|timeout) -->/;
+const WATCH_ACTION_TYPES = ['watch_ensure_label', 'watch_add_label', 'ensure_label', 'add_label', 'create_comment'];
+const WORKLOAD_KINDS = { Deployment: 'deployment', StatefulSet: 'statefulset' };
+// The only cluster reads TriageClusterV01 makes. {ns} and {name} are DNS labels.
+const CLUSTER_PATHS = [
+  '/version',
+  '/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-system/kustomizations/{name}',
+  '/apis/helm.toolkit.fluxcd.io/v2/namespaces/{ns}/helmreleases/{name}',
+  '/apis/apps/v1/namespaces/{ns}/deployments/{name}',
+  '/apis/apps/v1/namespaces/{ns}/statefulsets/{name}',
+];
+const CLUSTER_PATH_FOR = {
+  kustomization: CLUSTER_PATHS[1], helmrelease: CLUSTER_PATHS[2], deployment: CLUSTER_PATHS[3], statefulset: CLUSTER_PATHS[4],
+};
+// A HelmRelease Ready=False reason that means the new chart didn't go in.
+const HR_FAIL_REASONS = ['InstallFailed', 'UpgradeFailed', 'TestFailed', 'RollbackSucceeded', 'RollbackFailed', 'UninstallFailed', 'ArtifactFailed', 'InitFailed', 'RetriesExceeded'];
+// A Kustomization Ready=False reason that isn't (yet) a failure.
+const KS_WAIT_REASONS = ['Progressing', 'DependencyNotReady'];
+const FIX_FORWARD_MARKER = /^rollback:\s*fix-forward\s*$/im;
+
+function clusterPath(type, ns, name) {
+  const t = CLUSTER_PATH_FOR[type];
+  if (!t || !DNS_LABEL.test(String(name || ''))) return null;
+  if (t.includes('{ns}') && !DNS_LABEL.test(String(ns || ''))) return null;
+  return t.replace('{ns}', ns).replace('{name}', name);
+}
+
+// The same check TriageClusterV01 makes before any request.
+function allowedClusterPath(path) {
+  if (typeof path !== 'string') return false;
+  const label = '[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?';
+  return CLUSTER_PATHS.some((t) => new RegExp(`^${t.replace(/[.]/g, '\\.').replace('{ns}', label).replace('{name}', label)}$`).test(path));
+}
+
+// New-side line numbers a patch touches: added lines, and where removed lines
+// were. Also the added lines themselves, by new line number.
+function patchLines(patch) {
+  const touched = new Set();
+  const added = {};
+  let n = null;
+  for (const line of String(patch || '').split('\n')) {
+    const h = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (h) { n = parseInt(h[1], 10); continue; }
+    if (n === null || line.startsWith('\\')) continue;
+    if (line.startsWith('+')) { touched.add(n); added[n] = line.slice(1); n++; }
+    else if (line.startsWith('-')) touched.add(n);
+    else n++;
+  }
+  return { touched, added };
+}
+
+const IMAGE_LINE = /^\s*(?:-\s+)?image:\s*["']?([^\s"'#]+)["']?\s*(?:#.*)?$/;
+
+// The Kubernetes objects in one manifest file, with their line ranges. A
+// line scanner, not a YAML parser: enough for kind, metadata, the chart
+// version and image lines.
+function manifestDocs(text) {
+  const lines = String(text || '').split('\n');
+  const docs = [];
+  let doc = null;
+  let stack = [];
+  const open = (start) => {
+    doc = { start, end: start, kind: null, apiVersion: null, name: null, namespace: null, chart: null, version: null, images: [] };
+    docs.push(doc);
+    stack = [];
+  };
+  open(1);
+  lines.forEach((raw, i) => {
+    const no = i + 1;
+    if (/^---(\s|$)/.test(raw)) { doc.end = no - 1; open(no + 1); return; }
+    doc.end = no;
+    const line = raw.replace(/\s+#.*$/, '');
+    if (/^\s*(#|$)/.test(line)) return;
+    const img = line.match(IMAGE_LINE);
+    if (img) doc.images.push({ line: no, image: img[1] });
+    const m = line.match(/^(\s*)(-\s+)?([\w.-]+):\s*(.*)$/);
+    if (!m) return;
+    const indent = m[1].length + (m[2] ? m[2].length : 0);
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    stack.push({ indent, key: m[3] });
+    const path = stack.map((s) => s.key).join('.');
+    const value = m[4].replace(/^&\S+\s*/, '').replace(/^["']|["']$/g, '').trim();
+    if (path === 'kind') doc.kind = value;
+    else if (path === 'apiVersion') doc.apiVersion = value;
+    else if (path === 'metadata.name') doc.name = value;
+    else if (path === 'metadata.namespace') doc.namespace = value;
+    else if (path === 'spec.chart.spec.chart') doc.chart = value;
+    else if (path === 'spec.chart.spec.version') { doc.version = value; doc.version_line = no; }
+  });
+  return docs.filter((d) => d.kind);
+}
+
+// The Kustomization that applies a path: the longest matching prefix.
+function kustomizationFor(filename, config) {
+  let best = null;
+  for (const k of config.watch_kustomizations) {
+    if (String(filename).startsWith(k.path) && (!best || k.path.length > best.path.length)) best = k;
+  }
+  return best;
+}
+
+// planWatch: the rollout targets for one merge.
+//   files: the PR files API items {filename, previous_filename, status, patch},
+//          each with content: the file's text at the merge commit, or null.
+// Returns {targets: [{id, type, name, ns?, version?, chart?, images?}], notes}.
+function planWatch(files, config) {
+  const targets = [];
+  const notes = [];
+  const ids = new Set();
+  const add = (t) => { if (!ids.has(t.id)) { ids.add(t.id); targets.push(t); } };
+  for (const f of files || []) {
+    for (const name of [f.previous_filename, f.filename].filter(Boolean)) {
+      const k = kustomizationFor(name, config);
+      if (k) add({ id: `kustomization ${k.name}`, type: 'kustomization', name: k.name });
+    }
+    if (f.status === 'removed' || !/\.ya?ml$/.test(String(f.filename))) continue;
+    const ks = kustomizationFor(f.filename, config);
+    const hasPatch = typeof f.patch === 'string';
+    const p = hasPatch ? patchLines(f.patch) : null;
+    const relevant = hasPatch && Object.values(p.added).some((l) => IMAGE_LINE.test(l) || /^\s*(?:-\s+)?(version|chart):/.test(l));
+    if (typeof f.content !== 'string') {
+      if (!hasPatch || relevant) notes.push(`${f.filename}: not read at the merge commit; kustomization check only`);
+      continue;
+    }
+    if (!hasPatch) notes.push(`${f.filename}: no patch in the API response; every object in it is checked`);
+    for (const d of manifestDocs(f.content)) {
+      const inDoc = (no) => no >= d.start && no <= d.end;
+      const changed = !hasPatch || Array.from(p.touched).some(inDoc);
+      if (!changed) continue;
+      const ns = (ks && ks.target_namespace) || d.namespace;
+      const where = `${d.kind} ${ns || '?'}/${d.name || '?'}`;
+      if (d.kind === 'HelmRelease' && /^helm\.toolkit\.fluxcd\.io\//.test(String(d.apiVersion))) {
+        if (!d.version) { notes.push(`${where}: no spec.chart.spec.version; kustomization check only`); continue; }
+        const path = clusterPath('helmrelease', ns, d.name);
+        if (!path) { notes.push(`${where}: name or namespace not resolved; kustomization check only`); continue; }
+        add({ id: `helmrelease ${ns}/${d.name}`, type: 'helmrelease', ns, name: d.name, chart: d.chart, version: d.version });
+        continue;
+      }
+      const images = d.images.filter((im) => !hasPatch || p.added[im.line] !== undefined).map((im) => im.image);
+      if (!images.length) continue;
+      const type = WORKLOAD_KINDS[d.kind];
+      if (!type) { notes.push(`${where}: image change in a ${d.kind}; kustomization check only`); continue; }
+      if (!clusterPath(type, ns, d.name)) { notes.push(`${where}: name or namespace not resolved; kustomization check only`); continue; }
+      add({ id: `${type} ${ns}/${d.name}`, type, ns, name: d.name, images: Array.from(new Set(images)) });
+    }
+  }
+  return { targets, notes };
+}
+
+// The cluster reads for a watch's targets, as TriageClusterV01 paths.
+function watchReads(targets) {
+  return (targets || []).map((t) => ({ id: t.id, path: clusterPath(t.type, t.ns, t.name) })).filter((r) => r.path);
+}
+
+function revisionSha(rev) {
+  const m = String(rev || '').match(/(?:^|[@:])([0-9a-f]{40})$/);
+  return m ? m[1] : null;
+}
+
+// Reasons and versions from the cluster, before they go into a condition.
+const safeWord = (s) => (/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(String(s)) ? String(s) : 'Unknown');
+const conditionOf = (body, type) => (((body || {}).status || {}).conditions || []).find((c) => c && c.type === type) || null;
+
+function checkKustomization(t, read, includes) {
+  if (!read || read.statusCode === 404) return read ? { state: 'fail', cond: 'not found' } : { state: 'pending', cond: 'not read' };
+  if (read.statusCode !== 200 || !read.body) return { state: 'pending', cond: 'not read' };
+  const st = read.body.status || {};
+  const ready = conditionOf(read.body, 'Ready');
+  const applied = revisionSha(st.lastAppliedRevision);
+  const attempted = revisionSha(st.lastAttemptedRevision);
+  if (ready && ready.status === 'True' && includes(applied) === true) return { state: 'ok', cond: 'applied' };
+  if (ready && ready.status === 'False' && !KS_WAIT_REASONS.includes(ready.reason) && includes(attempted) === true) {
+    return { state: 'fail', cond: `Ready=False (${safeWord(ready.reason)})` };
+  }
+  if (includes(applied) === null || includes(attempted) === null) return { state: 'pending', cond: 'revision not compared yet' };
+  return { state: 'pending', cond: 'merge not applied yet' };
+}
+
+function checkHelmRelease(t, read) {
+  if (!read || read.statusCode === 404) return read ? { state: 'fail', cond: 'not found' } : { state: 'pending', cond: 'not read' };
+  if (read.statusCode !== 200 || !read.body) return { state: 'pending', cond: 'not read' };
+  const b = read.body;
+  const live = (((b.spec || {}).chart || {}).spec || {}).version;
+  const hist = ((b.status || {}).history || [])[0] || {};
+  const ready = conditionOf(b, 'Ready');
+  const stalled = conditionOf(b, 'Stalled');
+  const settled = (b.status || {}).observedGeneration === (b.metadata || {}).generation;
+  if (hist.chartVersion === t.version && ready && ready.status === 'True' && settled) return { state: 'ok', cond: `chart ${t.version} installed` };
+  if (live === t.version && stalled && stalled.status === 'True') return { state: 'fail', cond: `Stalled (${safeWord(stalled.reason)})` };
+  if (live === t.version && ready && ready.status === 'False' && HR_FAIL_REASONS.includes(ready.reason)) {
+    return { state: 'fail', cond: `Ready=False (${safeWord(ready.reason)})` };
+  }
+  if (live !== t.version) return { state: 'pending', cond: 'new chart version not applied yet' };
+  return { state: 'pending', cond: `chart ${t.version} not installed yet` };
+}
+
+function checkWorkload(t, read) {
+  if (!read || read.statusCode === 404) return read ? { state: 'fail', cond: 'not found' } : { state: 'pending', cond: 'not read' };
+  if (read.statusCode !== 200 || !read.body) return { state: 'pending', cond: 'not read' };
+  const b = read.body;
+  const spec = b.spec || {};
+  const st = b.status || {};
+  const pod = ((spec.template || {}).spec) || {};
+  const live = [].concat(pod.containers || [], pod.initContainers || []).map((c) => c && c.image);
+  const imageLive = (t.images || []).every((im) => live.includes(im));
+  const want = Number.isInteger(spec.replicas) ? spec.replicas : 1;
+  const [replicas, updated, ready] = [st.replicas, st.updatedReplicas, st.readyReplicas].map((x) => (Number.isInteger(x) ? x : 0));
+  const observed = st.observedGeneration === (b.metadata || {}).generation;
+  if (observed && imageLive && updated === ready && ready === replicas && replicas === want) return { state: 'ok', cond: 'rolled out' };
+  const progressing = conditionOf(b, 'Progressing');
+  if (observed && imageLive && progressing && progressing.status === 'False' && progressing.reason === 'ProgressDeadlineExceeded') {
+    return { state: 'fail', cond: 'ProgressDeadlineExceeded' };
+  }
+  if (!imageLive) return { state: 'pending', cond: 'new image not in the spec yet' };
+  if (!observed) return { state: 'pending', cond: 'generation not observed yet' };
+  return { state: 'pending', cond: `rollout ${updated}/${want} updated, ${ready} ready` };
+}
+
+// evaluateWatch: one check of one watch.
+//   targets      from planWatch
+//   observations {merge_sha, reads: {target id: {statusCode, body}},
+//                 compare: {sha: compare API status}} (missing: not compared)
+//   now, mergedAt ISO-8601 or ms; history: the fail_streak from the last check
+//   opts         {timeout_min}
+// Returns {status, fail_streak, detail: [{id, state, cond}]}. failed needs the
+// same failing condition on two checks in a row; timeout is timeout_min after
+// the merge.
+function evaluateWatch(targets, observations, now, mergedAt, history, opts) {
+  const obs = observations || {};
+  const reads = obs.reads || {};
+  const compare = obs.compare || {};
+  const includes = (sha) => {
+    if (!sha) return false;
+    if (sha === obs.merge_sha) return true;
+    const s = compare[sha];
+    if (s === undefined || s === null) return null;
+    return s === 'identical' || s === 'ahead';
+  };
+  const detail = (targets || []).map((t) => {
+    const read = reads[t.id];
+    let r;
+    if (t.type === 'kustomization') r = checkKustomization(t, read, includes);
+    else if (t.type === 'helmrelease') r = checkHelmRelease(t, read);
+    else if (t.type === 'deployment' || t.type === 'statefulset') r = checkWorkload(t, read);
+    else r = { state: 'pending', cond: 'unknown target type' };
+    return { id: t.id, state: r.state, cond: r.cond };
+  });
+  const streak = {};
+  for (const d of detail) {
+    if (d.state !== 'fail') continue;
+    const prev = (history || {})[d.id];
+    streak[d.id] = { cond: d.cond, count: prev && prev.cond === d.cond ? prev.count + 1 : 1 };
+  }
+  const timeoutMs = ((opts || {}).timeout_min || 30) * 60000;
+  const elapsed = new Date(now).getTime() - new Date(mergedAt).getTime();
+  let status = 'pending';
+  if (detail.every((d) => d.state === 'ok')) status = 'ok';
+  else if (Object.values(streak).some((s) => s.count >= 2)) status = 'failed';
+  else if (elapsed >= timeoutMs) status = 'timeout';
+  return { status, fail_streak: streak, detail };
+}
+
+// Text outside fenced code blocks.
+function outsideCode(text) {
+  const out = [];
+  let fence = null;
+  for (const line of String(text || '').split('\n')) {
+    const m = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (m) {
+      if (!fence) fence = m[1][0];
+      else if (m[1][0] === fence) fence = null;
+      continue;
+    }
+    if (!fence) out.push(line);
+  }
+  return out.join('\n');
+}
+
+// fixForward: whether a revert would do more harm than the failure.
+//   pr        the PR {body, user: {login}}; reviews, comments: API items
+//   files     as for planWatch
+//   identities {app_login, bot_login, owner_login}: who may write the marker
+// Returns {fix_forward, source}. The marker is a line `rollback: fix-forward`
+// outside code and quotes, written by one of those identities.
+function fixForward(pr, reviews, comments, files, identities, config) {
+  const allowed = new Set(Object.values(identities || {}).filter((l) => typeof l === 'string' && l).map((l) => l.toLowerCase()));
+  const by = (x) => !!(x && x.user && typeof x.user.login === 'string' && allowed.has(x.user.login.toLowerCase()));
+  const marked = (x) => by(x) && FIX_FORWARD_MARKER.test(outsideCode(x.body));
+  if (marked(pr)) return { fix_forward: true, source: 'marker in the PR description' };
+  if ((reviews || []).some(marked)) return { fix_forward: true, source: 'marker in a review' };
+  if ((comments || []).some(marked)) return { fix_forward: true, source: 'marker in a comment' };
+
+  const packages = (config && config.fix_forward_packages) || [];
+  let pvcs = 0;
+  for (const f of files || []) {
+    const pairs = parsePatch(f.patch);
+    for (const pair of pairs) {
+      for (const [side, sign] of [[pair.old, -1], [pair.new, 1]]) {
+        if (side !== null && /^\s*kind:\s*PersistentVolumeClaim\s*$/.test(side)) pvcs -= sign;
+      }
+      const kvOld = keyValue(pair.old);
+      const kvNew = keyValue(pair.new);
+      if (kvNew && kvNew.key === 'image') {
+        const b = parseImageRef(kvNew.value);
+        if (b && packages.includes(b.depName)) return { fix_forward: true, source: `fix-forward package ${b.depName}` };
+        const a = kvOld && kvOld.key === 'image' ? parseImageRef(kvOld.value) : null;
+        const va = a ? parseVersion(a.tag) : null;
+        const vb = parseVersion(b && b.tag);
+        if (b && b.depName === 'postgres' && a && a.depName === 'postgres' && va && vb && va.nums[0] !== vb.nums[0]) {
+          return { fix_forward: true, source: 'Postgres major change' };
+        }
+      }
+      if (kvNew && kvNew.key === 'version' && kvOld && kvOld.value !== kvNew.value && /depName=k3s-io\/k3s\b/.test(pair.context.join('\n'))) {
+        return { fix_forward: true, source: 'k3s Plan version change' };
+      }
+    }
+    if (f.status === 'removed' && typeof f.patch !== 'string' && /pvc/i.test(String(f.filename))) pvcs++;
+    if (typeof f.content === 'string' && f.status !== 'removed') {
+      const p = typeof f.patch === 'string' ? patchLines(f.patch) : null;
+      for (const d of manifestDocs(f.content)) {
+        const changed = !p || Array.from(p.touched).some((no) => no >= d.start && no <= d.end);
+        if (!changed) continue;
+        if (d.kind === 'HelmRelease' && d.chart && packages.includes(d.chart)) return { fix_forward: true, source: `fix-forward package ${d.chart}` };
+        if (d.kind === 'HelmRelease' && d.chart === 'longhorn') return { fix_forward: true, source: 'Longhorn chart change' };
+        if (d.kind === 'Plan' && /^upgrade\.cattle\.io\//.test(String(d.apiVersion)) && (!p || p.touched.has(d.version_line))) {
+          return { fix_forward: true, source: 'k3s Plan version change' };
+        }
+      }
+    }
+  }
+  if (pvcs > 0) return { fix_forward: true, source: 'a PersistentVolumeClaim is deleted' };
+  return { fix_forward: false, source: null };
+}
+
+// Base64 to text (UTF-8), for the contents API. Code nodes have no Buffer
+// guarantee, and rules.js loads nothing.
+function decodeBase64Utf8(b64) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = String(b64 || '').replace(/[^A-Za-z0-9+/]/g, '');
+  const bytes = [];
+  for (let i = 0; i + 1 < clean.length; i += 4) {
+    const n = [0, 1, 2, 3].map((k) => (i + k < clean.length ? alphabet.indexOf(clean[i + k]) : -1));
+    bytes.push((n[0] << 2) | (n[1] >> 4));
+    if (n[2] >= 0) bytes.push(((n[1] & 15) << 4) | (n[2] >> 2));
+    if (n[3] >= 0) bytes.push(((n[2] & 3) << 6) | n[3]);
+  }
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
+  try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
+}
+
+function watchMarker(sha, status) {
+  return `<!-- pr-triage-watch:v1 sha=${sha} status=${status} -->`;
+}
+
+// The failure comment: the marker, then fixed templates only.
+function renderWatchComment(watch, config) {
+  const failing = (watch.detail || []).filter((d) => d.state !== 'ok');
+  const lines = [
+    `### Post-merge check: \`${watch.status}\``,
+    '',
+    watch.status === 'timeout'
+      ? `Merge commit \`${watch.merge_sha.slice(0, 12)}\` had not rolled out ${config.watch_timeout_min} minutes after the merge.`
+      : `Merge commit \`${watch.merge_sha.slice(0, 12)}\` failed to roll out.`,
+  ];
+  if (failing.length) lines.push('', '**Not rolled out**', ...failing.map((d) => `- \`${d.id}\`: ${d.cond}`));
+  lines.push('', watch.fix_forward
+    ? `**Fix forward — no revert.** Source: ${watch.fix_forward_source}.`
+    : 'This merge was not made by an automated merger, so nothing reverts it automatically.');
+  lines.push('', '<sub>Written by the PR triage post-merge watcher for this merge commit only. Nothing here reverts anything.</sub>');
+  return `${watchMarker(watch.merge_sha, watch.status)}\n${withoutHashRefs(lines.join('\n'))}`;
+}
+
+// planWatchPublish: the writes for one finished watch.
+//   watch  {repo, pr, merge_sha, status, fix_forward, fix_forward_source, detail}
+//   reads  {pr_labels: pages, comments: pages, repo_labels: [name] | null}
+//   ctx    {config, patterns, mode: off | labels}
+// Returns {action: publish | skip, outcome, actions, mode}. One comment per merge
+// SHA, only on failed or timeout; labels are only ever added.
+function planWatchPublish(watch, reads, ctx) {
+  const config = ctx.config;
+  const w = watch || {};
+  const plan = { mode: ctx.mode, action: 'skip', outcome: null, reason: null, labels: [], comment: false, actions: [] };
+  const skip = (reason) => Object.assign(plan, { reason, outcome: reason === 'up-to-date' ? reason : `skipped-${reason}` });
+  if (!/^[\w.-]+\/[\w.-]+$/.test(String(w.repo)) || !Number.isInteger(w.pr) || !SHA_RE.test(String(w.merge_sha)) || !['ok', 'failed', 'timeout'].includes(w.status)) return skip('bad-input');
+  const patterns = compilePatterns(ctx.patterns);
+  if (patterns.list.length === 0 || patterns.invalid > 0) return skip('unhealthy');
+  const labels = pagedItems((reads || {}).pr_labels);
+  if (!labels) return skip('labels-incomplete');
+  const on = labels.map((l) => l && l.name);
+  const repoLabels = (reads || {}).repo_labels || [];
+  const want = w.status === 'ok' ? [WATCH_LABELS.ok] : [WATCH_LABELS.failed].concat(w.fix_forward ? [config.verdict_labels['deep-review']] : []);
+  plan.labels = want;
+  const actions = [];
+  for (const name of want) {
+    if (on.includes(name)) continue;
+    const watchLabel = Object.prototype.hasOwnProperty.call(WATCH_LABEL_STYLES, name);
+    if (!repoLabels.includes(name)) actions.push(Object.assign({ type: watchLabel ? 'watch_ensure_label' : 'ensure_label', name }, watchLabel ? WATCH_LABEL_STYLES[name] : LABEL_STYLES[name]));
+    actions.push({ type: watchLabel ? 'watch_add_label' : 'add_label', name });
+  }
+  if (w.status !== 'ok') {
+    const comments = pagedItems((reads || {}).comments);
+    if (!comments) return skip('comments-incomplete');
+    const appLogin = appLoginOf(config);
+    const posted = comments.some((c) => isAppComment(c, appLogin) && (String(c.body || '').match(WATCH_MARKER_RE) || [])[1] === w.merge_sha);
+    if (!posted) {
+      const body = renderWatchComment(w, config);
+      // A redaction hit drops the comment; the labels are fixed strings.
+      if (countMatches(body, patterns.list)) plan.redaction_hit = true;
+      else { actions.push({ type: 'create_comment', body }); plan.comment = true; }
+    }
+  }
+  if (!actions.length) return skip('up-to-date');
+  return Object.assign(plan, { action: 'publish', outcome: ctx.mode === 'labels' ? 'publishing' : 'planned-only', actions });
+}
+
 const RULES_EXPORTS = {
   RESULTS, VERDICTS, WRITE_MODES, CHECK_IDS,
   parseConfigYaml, loadConfig, reposFromConfigLine, assertReposMatch, parseVersion, compareVersions, satisfies, classifyUpdate,
@@ -1745,6 +2214,9 @@ const RULES_EXPORTS = {
   SEVERITY, STATUS_STATES, LABEL_STYLES, PUBLISH_SKIPS, RUN_PUBLISH, ACTION_TYPES, OUTCOME_LABELS, RATE_LIMIT_URL,
   publishMarker, parseMarker, managedLabels, renderTriageComment, pagedItems, isAppComment, appLoginOf,
   triageComments, findOverride, headSince, planPublish,
+  watchStaleFromConfigLine, WATCH_STATUSES, WATCH_LABELS, WATCH_LABEL_STYLES, WATCH_ACTION_TYPES, CLUSTER_PATHS,
+  clusterPath, allowedClusterPath, patchLines, manifestDocs, kustomizationFor, planWatch, watchReads, revisionSha,
+  evaluateWatch, outsideCode, fixForward, decodeBase64Utf8, watchMarker, renderWatchComment, planWatchPublish,
 };
 
 if (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {

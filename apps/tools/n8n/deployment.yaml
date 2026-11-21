@@ -118,6 +118,7 @@ spec:
           n8n publish:workflow --id=TriageAlertV01
           n8n publish:workflow --id=TriagePoll000001
           n8n publish:workflow --id=TriageBeat000001
+          n8n publish:workflow --id=TriageWatch00001
         envFrom:
         - configMapRef:
             name: n8n-env
