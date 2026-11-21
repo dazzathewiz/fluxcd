@@ -13,6 +13,9 @@ const HERE = __dirname;
 const REPO = path.join(HERE, '..', '..', '..', '..');
 const CONFIG_TEXT = fs.readFileSync(path.join(HERE, 'config.yaml'), 'utf8');
 const CONFIG = rules.loadConfig(CONFIG_TEXT);
+// The live watch_write_mode line, and the config with it set explicitly.
+const WATCH_MODE_LINE = CONFIG_TEXT.match(/^watch_write_mode: .*$/m)[0];
+const withWatchMode = (mode) => CONFIG_TEXT.replace(WATCH_MODE_LINE, `watch_write_mode: "${mode}"`);
 const MERGE = 'a'.repeat(40);
 const LATER = 'b'.repeat(40);
 const MERGED_AT = '2026-11-21T10:00:00Z';
@@ -102,15 +105,16 @@ const ids = (plan) => plan.targets.map((t) => t.id);
 // ---------------------------------------------------------------- config
 
 test('config: the watch keys load and are validated', () => {
-  assert.equal(CONFIG.watch_write_mode, 'off', 'the watcher ships in shadow');
+  assert.ok(['off', 'labels'].includes(CONFIG.watch_write_mode));
+  for (const mode of ['off', 'labels']) assert.equal(rules.loadConfig(withWatchMode(mode)).watch_write_mode, mode);
   assert.equal(CONFIG.write_mode, 'labels');
   assert.equal(CONFIG.watch_timeout_min, 30);
   assert.equal(CONFIG.watch_stale_min, 30);
   assert.deepEqual(CONFIG.fix_forward_packages, ['inventree/inventree']);
   assert.equal(rules.watchStaleFromConfigLine(CONFIG_TEXT), CONFIG.watch_stale_min, 'the heartbeat SQL reads the same value');
   const bad = (from, to, re) => assert.throws(() => rules.loadConfig(CONFIG_TEXT.replace(from, to)), re, `${from} -> ${to}`);
-  bad('watch_write_mode: "off"', 'watch_write_mode: "all"', /watch_write_mode/);
-  bad('watch_write_mode: "off"\n', '', /watch_write_mode/);
+  bad(WATCH_MODE_LINE, 'watch_write_mode: "all"', /watch_write_mode/);
+  bad(WATCH_MODE_LINE, '', /watch_write_mode/);
   bad('watch_timeout_min: 30', 'watch_timeout_min: 0', /watch_timeout_min/);
   bad('watch_stale_min: 30', 'watch_stale_min: "30"', /watch_stale_min/);
   bad('  - path: apps/\n', '  - path: ./apps\n', /path must be/);

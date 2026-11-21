@@ -18,7 +18,10 @@ const WATCH = JSON.parse(read('workflows/triage-watch.json'));
 const CLUSTER = JSON.parse(read('workflows/triage-cluster-version.json'));
 const ALERT = JSON.parse(read('workflows/triage-alert.json'));
 const CONFIG_TEXT = read('triage/config.yaml');
-const LABELS_TEXT = CONFIG_TEXT.replace('watch_write_mode: "off"', 'watch_write_mode: "labels"');
+// Explicit off and labels configs, whatever the live config says.
+const withWatchMode = (mode) => CONFIG_TEXT.replace(/^watch_write_mode: .*$/m, `watch_write_mode: "${mode}"`);
+const OFF_TEXT = withWatchMode('off');
+const LABELS_TEXT = withWatchMode('labels');
 // The repo from config.yaml: the Watch node checks the SQL's list against it.
 const REPO = rules.loadConfig(CONFIG_TEXT).repos[0];
 const OWNER = REPO.split('/')[0];
@@ -297,7 +300,7 @@ const ksApps = (applied, ready) => ({
 const writes = (gh, from) => gh.st.requests.slice(from || 0).filter((q) => q.method !== 'GET');
 
 test('idle: an unchanged listing (304) is the only request, and nothing reads the cluster', () => {
-  const db = newDb(CONFIG_TEXT);
+  const db = newDb(OFF_TEXT);
   const gh = fakeGithub();
   db.cursor[REPO] = { merged_at: iso(T0 - 3600000), list_etag: gh.st.listEtag };
   const r = runWatch({ db, gh, now: T0 });
@@ -310,7 +313,7 @@ test('idle: an unchanged listing (304) is the only request, and nothing reads th
 });
 
 test('first run: the cursor starts an hour back, so a merge from 40 minutes ago is watched; older ones are not', () => {
-  const db = newDb(CONFIG_TEXT);
+  const db = newDb(OFF_TEXT);
   const gh = fakeGithub();
   n8nMerge(gh, 286, sha('c'), T0 - 2 * 3600000);
   n8nMerge(gh, 287, sha('d'), T0 - 40 * 60000);
@@ -330,7 +333,7 @@ test('first run: the cursor starts an hour back, so a merge from 40 minutes ago 
 });
 
 test('shadow (watch_write_mode off): this PR\'s own merge goes ok, plans the ok label and writes nothing', () => {
-  const db = newDb(CONFIG_TEXT);
+  const db = newDb(OFF_TEXT);
   const gh = fakeGithub();
   n8nMerge(gh, 287, sha('d'), T0 - 10 * 60000);
   runWatch({ db, gh, now: T0 });
@@ -453,7 +456,7 @@ test('labels: a failed alert is retried, at most three tries', () => {
 });
 
 test('the cluster reads the watcher builds are exactly rules.js watchReads, and go through the allowlist', () => {
-  const db = newDb(CONFIG_TEXT);
+  const db = newDb(OFF_TEXT);
   const targets = [
     { id: 'kustomization apps', type: 'kustomization', name: 'apps' },
     { id: 'helmrelease flux-system/reflector', type: 'helmrelease', ns: 'flux-system', name: 'reflector', version: '1' },
