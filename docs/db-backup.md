@@ -36,8 +36,9 @@ One database failing doesn't stop the other. The job exits non-zero if either
 failed.
 
 The script is `apps/tools/db-backup/scripts/backup.sh`. It's mounted from a
-generated ConfigMap with Flux substitution disabled. The retention, naming and
-wait logic in `scripts/lib.sh` has tests: `node --test apps/tools/db-backup/`.
+generated ConfigMap with Flux substitution disabled. The retention, naming,
+wait and data-directory logic in `scripts/lib.sh` has tests:
+`node --test apps/tools/db-backup/`.
 
 **Two n8n tables are dumped without their rows:** `triage.alert_target` (the
 Home Assistant webhook URL) and `triage.redaction_patterns`. Both are secrets,
@@ -105,6 +106,52 @@ To take a dump by hand, before a Postgres major upgrade for example:
 kubectl -n tools create job --from=cronjob/db-backup db-backup-manual-$(date +%Y%m%d)
 ```
 
+## Volume restore test
+
+The restore test above proves the dumps. This one proves the other path: a
+Longhorn offsite backup of the `n8n-db` volume, restored to a new volume, holds
+a database that starts and reads cleanly.
+
+`CronJob db-volume-restore-test` is suspended and runs only by hand. It mounts
+PVC `n8n-db-restore` read-only, finds the data directory (`pgdata/`, as in
+`n8n-db`'s `PGDATA`, or the volume root) and copies it to a 2Gi `emptyDir`.
+The backup is crash-consistent, so the throwaway server runs crash recovery on
+the copy. It listens on a Unix socket only, and its NetworkPolicy denies all
+traffic. If the copied `pg_hba.conf` doesn't start with a local trust rule, the
+copy's is replaced; the mount is never written. As the `n8n` role it checks at
+least 5 rows in `workflow_entity` and 1 in `triage.runs`, prints
+`max(finished)` from `triage.runs` (roughly the backup's point in time), and
+runs `pg_amcheck --heapallindexed`. It needs no secrets.
+
+**`n8n-db-restore` is deliberately outside Git.** It exists only for the length
+of a drill. `prune` only removes objects Flux applied, so Flux leaves it alone.
+
+1. In the Longhorn UI, under Backup, restore the `n8n-db` backup to a new
+   volume named `n8n-db-restore`, with **Encrypted** ticked.
+2. On that volume, Create PV/PVC: namespace `tools`, PVC `n8n-db-restore`,
+   StorageClass `longhorn-diskencrypt-global`, and the encryption secret
+   `longhorn-system`/`longhorn-disk-encrypt`. Wait for the PVC to be Bound.
+3. Run the job:
+
+   ```bash
+   kubectl -n tools create job --from=cronjob/db-volume-restore-test vrt-$(date +%Y%m%d)
+   kubectl -n tools logs -f job/vrt-$(date +%Y%m%d)
+   ```
+
+   Empty logs mean the pod is still attaching the volume; re-run `logs`. It
+   ends with `volume restore test ok`.
+4. Clean up the same day:
+
+   ```bash
+   kubectl -n tools delete job vrt-$(date +%Y%m%d)
+   kubectl -n tools delete pvc n8n-db-restore
+   kubectl delete pv n8n-db-restore
+   ```
+
+   Then delete the `n8n-db-restore` volume in the Longhorn UI. Left in place,
+   it's in the default recurring-job group and gets backed up offsite like any
+   other volume.
+
 ## Restoring a database for real
 
 This overwrites live data. Run the restore test on the dump first.
@@ -160,3 +207,5 @@ remain under Longhorn's retention either way.
 
 - The Home Assistant receiver for `source: pg-dump`, and its alerts.
 - The `amcheck` extension, which the first run installs in each database.
+- PVC and PV `n8n-db-restore` and their Longhorn volume, made by hand for
+  each volume restore test and deleted after it.

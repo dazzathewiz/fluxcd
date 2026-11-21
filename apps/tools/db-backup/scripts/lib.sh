@@ -1,4 +1,5 @@
-# Sourced by backup.sh, restore-test.sh and the *.test.js files. POSIX sh.
+# Sourced by backup.sh, restore-test.sh, volume-restore-test.sh and the
+# *.test.js files. POSIX sh.
 # Dumps are <dir>/<db>-<UTC yyyymmddThhmmZ>.dump, so name order is time order.
 
 KEEP=${KEEP:-14}
@@ -42,4 +43,23 @@ wait_ready() { # host [timeout_s]
     fi
     sleep 2
   done
+}
+
+# The Postgres data directory on a mounted copy of a database volume: the
+# PGDATA subdirectory n8n-db uses, or the volume root.
+find_pgdata() { # mount
+  for d in "$1/pgdata" "$1"; do
+    if [ -f "$d/PG_VERSION" ]; then
+      echo "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# True when the first `local` rule in a pg_hba.conf is `local all all trust`.
+hba_local_trust() { # file
+  [ -f "$1" ] || return 1
+  awk '$1 == "local" { found = 1; ok = ($2 == "all" && $3 == "all" && $4 == "trust"); exit }
+    END { exit !(found && ok) }' "$1"
 }
