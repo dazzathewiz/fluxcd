@@ -17,10 +17,12 @@ const wf = (f) => JSON.parse(read(`workflows/${f}`));
 const BEAT = wf('triage-heartbeat.json');
 const ALERT = wf('triage-alert.json');
 const next = (w, name) => (((w.connections[name] || {}).main || [])[0] || []).map((l) => l.node);
-const KEYS = ['checked', 'last_success', 'source', 'stale'];
+const KEYS = ['checked', 'last_success', 'source', 'stale', 'watch_last_success'];
+const WATCH_KEYS = ['checked', 'fix_forward', 'pr', 'source', 'status'];
+const WATCH = wf('triage-watch.json');
 
 // What Record last success returns: pg hands timestamptz back as Dates.
-const ROW = { name: 'triage-poll', last_success: new Date('2026-11-20T01:15:00.123Z'), checked: new Date('2026-11-20T01:30:00Z'), stale: false };
+const ROW = { name: 'triage-poll', last_success: new Date('2026-11-20T01:15:00.123Z'), watch_last_success: new Date('2026-11-20T01:25:00Z'), checked: new Date('2026-11-20T01:30:00Z'), stale: false };
 
 function payload(row) {
   return h.code(h.nodeOf(BEAT, 'Ping payload'), {}, [{ json: JSON.parse(JSON.stringify(row)) }], 0)[0].json;
@@ -33,32 +35,53 @@ function expr(value, $json, out) {
   return vm.runInNewContext(`(${body})`, { $json, $ });
 }
 
-test('payload: exactly source, last_success, stale and checked, in ISO-8601 UTC', () => {
+test('payload: exactly source, last_success, watch_last_success, stale and checked, in ISO-8601 UTC', () => {
   const p = payload(ROW);
   assert.deepEqual(Object.keys(p).sort(), KEYS);
-  assert.deepEqual(p, { source: 'pr-triage', last_success: '2026-11-20T01:15:00.123Z', stale: false, checked: '2026-11-20T01:30:00.000Z' });
-  const none = payload(Object.assign({}, ROW, { last_success: null, stale: true }));
+  assert.deepEqual(p, { source: 'pr-triage', last_success: '2026-11-20T01:15:00.123Z', watch_last_success: '2026-11-20T01:25:00.000Z', stale: false, checked: '2026-11-20T01:30:00.000Z' });
+  const none = payload(Object.assign({}, ROW, { last_success: null, watch_last_success: null, stale: true }));
   assert.equal(none.last_success, null);
+  assert.equal(none.watch_last_success, null);
   assert.equal(none.stale, true);
   assert.match(none.checked, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
 });
 
-test('payload: the body TriageAlertV01 sends is the same four keys, with no URL', () => {
+test('payload: the body TriageAlertV01 sends is the same five keys, with no URL', () => {
   const post = h.nodeOf(ALERT, 'POST');
   const url = 'http://ha.example.test:8123/api/webhook/secret-id';
   const trigger = Object.assign(payload(ROW), { extra: 'dropped', url });
-  const body = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called by the heartbeat': trigger }));
+  const body = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': trigger }));
   assert.deepEqual(Object.keys(body).sort(), KEYS);
   assert.deepEqual(body, payload(ROW));
   assert.ok(!JSON.stringify(body).includes('webhook'));
-  const nulls = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called by the heartbeat': payload(Object.assign({}, ROW, { last_success: null })) }));
+  const nulls = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': payload(Object.assign({}, ROW, { last_success: null })) }));
   assert.equal(nulls.last_success, null);
   // The URL comes only from Read target's row.
   assert.equal(post.parameters.url, "={{ $json.url || '' }}");
   assert.equal(expr(post.parameters.url, { url }, {}), url);
 });
 
-test('TriageAlertV01 saves no executions and only the heartbeat may call it', () => {
+test('payload: a watcher alert is exactly source, pr, status, fix_forward and checked', () => {
+  const post = h.nodeOf(ALERT, 'POST');
+  // What the watcher's Alert node passes: the alert item, with the watch id and anything else.
+  const item = { kind: 'alert', watch_id: 9, source: 'pr-watch', pr: 287, status: 'timeout', fix_forward: true, checked: '2026-11-21T10:35:00.000Z', repo: 'o/r', url: 'https://x', detail: [{ id: 'deployment tools/n8n' }] };
+  const body = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': item }));
+  assert.deepEqual(Object.keys(body).sort(), WATCH_KEYS);
+  assert.deepEqual(body, { source: 'pr-watch', pr: 287, status: 'timeout', fix_forward: true, checked: '2026-11-21T10:35:00.000Z' });
+  // Nothing else gets through: no ok status, no stray types.
+  const odd = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': Object.assign({}, item, { status: 'ok', pr: '287', fix_forward: 'yes' }) }));
+  assert.deepEqual([odd.status, odd.pr, odd.fix_forward], [null, null, false]);
+  // The watcher's Alert gate passes only failed and timeout, under labels.
+  const gate = h.nodeOf(WATCH, 'Alert gate');
+  const pass = (mode, wmode, status) => h.ifResult(gate, h.scope({ Watch: [{ json: { mode, watch_write_mode: wmode } }] }, { kind: 'alert', status }, 0));
+  assert.equal(pass('labels', 'labels', 'failed'), true);
+  assert.equal(pass('labels', 'labels', 'timeout'), true);
+  assert.equal(pass('labels', 'labels', 'ok'), false);
+  assert.equal(pass('off', 'labels', 'failed'), false);
+  assert.equal(pass('off', 'off', 'failed'), false);
+});
+
+test('TriageAlertV01 saves no executions and only the heartbeat and the watcher may call it', () => {
   assert.equal(ALERT.id, 'TriageAlertV01');
   const s = ALERT.settings;
   assert.equal(s.saveDataSuccessExecution, 'none');
@@ -66,13 +89,13 @@ test('TriageAlertV01 saves no executions and only the heartbeat may call it', ()
   assert.equal(s.saveManualExecutions, false);
   assert.equal(s.saveExecutionProgress, false);
   assert.equal(s.callerPolicy, 'workflowsFromAList');
-  assert.equal(String(s.callerIds), BEAT.id);
+  assert.equal(String(s.callerIds), `${BEAT.id},${WATCH.id}`);
   const triggers = ALERT.nodes.filter((n) => /trigger$/i.test(n.type) || n.type === 'n8n-nodes-base.webhook');
   assert.deepEqual(triggers.map((n) => n.type), ['n8n-nodes-base.executeWorkflowTrigger']);
   // Only the heartbeat calls it.
   for (const f of WORKFLOWS) {
     for (const n of wf(f).nodes) {
-      if (n.type === 'n8n-nodes-base.executeWorkflow' && n.parameters.workflowId === ALERT.id) assert.equal(f, 'triage-heartbeat.json', `${f} calls ${ALERT.id}`);
+      if (n.type === 'n8n-nodes-base.executeWorkflow' && n.parameters.workflowId === ALERT.id) assert.ok(['triage-heartbeat.json', 'triage-watch.json'].includes(f), `${f} calls ${ALERT.id}`);
     }
   }
 });
@@ -86,7 +109,7 @@ test('TriageAlertV01: 10 s timeout, one retry, and only the status code goes bac
   assert.equal(post.onError, 'continueRegularOutput');
   assert.deepEqual(post.parameters.options.response.response, { fullResponse: true, neverError: true });
   assert.ok(!post.credentials && !post.parameters.authentication && !post.parameters.sendQuery && !post.parameters.sendHeaders);
-  assert.deepEqual(next(ALERT, 'When called by the heartbeat'), ['Read target']);
+  assert.deepEqual(next(ALERT, 'When called'), ['Read target']);
   assert.deepEqual(next(ALERT, 'Read target'), ['POST']);
   assert.deepEqual(next(ALERT, 'POST'), ['Result']);
   const result = (json) => h.code(h.nodeOf(ALERT, 'Result'), {}, [{ json }], 0);

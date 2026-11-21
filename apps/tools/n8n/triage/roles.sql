@@ -41,7 +41,9 @@ GRANT SELECT, INSERT, UPDATE ON triage.publications TO triage;
 GRANT SELECT, INSERT, UPDATE ON triage.heartbeat TO triage;
 -- TriageAlertV01 reads the heartbeat webhook URL.
 GRANT SELECT ON triage.alert_target TO triage;
-GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq TO triage;
+-- R10: the watcher inserts and updates watches, its cursor and its runs.
+GRANT SELECT, INSERT, UPDATE ON triage.watches, triage.watch_cursor, triage.watch_runs TO triage;
+GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq, triage.watches_id_seq, triage.watch_runs_id_seq TO triage;
 
 COMMIT;
 

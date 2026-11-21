@@ -5,14 +5,14 @@
     {
       "parameters": {},
       "id": "7a1e0c4d-0001-4c00-9000-000000000001",
-      "name": "When called by the heartbeat",
+      "name": "When called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
       "position": [
         0,
         300
       ],
-      "notes": "One ping per heartbeat run. callerPolicy lets only the heartbeat call this."
+      "notes": "The heartbeat (one ping per run) or the watcher (one alert per failed watch). callerPolicy admits only those two."
     },
     {
       "parameters": {
@@ -42,7 +42,7 @@
         "url": "={{ $json.url || '' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ source: 'pr-triage', last_success: $('When called by the heartbeat').first().json.last_success || null, stale: $('When called by the heartbeat').first().json.stale === true, checked: $('When called by the heartbeat').first().json.checked }) }}",
+        "jsonBody": "={{ JSON.stringify($('When called').first().json.source === 'pr-watch' ? { source: 'pr-watch', pr: Number.isInteger($('When called').first().json.pr) ? $('When called').first().json.pr : null, status: ['failed', 'timeout'].includes($('When called').first().json.status) ? $('When called').first().json.status : null, fix_forward: $('When called').first().json.fix_forward === true, checked: $('When called').first().json.checked } : { source: 'pr-triage', last_success: $('When called').first().json.last_success || null, watch_last_success: $('When called').first().json.watch_last_success || null, stale: $('When called').first().json.stale === true, checked: $('When called').first().json.checked }) }}",
         "options": {
           "response": {
             "response": {
@@ -70,7 +70,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// The only data the heartbeat gets back: the status code, or null on a\n// network error. A new object, so no URL, error text or body leaves here.\nconst r = $input.first().json || {};\nreturn [{ json: { status: Number.isInteger(r.statusCode) ? r.statusCode : null } }];"
+        "jsCode": "// The only data the caller gets back: the status code, or null on a\n// network error. A new object, so no URL, error text or body leaves here.\nconst r = $input.first().json || {};\nreturn [{ json: { status: Number.isInteger(r.statusCode) ? r.statusCode : null } }];"
       },
       "id": "7a1e0c4d-0004-4c00-9000-000000000004",
       "name": "Result",
@@ -83,7 +83,7 @@
     }
   ],
   "connections": {
-    "When called by the heartbeat": {
+    "When called": {
       "main": [
         [
           {
@@ -121,7 +121,7 @@
     "executionOrder": "v1",
     "timezone": "UTC",
     "callerPolicy": "workflowsFromAList",
-    "callerIds": "TriageBeat000001",
+    "callerIds": "TriageBeat000001,TriageWatch00001",
     "saveDataSuccessExecution": "none",
     "saveDataErrorExecution": "none",
     "saveManualExecutions": false,

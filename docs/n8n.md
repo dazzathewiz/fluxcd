@@ -6,6 +6,8 @@ for each one in Postgres. With `write_mode: "labels"` it also publishes each ver
 on the PR (a label, a comment and a commit status) through a GitHub App. It ships
 with `write_mode: "off"`, which records what it would publish and writes nothing to
 the source host. See [PR triage](#pr-triage) and [write_mode](#write_mode) below.
+After each merge, a watcher checks the change rolled out and alerts if it didn't;
+see [R10: post-merge watch](#r10-post-merge-watch).
 
 ## What's deployed
 
@@ -181,15 +183,15 @@ substitution turns every JS template literal `${...}` into an empty string.
 ### Triage rules code
 
 The check logic is one plain JS module, `triage/rules.js`: pure functions, no n8n
-APIs, with network access passed in. The poll workflow's `Triage` Code node
-carries a verbatim copy between `BEGIN rules.js` / `END rules.js` markers,
-followed by a short driver. The other Code nodes only build URLs or reshape items;
-none decides a verdict or a write. Before
+APIs, with network access passed in. The poll workflow's `Triage` Code node and
+the watcher's `Watch` Code node each carry a verbatim copy between
+`BEGIN rules.js` / `END rules.js` markers, followed by a short driver. The other
+Code nodes only build URLs or reshape items; none decides a verdict or a write. Before
 pushing a change to either:
 
 ```sh
 node --test apps/tools/n8n/triage/                     # fixtures and rule tests
-node apps/tools/n8n/triage/sync-code-nodes.js --write  # copy rules.js into the Code node
+node apps/tools/n8n/triage/sync-code-nodes.js --write  # copy rules.js into the Code nodes
 node apps/tools/n8n/triage/sync-code-nodes.js          # check: exits 1 on drift
 ```
 
@@ -234,7 +236,9 @@ password, revokes everything and grants back exactly:
 | `triage.config`, `triage.redaction_patterns` | `SELECT` | Start run |
 | `triage.publications` | `SELECT`, `INSERT`, `UPDATE` | Start run, Record plan, Record publish, Finish run |
 | `triage.heartbeat` | `SELECT`, `INSERT`, `UPDATE` | heartbeat upsert |
-| the two `id` sequences | `USAGE` | inserts |
+| `triage.alert_target` | `SELECT` | `TriageAlertV01` |
+| `triage.watches`, `triage.watch_cursor`, `triage.watch_runs` | `SELECT`, `INSERT`, `UPDATE` | the [watcher](#r10-post-merge-watch) |
+| the four `id` sequences | `USAGE` | inserts |
 
 No `DELETE`, no DDL, and nothing in `public`, where n8n's tables live and where
 `PUBLIC` has no table privileges. The role is `NOSUPERUSER NOCREATEDB
@@ -302,18 +306,21 @@ So when the PR list changes, every open PR's detail and files are read, and only
 the new head SHAs are triaged. A failed read of a PR being triaged fails the run;
 the run stays unfinished, no ETag is stored, and the next run retries.
 
-`PR triage: heartbeat` runs every 30 minutes, writes the last successful run time
-to `triage.heartbeat`, and pings Home Assistant; see [Dead-man](#dead-man).
+`PR triage: heartbeat` runs every 30 minutes, writes the last successful run times
+of the poll and the watcher to `triage.heartbeat`, and pings Home Assistant; see
+[Dead-man](#dead-man).
 
 ### Dead-man
 
 Every heartbeat run POSTs one JSON object to a Home Assistant webhook:
 
 ```json
-{"source": "pr-triage", "last_success": "<ISO-8601 UTC or null>", "stale": false, "checked": "<ISO-8601 UTC>"}
+{"source": "pr-triage", "last_success": "<ISO-8601 UTC or null>", "watch_last_success": "<ISO-8601 UTC or null>", "stale": false, "checked": "<ISO-8601 UTC>"}
 ```
 
-`stale` is true when no run has succeeded in 2 hours. Home Assistant alerts on two
+`stale` is true when no poll run has succeeded in 2 hours, or no watcher run in
+`watch_stale_min` minutes (30). Before the watcher's first run, that clock starts
+when the pod loaded the config. Home Assistant alerts on two
 things: a ping that says `stale`, and no ping at all for longer than a couple of
 intervals, which means n8n itself is down. The receiver, the watchdog and the phone
 notification live in Home Assistant, outside this repo.
@@ -324,17 +331,19 @@ notification live in Home Assistant, outside this repo.
   empty). No credential type can carry a request URL, so a credential overwrite
   doesn't fit.
 - **Only `PR triage: alert (unsaved)` (`TriageAlertV01`) reads it.** The heartbeat
-  calls it once per run with the four keys above. It reads the URL, POSTs with a
-  10 s timeout and one retry on a network error, and returns only the HTTP status.
-  It saves no executions, and its caller policy admits only the heartbeat. The
-  tests check that no other workflow names the table.
+  calls it once per run with the five keys above, and the watcher once per failed
+  watch (see [R10](#r10-post-merge-watch)). It reads the URL, POSTs with a 10 s
+  timeout and one retry on a network error, and returns only the HTTP status. It
+  saves no executions, and its caller policy admits only those two. The tests
+  check that no other workflow names the table.
 - **The heartbeat records the result** in `triage.heartbeat.last_ping` and
   `ping_status` (the status, or NULL on a network error). A status outside 2xx
   then fails that heartbeat execution. The poll and `triage.runs` are untouched.
 
 ### Cluster version
 
-R4 and the negative control compare charts against the live cluster version.
+R4 and the negative control compare charts against the live cluster version, and
+the [watcher](#r10-post-merge-watch) reads Flux and workload status.
 The apiserver runs with anonymous auth off, so an unauthenticated `GET /version`
 gets `401`. The call uses the pod's own projected service-account token instead.
 No Secret holds a token, and kubelet rotates the file.
@@ -351,12 +360,27 @@ No Secret holds a token, and kubelet rotates the file.
   data when the API or UI loads it: the execution is still stored in full. The
   pod's token is issued with `expirationSeconds: 3607`, which the apiserver
   extends to about a year, so a saved copy would outlive the hourly rotation. So
-  the token is read only in the sub-workflow `PR triage: cluster version`
-  (`workflows/triage-cluster-version.json`). It reads the token file, turns it
-  into text and sends `GET /version` with `Authorization: Bearer`. It saves no
-  executions, successful, failed or manual. Its last node is the HTTP request,
-  whose output holds only the status and body. That matters because n8n copies a
+  the token is read only in the sub-workflow `PR triage: cluster read`
+  (`workflows/triage-cluster-version.json`, `TriageClusterV01`). It reads the
+  token file, turns it into text and sends one `GET` with `Authorization: Bearer`.
+  It saves no executions, successful, failed or manual. Its last node is the HTTP
+  request, whose output holds only the status and body, or on a rejected path a
+  Code node that returns a new object. That matters because n8n copies a
   sub-workflow's last-node binary data into the caller.
+- **An allowlist of paths, checked first.** A caller that passes no
+  `cluster_path` gets `GET /version` (the poll). Otherwise the path must be one
+  of these, with `{ns}` and `{name}` DNS labels, or the token isn't read and no
+  request is made:
+
+  | Path | Read by |
+  | --- | --- |
+  | `/version` | the poll (R4) |
+  | `/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-system/kustomizations/{name}` | the watcher |
+  | `/apis/helm.toolkit.fluxcd.io/v2/namespaces/{ns}/helmreleases/{name}` | the watcher |
+  | `/apis/apps/v1/namespaces/{ns}/deployments/{name}` | the watcher |
+  | `/apis/apps/v1/namespaces/{ns}/statefulsets/{name}` | the watcher |
+
+  `view` already covers all of them; no RBAC was added.
 - **The Read node's binary copy of the token is RAM-only.** With pruning on, n8n
   doesn't delete an unsaved execution in flight. It soft-deletes it, and the next
   prune batch, every 15 minutes, hard-deletes it together with its binary data. The
@@ -504,9 +528,9 @@ the one published, the published one stays, and the comment says it was held.
 
 | Identity | Does |
 | --- | --- |
-| The read-only token (`github-token`) | Every read in the poll |
+| The read-only token (`github-token`) | Every read in the poll and the watcher |
 | The GitHub App's installation token | Every write: labels, comments, statuses. Nothing else writes |
-| The bot account | Nothing here. It opens PRs in this repo, and applies no labels |
+| The bot account | Nothing here. It opens PRs in this repo, and applies no labels. The watcher reads its login (`GET /user` with the read-only token) only to accept its fix-forward marker |
 
 The App's slug is `app_slug` in `triage/config.yaml`, and its actor login is
 `<app_slug>[bot]`. Label events name only the actor, so that login is how the
@@ -562,7 +586,8 @@ plan read back as sent.
 
 All writes live in the sub-workflow `PR triage: publish`
 (`workflows/triage-publish.json`, ID `TriagePublishV01`). It saves no executions of
-any kind, and only the poll may call it (`callerPolicy: workflowsFromAList`). Each
+any kind, and only the poll and the watcher may call it
+(`callerPolicy: workflowsFromAList`), each only through its own `Write gate`. Each
 call carries one write. It signs a JWT with n8n's JWT node (RS256, the key from the
 `jwtAuth` credential overwrite) and calls `GET /app` with it. If that App's `slug`
 isn't `app_slug`, it stops there: no token, no write, and the PR's outcome is
@@ -582,9 +607,11 @@ exactly: method, URL, body and headers.
 | `POST /repos/{r}/issues/{n}/comments` | Create comment |
 | `PATCH /repos/{r}/issues/comments/{id}` | Edit comment (body only) |
 | `POST /repos/{r}/statuses/{sha}` | Set status |
+| `POST /repos/{r}/labels` | Create watch label (R10's two labels only) |
+| `POST /repos/{r}/issues/{n}/labels` | Add watch label (R10's two labels only) |
 
 It refuses any other non-GET request in the sub-workflow, any GitHub write
-outside it, a call into it that doesn't come through the `Write gate` true output,
+outside it, a call into it that doesn't come through a `Write gate` true output,
 a Code node there that could make a request, and any execution saving there.
 
 #### `runs.publish`
@@ -709,6 +736,81 @@ replaces the table contents on every pod start, so after changing the 1Password
 field, restart the pod. The patterns appear in the poll workflow's execution data,
 which n8n users can see.
 
+## R10: post-merge watch
+
+`PR triage: post-merge watch` (`TriageWatch00001`) runs every 5 minutes. It is
+alert-only: nothing reverts anything.
+
+**What's watched.** Every merge to the default branch, whoever merged it. The
+watcher lists closed PRs (`sort=updated`, with an ETag) and takes merges newer than
+`triage.watch_cursor`. Its first run starts an hour back. For each merge, using the
+merge commit SHA, `planWatch` reads the changed files (at the merge commit) and
+picks targets:
+
+- the Flux Kustomization that applies each changed path, from
+  `watch_kustomizations` in `config.yaml` (longest prefix wins; a test checks it
+  against every Flux Kustomization in the repo);
+- each changed HelmRelease, at its new chart version;
+- each Deployment or StatefulSet whose `image:` changed. An image change in any
+  other kind gets only the Kustomization check, and a note.
+
+A merge with no target (docs only, say) is `ok` at once.
+
+**Pass, fail, timeout.** Each run checks each pending watch through
+`TriageClusterV01`:
+
+| Target | ok when |
+| --- | --- |
+| Kustomization | `Ready=True` at the merge SHA or a later commit that includes it (compare API `identical` or `ahead`) |
+| HelmRelease | `history[0].chartVersion` is the new version, `Ready=True`, `observedGeneration` current |
+| Deployment, StatefulSet | generation observed, every replica updated and ready, the new image in the spec |
+
+`failed` needs the same failing condition on two checks in a row: a Kustomization
+`Ready=False` (not `Progressing` or `DependencyNotReady`) at a revision with the
+merge, a HelmRelease install or upgrade failure on the new version, a Deployment
+past its progress deadline, or a target that's gone. `timeout` is
+`watch_timeout_min` (30) after the merge. Rows are in `triage.watches`.
+
+**Fix forward.** A failure says "Fix forward — no revert" when the change is
+one-way, or the PR says so:
+
+- a line `rollback: fix-forward` (case-insensitive, its own line, not in a code
+  block or a quote) in the PR description, a review or a comment, written by the
+  App, the bot (the read-only token's own login) or the repository owner. Logins
+  are read at run time; none is in Git;
+- a `fix_forward_packages` package (InvenTree), a Postgres image major, a k3s Plan
+  version, the Longhorn chart, or a deleted PersistentVolumeClaim.
+
+**What it publishes.** On `ok`, the label `triage:post-merge-ok`. On `failed` or
+`timeout`, `triage:post-merge-failed` (plus `triage:deep-review` when fix-forward),
+one App comment marked `<!-- pr-triage-watch:v1 sha=<merge> status=<status> -->`
+listing what didn't roll out, and one Home Assistant alert through
+`TriageAlertV01`:
+
+```json
+{"source": "pr-watch", "pr": 287, "status": "failed", "fix_forward": false, "checked": "<ISO-8601 UTC>"}
+```
+
+There is never a second comment for one merge SHA, and never an alert on `ok`.
+The watcher only reads the fix-forward marker; the triage comment doesn't mention
+it.
+
+**`watch_write_mode`** in `config.yaml` is `off` (shipped) or `labels`. `off`
+records each plan in `triage.watches.planned_actions` and writes nothing, sends no
+alert, and doesn't revisit the watch. `labels` writes and alerts, and needs
+`write_mode: "labels"` too. Turning it on is a one-line PR; watches planned under
+`off` stay as they are. Like any `config.yaml` change, it re-triages open PRs (see
+[Rulesets and re-triage](#rulesets-and-re-triage)).
+
+**Idle runs are cheap.** With no new merge and nothing pending or to publish, a run
+makes one request, the listing, usually a `304`. Each run is a row in
+`triage.watch_runs`, and the heartbeat reports the last ok one.
+
+```sh
+kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
+  "select pr, left(merge_sha, 12), status, fix_forward, fix_forward_source, targets, planned_actions, publish_outcome, alert_status from triage.watches order by created_at desc limit 10;"
+```
+
 ## Upgrades
 
 - The n8n image is pinned to an exact version, and Renovate bumps it after a 7-day
@@ -736,3 +838,5 @@ which n8n users can see.
 - `triage.publications`. Like the verdicts, a working record: the labels,
   comments and statuses on GitHub are the visible state, and the next run plans
   from what it reads there.
+- `triage.watches`, `triage.watch_cursor` and `triage.watch_runs`: the watcher's
+  working record. A lost cursor restarts the watch an hour back.

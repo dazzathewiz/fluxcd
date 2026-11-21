@@ -24,6 +24,7 @@ configMapGenerator:
       - workflows/triage-cluster-version.json
       - workflows/triage-publish.json
       - workflows/triage-alert.json
+      - workflows/triage-watch.json
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled

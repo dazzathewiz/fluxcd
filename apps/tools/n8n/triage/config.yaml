@@ -151,3 +151,54 @@ status_context: "pr-triage/verdict"
 # The GitHub App that writes them. Its own label events and comments are
 # the ones by <app_slug>[bot].
 app_slug: dtw-pr-triage
+
+# R10 post-merge watch. off: plans only; labels: the App writes them (needs
+# write_mode labels too). Quoted for the same reason as write_mode.
+watch_write_mode: "off"
+# Minutes after the merge before a watch times out.
+watch_timeout_min: 30
+# The heartbeat reports stale after this many minutes without a watch run.
+watch_stale_min: 30
+
+# Path prefix -> the Flux Kustomization that applies it; the longest prefix
+# wins. target_namespace mirrors the Kustomization's targetNamespace.
+# rules.test.js checks this against every Flux Kustomization in the repo.
+watch_kustomizations:
+  - path: apps/
+    name: apps
+  - path: apps/databases/influxdb/app/
+    name: influxdb
+    target_namespace: databases
+  - path: apps/infrastructure/portainer/app/
+    name: portainer
+    target_namespace: infrastructure
+  - path: apps/monitoring/grafana/app/
+    name: grafana
+    target_namespace: monitoring
+  - path: apps/tools/system-upgrade-controller/app/
+    name: system-upgrade-controller
+    target_namespace: tools
+  - path: apps/tools/system-upgrade-controller/plans/
+    name: system-upgrade-controller-plans
+    target_namespace: tools
+  - path: cluster-config/
+    name: cluster-config
+  - path: global/
+    name: cluster-config
+  - path: clusters/home/
+    name: flux-system
+  - path: infrastructure/configs/
+    name: infra-configs
+  - path: infrastructure/controllers/
+    name: infra-controllers
+  - path: infrastructure/tailscale/
+    name: tailscale-operator
+  - path: infrastructure/tailscale-connectors/app-zone-route/
+    name: tailscale-connector
+  - path: infrastructure/tailscale-connectors/inf-zone-route/
+    name: tailscale-inf-connector
+  - path: orchestration/
+    name: cluster-orchestration
+
+# A failure on a change to these packages is fixed forward, never reverted.
+fix_forward_packages: [inventree/inventree]

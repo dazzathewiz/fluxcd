@@ -1,17 +1,66 @@
 {
   "id": "TriageClusterV01",
-  "name": "PR triage: cluster version (unsaved)",
+  "name": "PR triage: cluster read (unsaved)",
   "nodes": [
     {
       "id": "0b7c1d8e-0201-4a00-9000-000000000201",
-      "name": "When called by the poll",
+      "name": "When called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
       "position": [
         0,
         300
       ],
-      "parameters": {}
+      "parameters": {},
+      "notes": "The poll calls with no cluster_path (GET /version); the watcher passes cluster_path."
+    },
+    {
+      "id": "0b7c1d8e-0205-4a00-9000-000000000205",
+      "name": "Allowed path",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Rejects any path outside the allowlist before the token is read.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only reads this workflow makes. A caller that sends no cluster_path\n// gets GET /version (the poll's R4 call). Anything else must match one of\n// these templates, with {ns} and {name} DNS labels, or nothing is read: the\n// token isn't touched and no request is made.\nconst TEMPLATES = [\n  '/version',\n  '/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-system/kustomizations/{name}',\n  '/apis/helm.toolkit.fluxcd.io/v2/namespaces/{ns}/helmreleases/{name}',\n  '/apis/apps/v1/namespaces/{ns}/deployments/{name}',\n  '/apis/apps/v1/namespaces/{ns}/statefulsets/{name}',\n];\nconst LABEL = '[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?';\nconst j = $input.first().json || {};\nconst path = Object.prototype.hasOwnProperty.call(j, 'cluster_path') ? j.cluster_path : '/version';\nconst allowed = typeof path === 'string' && TEMPLATES.some((t) => new RegExp('^' + t.replace(/[.]/g, '\\\\.').replace('{ns}', LABEL).replace('{name}', LABEL) + '$').test(path));\nreturn [{ json: { allowed, path: allowed ? path : null } }];\n"
+      }
+    },
+    {
+      "id": "0b7c1d8e-0206-4a00-9000-000000000206",
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "0b7c1d8e-0206-4a00-9000-0000000002a1",
+              "leftValue": "={{ $json.allowed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
     },
     {
       "id": "0b7c1d8e-0202-4a00-9000-000000000202",
@@ -19,8 +68,8 @@
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1.1,
       "position": [
-        220,
-        300
+        660,
+        200
       ],
       "notes": "Kubelet rotates this file; it is read fresh on every call. Allowed by N8N_RESTRICT_FILE_ACCESS_TO.",
       "parameters": {
@@ -35,8 +84,8 @@
       "type": "n8n-nodes-base.extractFromFile",
       "typeVersion": 1,
       "position": [
-        440,
-        300
+        880,
+        200
       ],
       "parameters": {
         "operation": "text",
@@ -47,17 +96,17 @@
     },
     {
       "id": "0b7c1d8e-0204-4a00-9000-000000000204",
-      "name": "GET /version",
+      "name": "GET",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        660,
-        300
+        1100,
+        200
       ],
-      "notes": "Last node: its output (status and body only, no binary) is all the poll receives.",
+      "notes": "Last node: its output (status and body only, no binary) is all the caller receives.",
       "parameters": {
         "method": "GET",
-        "url": "https://kubernetes.default.svc/version",
+        "url": "={{ 'https://kubernetes.default.svc' + $('Allowed path').first().json.path }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -81,14 +130,58 @@
           "timeout": 10000
         }
       }
+    },
+    {
+      "id": "0b7c1d8e-0207-4a00-9000-000000000207",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        420
+      ],
+      "notes": "Last node on a rejected path: no request was made.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Not an allowed read: nothing was sent.\nreturn [{ json: { statusCode: null, rejected: true } }];"
+      }
     }
   ],
   "connections": {
-    "When called by the poll": {
+    "When called": {
+      "main": [
+        [
+          {
+            "node": "Allowed path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed path": {
+      "main": [
+        [
+          {
+            "node": "Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed?": {
       "main": [
         [
           {
             "node": "Read service-account token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
             "type": "main",
             "index": 0
           }
@@ -110,7 +203,7 @@
       "main": [
         [
           {
-            "node": "GET /version",
+            "node": "GET",
             "type": "main",
             "index": 0
           }
