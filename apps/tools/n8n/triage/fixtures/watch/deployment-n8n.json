@@ -1,0 +1,54 @@
+{
+  "_note": "kubectl get deployment -n tools n8n, 2026-11-21, trimmed to the fields the watcher reads.",
+  "object": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "n8n",
+      "namespace": "tools",
+      "generation": 16
+    },
+    "spec": {
+      "replicas": 1,
+      "template": {
+        "spec": {
+          "initContainers": [
+            {
+              "name": "triage-schema",
+              "image": "postgres:17.12-alpine"
+            },
+            {
+              "name": "import-workflows",
+              "image": "n8nio/n8n:2.47.7"
+            }
+          ],
+          "containers": [
+            {
+              "name": "n8n",
+              "image": "n8nio/n8n:2.47.7"
+            }
+          ]
+        }
+      }
+    },
+    "status": {
+      "observedGeneration": 16,
+      "replicas": 1,
+      "updatedReplicas": 1,
+      "readyReplicas": 1,
+      "availableReplicas": 1,
+      "conditions": [
+        {
+          "type": "Available",
+          "status": "True",
+          "reason": "MinimumReplicasAvailable"
+        },
+        {
+          "type": "Progressing",
+          "status": "True",
+          "reason": "NewReplicaSetAvailable"
+        }
+      ]
+    }
+  }
+}

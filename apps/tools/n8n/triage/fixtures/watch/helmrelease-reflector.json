@@ -1,0 +1,43 @@
+{
+  "_note": "kubectl get helmrelease -n flux-system reflector, 2026-11-21, trimmed to the fields the watcher reads. Read about 3,450 times over one 5 m interval; during its one reconcile Reconciling was True for under a second and Ready stayed True.",
+  "object": {
+    "apiVersion": "helm.toolkit.fluxcd.io/v2",
+    "kind": "HelmRelease",
+    "metadata": {
+      "name": "reflector",
+      "namespace": "flux-system",
+      "generation": 5
+    },
+    "spec": {
+      "chart": {
+        "spec": {
+          "chart": "reflector",
+          "version": "10.0.78"
+        }
+      }
+    },
+    "status": {
+      "observedGeneration": 5,
+      "history": [
+        {
+          "chartName": "reflector",
+          "chartVersion": "10.0.78",
+          "status": "deployed",
+          "version": 4
+        }
+      ],
+      "conditions": [
+        {
+          "type": "Ready",
+          "status": "True",
+          "reason": "UpgradeSucceeded"
+        },
+        {
+          "type": "Released",
+          "status": "True",
+          "reason": "UpgradeSucceeded"
+        }
+      ]
+    }
+  }
+}

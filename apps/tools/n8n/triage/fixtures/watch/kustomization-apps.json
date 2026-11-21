@@ -1,0 +1,66 @@
+{
+  "_note": "kubectl get kustomization -n flux-system apps, 2026-11-21, trimmed to the fields the watcher reads. reconciling: read at 12:19:45 UTC, mid-reconcile; ready: 5 s later.",
+  "merge_sha": "7f5da62ff384f180e23506f174873817efb59668",
+  "reconciling": {
+    "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+    "kind": "Kustomization",
+    "metadata": {
+      "name": "apps",
+      "namespace": "flux-system",
+      "generation": 7
+    },
+    "status": {
+      "observedGeneration": 7,
+      "lastAppliedRevision": "main@sha1:7f5da62ff384f180e23506f174873817efb59668",
+      "lastAttemptedRevision": "main@sha1:7f5da62ff384f180e23506f174873817efb59668",
+      "conditions": [
+        {
+          "type": "Reconciling",
+          "status": "True",
+          "reason": "Progressing",
+          "observedGeneration": 7
+        },
+        {
+          "type": "Ready",
+          "status": "Unknown",
+          "reason": "Progressing",
+          "observedGeneration": 7
+        },
+        {
+          "type": "Healthy",
+          "status": "True",
+          "reason": "Succeeded",
+          "observedGeneration": 7
+        }
+      ]
+    }
+  },
+  "ready": {
+    "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+    "kind": "Kustomization",
+    "metadata": {
+      "name": "apps",
+      "namespace": "flux-system",
+      "generation": 7
+    },
+    "status": {
+      "observedGeneration": 7,
+      "lastAppliedRevision": "main@sha1:7f5da62ff384f180e23506f174873817efb59668",
+      "lastAttemptedRevision": "main@sha1:7f5da62ff384f180e23506f174873817efb59668",
+      "conditions": [
+        {
+          "type": "Ready",
+          "status": "True",
+          "reason": "ReconciliationSucceeded",
+          "observedGeneration": 7
+        },
+        {
+          "type": "Healthy",
+          "status": "True",
+          "reason": "Succeeded",
+          "observedGeneration": 7
+        }
+      ]
+    }
+  }
+}

@@ -761,8 +761,8 @@ A merge with no target (docs only, say) is `ok` at once.
 
 | Target | ok when |
 | --- | --- |
-| Kustomization | `Ready=True` at the merge SHA or a later commit that includes it (compare API `identical` or `ahead`) |
-| HelmRelease | `history[0].chartVersion` is the new version, `Ready=True`, `observedGeneration` current |
+| Kustomization | `lastAppliedRevision` is the merge SHA or a later commit that includes it (compare API `identical` or `ahead`), and `Ready` isn't `False` |
+| HelmRelease | `history[0]` is the new chart version, `deployed`; `Ready` isn't `False`; `observedGeneration` current |
 | Deployment, StatefulSet | generation observed, every replica updated and ready, the new image in the spec |
 
 `failed` needs the same failing condition on two checks in a row: a Kustomization
@@ -771,6 +771,10 @@ merge, a HelmRelease install or upgrade failure on the new version, a Deployment
 past its progress deadline, or a target that's gone. `timeout` is
 `watch_timeout_min` (30) after the merge. Rows are in `triage.watches`.
 
+`Ready=Unknown` with the revision already applied is a pass. Flux sets it for
+the few seconds each reconcile takes, and the watcher and Flux both run every 5
+minutes, so a check can land in that window every time.
+
 **Fix forward.** A failure says "Fix forward — no revert" when the change is
 one-way, or the PR says so:
 
@@ -778,8 +782,12 @@ one-way, or the PR says so:
   block or a quote) in the PR description, a review or a comment, written by the
   App, the bot (the read-only token's own login) or the repository owner. Logins
   are read at run time; none is in Git;
-- a `fix_forward_packages` package (InvenTree), a Postgres image major, a k3s Plan
-  version, the Longhorn chart, or a deleted PersistentVolumeClaim.
+- a change to a YAML manifest (not docs, code, or YAML under `fixtures/`) that
+  is one-way: an `image:` line for a `fix_forward_packages` package (InvenTree)
+  added or removed, or a changed `tag:` under its `repository:`; a Postgres image
+  whose major changes; a changed `spec.version` in a k3s Plan; a changed chart
+  version in the Longhorn HelmRelease; or a removed `kind: PersistentVolumeClaim`
+  document. Naming a package anywhere else doesn't count.
 
 **What it publishes.** On `ok`, the label `triage:post-merge-ok`. On `failed` or
 `timeout`, `triage:post-merge-failed` (plus `triage:deep-review` when fix-forward),
