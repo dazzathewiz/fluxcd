@@ -803,7 +803,7 @@ There is never a second comment for one merge SHA, and never an alert on `ok`.
 The watcher only reads the fix-forward marker; the triage comment doesn't mention
 it.
 
-**`watch_write_mode`** in `config.yaml` is `off` (shipped) or `labels`. `off`
+**`watch_write_mode`** in `config.yaml` is `labels` (on since the R10 shadow run) or `off`. `off`
 records each plan in `triage.watches.planned_actions` and writes nothing, sends no
 alert, and doesn't revisit the watch. `labels` writes and alerts, and needs
 `write_mode: "labels"` too. Turning it on is a one-line PR; watches planned under

@@ -154,7 +154,7 @@ app_slug: dtw-pr-triage
 
 # R10 post-merge watch. off: plans only; labels: the App writes them (needs
 # write_mode labels too). Quoted for the same reason as write_mode.
-watch_write_mode: "off"
+watch_write_mode: "labels"
 # Minutes after the merge before a watch times out.
 watch_timeout_min: 30
 # The heartbeat reports stale after this many minutes without a watch run.
