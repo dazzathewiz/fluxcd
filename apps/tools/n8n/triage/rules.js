@@ -1839,6 +1839,7 @@ function patchLines(patch) {
   return { touched, added };
 }
 
+const MANIFEST_FILE = /\.ya?ml$/;
 const IMAGE_LINE = /^\s*(?:-\s+)?image:\s*["']?([^\s"'#]+)["']?\s*(?:#.*)?$/;
 
 // The Kubernetes objects in one manifest file, with their line ranges. A
@@ -1876,6 +1877,7 @@ function manifestDocs(text) {
     else if (path === 'metadata.namespace') doc.namespace = value;
     else if (path === 'spec.chart.spec.chart') doc.chart = value;
     else if (path === 'spec.chart.spec.version') { doc.version = value; doc.version_line = no; }
+    else if (path === 'spec.version') doc.plan_version_line = no;
   });
   return docs.filter((d) => d.kind);
 }
@@ -1958,11 +1960,17 @@ function checkKustomization(t, read, includes) {
   const ready = conditionOf(read.body, 'Ready');
   const applied = revisionSha(st.lastAppliedRevision);
   const attempted = revisionSha(st.lastAttemptedRevision);
-  if (ready && ready.status === 'True' && includes(applied) === true) return { state: 'ok', cond: 'applied' };
+  // lastAppliedRevision moves only after a successful apply. While Flux
+  // reconciles again (every interval, a few seconds), Ready is Unknown and
+  // the applied revision still stands, so that counts as applied too.
   if (ready && ready.status === 'False' && !KS_WAIT_REASONS.includes(ready.reason) && includes(attempted) === true) {
     return { state: 'fail', cond: `Ready=False (${safeWord(ready.reason)})` };
   }
+  if (ready && ready.status !== 'False' && includes(applied) === true) {
+    return { state: 'ok', cond: ready.status === 'True' ? 'applied' : 'applied (reconciling again)' };
+  }
   if (includes(applied) === null || includes(attempted) === null) return { state: 'pending', cond: 'revision not compared yet' };
+  if (ready && ready.status === 'Unknown') return { state: 'pending', cond: 'merge not applied yet (reconciling)' };
   return { state: 'pending', cond: 'merge not applied yet' };
 }
 
@@ -1975,7 +1983,12 @@ function checkHelmRelease(t, read) {
   const ready = conditionOf(b, 'Ready');
   const stalled = conditionOf(b, 'Stalled');
   const settled = (b.status || {}).observedGeneration === (b.metadata || {}).generation;
-  if (hist.chartVersion === t.version && ready && ready.status === 'True' && settled) return { state: 'ok', cond: `chart ${t.version} installed` };
+  // history[0] is the release Helm last deployed. Ready=Unknown means another
+  // reconcile is running, which doesn't undo it.
+  const deployed = hist.chartVersion === t.version && (hist.status === undefined || hist.status === 'deployed');
+  if (deployed && ready && ready.status !== 'False' && settled) {
+    return { state: 'ok', cond: ready.status === 'True' ? `chart ${t.version} installed` : `chart ${t.version} installed (reconciling again)` };
+  }
   if (live === t.version && stalled && stalled.status === 'True') return { state: 'fail', cond: `Stalled (${safeWord(stalled.reason)})` };
   if (live === t.version && ready && ready.status === 'False' && HR_FAIL_REASONS.includes(ready.reason)) {
     return { state: 'fail', cond: `Ready=False (${safeWord(ready.reason)})` };
@@ -2081,38 +2094,57 @@ function fixForward(pr, reviews, comments, files, identities, config) {
   if ((comments || []).some(marked)) return { fix_forward: true, source: 'marker in a comment' };
 
   const packages = (config && config.fix_forward_packages) || [];
+  const imageOf = (line) => {
+    const kv = keyValue(line);
+    return kv && kv.key === 'image' ? parseImageRef(kv.value) : null;
+  };
+  const repoIn = (lines) => lines.map(keyValue).filter((kv) => kv && kv.key === 'repository').map((kv) => kv.value).find((v) => packages.includes(v));
   let pvcs = 0;
   for (const f of files || []) {
-    const pairs = parsePatch(f.patch);
-    for (const pair of pairs) {
+    // Only manifests count: not docs, code, or YAML kept as test data.
+    if (!MANIFEST_FILE.test(String(f.filename)) || /(^|\/)(fixtures|testdata)\//.test(String(f.filename))) continue;
+    for (const pair of parsePatch(f.patch)) {
       for (const [side, sign] of [[pair.old, -1], [pair.new, 1]]) {
         if (side !== null && /^\s*kind:\s*PersistentVolumeClaim\s*$/.test(side)) pvcs -= sign;
       }
+      if (pair.old === pair.new) continue;
+      // A changed image line for a listed package, on either side.
+      for (const side of [pair.old, pair.new]) {
+        const im = imageOf(side);
+        if (im && packages.includes(im.depName)) return { fix_forward: true, source: `fix-forward package ${im.depName}` };
+      }
+      // A chart's image as repository: <package> with its tag changed, or the
+      // repository line itself changed.
       const kvOld = keyValue(pair.old);
       const kvNew = keyValue(pair.new);
-      if (kvNew && kvNew.key === 'image') {
-        const b = parseImageRef(kvNew.value);
-        if (b && packages.includes(b.depName)) return { fix_forward: true, source: `fix-forward package ${b.depName}` };
-        const a = kvOld && kvOld.key === 'image' ? parseImageRef(kvOld.value) : null;
-        const va = a ? parseVersion(a.tag) : null;
-        const vb = parseVersion(b && b.tag);
-        if (b && b.depName === 'postgres' && a && a.depName === 'postgres' && va && vb && va.nums[0] !== vb.nums[0]) {
-          return { fix_forward: true, source: 'Postgres major change' };
-        }
+      const repoLine = [kvOld, kvNew].find((kv) => kv && kv.key === 'repository' && packages.includes(kv.value));
+      if (repoLine) return { fix_forward: true, source: `fix-forward package ${repoLine.value}` };
+      if (kvOld && kvNew && kvOld.key === 'tag' && kvNew.key === 'tag' && kvOld.value !== kvNew.value) {
+        const pkg = repoIn(pair.context);
+        if (pkg) return { fix_forward: true, source: `fix-forward package ${pkg}` };
       }
-      if (kvNew && kvNew.key === 'version' && kvOld && kvOld.value !== kvNew.value && /depName=k3s-io\/k3s\b/.test(pair.context.join('\n'))) {
+      const a = imageOf(pair.old);
+      const b = imageOf(pair.new);
+      const va = a ? parseVersion(a.tag) : null;
+      const vb = b ? parseVersion(b.tag) : null;
+      if (a && b && a.depName === 'postgres' && b.depName === 'postgres' && va && vb && va.nums[0] !== vb.nums[0]) {
+        return { fix_forward: true, source: 'Postgres major change' };
+      }
+      if (kvNew && kvNew.key === 'version' && kvOld && kvOld.key === 'version' && kvOld.value !== kvNew.value && /depName=k3s-io\/k3s\b/.test(pair.context.join('\n'))) {
         return { fix_forward: true, source: 'k3s Plan version change' };
       }
     }
     if (f.status === 'removed' && typeof f.patch !== 'string' && /pvc/i.test(String(f.filename))) pvcs++;
     if (typeof f.content === 'string' && f.status !== 'removed') {
       const p = typeof f.patch === 'string' ? patchLines(f.patch) : null;
+      // The version line itself must change, not just something in the object.
+      const versionChanged = (no) => !p || (no !== undefined && p.touched.has(no));
       for (const d of manifestDocs(f.content)) {
-        const changed = !p || Array.from(p.touched).some((no) => no >= d.start && no <= d.end);
-        if (!changed) continue;
-        if (d.kind === 'HelmRelease' && d.chart && packages.includes(d.chart)) return { fix_forward: true, source: `fix-forward package ${d.chart}` };
-        if (d.kind === 'HelmRelease' && d.chart === 'longhorn') return { fix_forward: true, source: 'Longhorn chart change' };
-        if (d.kind === 'Plan' && /^upgrade\.cattle\.io\//.test(String(d.apiVersion)) && (!p || p.touched.has(d.version_line))) {
+        if (d.kind === 'HelmRelease' && d.chart && packages.includes(d.chart) && versionChanged(d.version_line)) {
+          return { fix_forward: true, source: `fix-forward package ${d.chart}` };
+        }
+        if (d.kind === 'HelmRelease' && d.chart === 'longhorn' && versionChanged(d.version_line)) return { fix_forward: true, source: 'Longhorn chart change' };
+        if (d.kind === 'Plan' && /^upgrade\.cattle\.io\//.test(String(d.apiVersion)) && versionChanged(d.plan_version_line)) {
           return { fix_forward: true, source: 'k3s Plan version change' };
         }
       }
