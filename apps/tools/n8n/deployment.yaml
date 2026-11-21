@@ -93,7 +93,7 @@ spec:
       # Git wins: import overwrites the workflows (and unpublishes them), then
       # each one is published again. UI edits are lost on every restart.
       - name: import-workflows
-        image: n8nio/n8n:2.47.7
+        image: n8nio/n8n:2.48.4
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -141,7 +141,7 @@ spec:
             memory: 1Gi
       containers:
       - name: n8n
-        image: n8nio/n8n:2.47.7
+        image: n8nio/n8n:2.48.4
         envFrom:
         - configMapRef:
             name: n8n-env
