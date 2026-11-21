@@ -6,6 +6,7 @@ resources:
   - pvc.yaml
   - cronjob.yaml
   - restore-test.yaml
+  - volume-restore-test.yaml
   - networkpolicy.yaml
 # Shell `${...}` would be blanked by Flux postBuild substitution.
 configMapGenerator:
@@ -15,6 +16,7 @@ configMapGenerator:
       - scripts/lib.sh
       - scripts/backup.sh
       - scripts/restore-test.sh
+      - scripts/volume-restore-test.sh
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled

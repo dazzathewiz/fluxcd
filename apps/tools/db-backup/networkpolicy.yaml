@@ -59,3 +59,17 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+---
+# db-volume-restore-test: no traffic either way.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-volume-restore-test
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: db-volume-restore-test
+  policyTypes:
+    - Ingress
+    - Egress

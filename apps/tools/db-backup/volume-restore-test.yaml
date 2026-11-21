@@ -1,0 +1,78 @@
+---
+# Run by hand; see docs/db-backup.md. Checks a Longhorn backup of n8n-db
+# restored by hand to PVC n8n-db-restore (not in Git). Copies the data to an
+# emptyDir and starts a throwaway server there on a Unix socket only. The
+# NetworkPolicy denies all traffic.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-volume-restore-test
+  namespace: tools
+  labels:
+    app: db-volume-restore-test
+spec:
+  suspend: true
+  schedule: "0 0 1 1 *"
+  timeZone: Australia/Brisbane
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app: db-volume-restore-test
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
+            runAsNonRoot: true
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: volume-restore-test
+            image: postgres:17.12-alpine
+            command: ["/bin/sh", "/scripts/volume-restore-test.sh"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: restore
+              mountPath: /restore
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+            - name: tmp
+              mountPath: /tmp
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+          volumes:
+          - name: scripts
+            configMap:
+              name: db-backup-scripts
+          - name: restore
+            persistentVolumeClaim:
+              claimName: n8n-db-restore
+              readOnly: true
+          # A copy of the data directory: about 334Mi when added.
+          - name: scratch
+            emptyDir:
+              sizeLimit: 2Gi
+          - name: tmp
+            emptyDir:
+              sizeLimit: 64Mi
