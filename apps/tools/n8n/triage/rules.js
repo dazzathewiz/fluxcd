@@ -2100,25 +2100,109 @@ function groupFailures(checks) {
       if (!finished(c)) c.status = status;
     }
   }
-  return list.map(({ keys, ...c }) => Object.assign(c, { failure_group: c.failure_group || (finished(c) && keys.length ? keys[0] : null) }));
+  const out = list.map(({ keys, ...c }) => Object.assign(c, { failure_group: c.failure_group || (finished(c) && keys.length ? keys[0] : null) }));
+  // A finished watch whose failing target was already failing joins the
+  // earlier failure's group.
+  for (const c of out) {
+    const cause = finished(c) ? preexistingCause(c) : null;
+    if (cause && cause.failure_group) c.failure_group = cause.failure_group;
+  }
+  return out;
 }
 
-// The action for one finished, failed watch: investigate for a shared failure
-// (two or more watches in its group), else fix-forward or revert.
+// preexistingFailures: the targets of one merge that were already failing
+// before it, and since which earlier merge.
+//   targets  from planWatch
+//   obs      {merge_sha, merged_at, reads, compare}, as for evaluateWatch
+//   history  the repo's other watches [{id, pr, merge_sha, merged_at, status,
+//            failure_group, detail}], any status
+// A target was already failing when an earlier merge's watch finished failed or
+// timeout with it not ok, and no watch merged after that one reports it ok. A
+// Kustomization also was when it is Ready=False at a revision that predates the
+// merge: an earlier watched merge, or one the compare API says is behind.
+// Returns [{id, pr, merge_sha, failure_group, source}], at most one per target:
+// the first failure since the target was last ok.
+function preexistingFailures(targets, obs, history) {
+  const o = obs || {};
+  const at = new Date(o.merged_at).getTime();
+  const earlier = (history || []).filter((w) => w && w.merge_sha !== o.merge_sha && new Date(w.merged_at).getTime() < at)
+    .sort((a, b) => new Date(a.merged_at).getTime() - new Date(b.merged_at).getTime() || (a.id || 0) - (b.id || 0));
+  const out = [];
+  for (const t of targets || []) {
+    let first = null;
+    for (const w of earlier) {
+      const d = (Array.isArray(w.detail) ? w.detail : []).find((x) => x && x.id === t.id);
+      if (!d) continue;
+      if (d.state === 'ok') first = null;
+      else if (!first && (w.status === 'failed' || w.status === 'timeout')) first = w;
+    }
+    let hit = first ? { id: t.id, pr: Number.isInteger(first.pr) ? first.pr : null, merge_sha: first.merge_sha, failure_group: first.failure_group || null, source: 'watch' } : null;
+    const read = (o.reads || {})[t.id];
+    if (!hit && t.type === 'kustomization' && read && read.statusCode === 200 && read.body) {
+      const ready = conditionOf(read.body, 'Ready');
+      const rev = revisionSha((read.body.status || {}).lastAttemptedRevision);
+      const w = earlier.find((x) => x.merge_sha === rev);
+      if (ready && ready.status === 'False' && !KS_WAIT_REASONS.includes(ready.reason) && rev && rev !== o.merge_sha
+          && (w || (o.compare || {})[rev] === 'behind')) {
+        const key = `${t.id}@${rev}`;
+        hit = {
+          id: t.id, pr: w && Number.isInteger(w.pr) ? w.pr : null, merge_sha: rev,
+          failure_group: (w && w.failure_group) || (FAILURE_GROUP_RE.test(key) ? key : null), source: 'cluster',
+        };
+      }
+    }
+    if (hit) out.push(hit);
+  }
+  return out;
+}
+
+// A watch's recorded pre-existing failures with new ones added; one per target,
+// the first recorded kept.
+function mergePreexisting(stored, fresh) {
+  const out = (Array.isArray(stored) ? stored : []).filter((p) => p && typeof p.id === 'string');
+  for (const p of fresh || []) if (p && !out.some((q) => q.id === p.id)) out.push(p);
+  return out;
+}
+
+// The pre-existing failure behind one of a watch's targets that isn't ok, or null.
+function preexistingCause(watch) {
+  const w = watch || {};
+  const failing = new Set((Array.isArray(w.detail) ? w.detail : []).filter((d) => d && d.state !== 'ok').map((d) => d.id));
+  return (Array.isArray(w.preexisting) ? w.preexisting : []).find((p) => p && failing.has(p.id)) || null;
+}
+
+// The members of a watch's group that failed together, leaving out those that
+// joined it because their target was already failing.
+function sharedMembers(watch) {
+  const w = watch || {};
+  if (!Array.isArray(w.group)) return [];
+  const joined = (g) => Array.isArray(g.preexisting) && g.preexisting.some((p) => p && p.failure_group && p.failure_group === w.failure_group);
+  return w.group.filter((g) => g && !joined(g));
+}
+
+// The action for one finished, failed watch: for a target already failing
+// before the merge, fix-forward or investigate; for a shared failure (two or
+// more watches failing together), investigate; else fix-forward or revert.
 function watchAction(watch) {
   const w = watch || {};
-  if (Array.isArray(w.group) && w.group.length >= 2) return 'investigate';
+  if (preexistingCause(w)) return w.fix_forward === true ? 'fix-forward' : 'investigate';
+  if (sharedMembers(w).length >= 2) return 'investigate';
   return w.fix_forward === true ? 'fix-forward' : 'revert';
 }
 
 // The Home Assistant alert for one finished watch, or null: none on ok, and one
-// per group, sent by its lowest watch id.
+// per group, sent by its lowest watch id. A watch that joined an earlier
+// failure's group sends none; one with no group names both PRs.
 function watchAlert(watch, now) {
   const w = watch || {};
   if (!['failed', 'timeout'].includes(w.status)) return null;
-  const group = Array.isArray(w.group) && w.group.length >= 2 ? w.group.slice().sort((a, b) => a.id - b.id) : null;
+  const cause = preexistingCause(w);
+  if (cause && Array.isArray(w.group) && w.group.some((g) => g && g.id < w.id)) return null;
+  const shared = cause ? [] : sharedMembers(w);
+  const group = shared.length >= 2 ? shared.slice().sort((a, b) => a.id - b.id) : null;
   if (group && group[0].id !== w.id) return null;
-  const prs = group ? Array.from(new Set(group.map((g) => g.pr))).filter(Number.isInteger).sort((a, b) => a - b) : [w.pr];
+  const prs = group ? Array.from(new Set(group.map((g) => g.pr))).filter(Number.isInteger).sort((a, b) => a - b)
+    : Array.from(new Set([cause ? cause.pr : null, w.pr])).filter(Number.isInteger).sort((a, b) => a - b);
   return {
     source: 'pr-watch', pr: prs[0], prs, status: w.status, action: watchAction(w),
     fix_forward: group ? group.some((g) => g.fix_forward === true) : w.fix_forward === true, checked: now,
@@ -2250,13 +2334,22 @@ function renderWatchComment(watch, config) {
       : `Merge commit \`${watch.merge_sha.slice(0, 12)}\` failed to roll out.`,
   ];
   if (failing.length) lines.push('', '**Not rolled out**', ...failing.map((d) => `- \`${d.id}\`: ${d.cond}`));
-  if (action === 'investigate') {
+  const cause = preexistingCause(watch);
+  if (cause) {
+    const at = SHA_RE.test(String(cause.merge_sha)) ? ` (\`${cause.id}\`, revision \`${cause.merge_sha.slice(0, 12)}\`)` : ` (\`${cause.id}\`)`;
+    lines.push('', Number.isInteger(cause.pr)
+      ? `**Already failing.** Target was already failing from PR ${cause.pr} before this merge${at}.`
+      : `**Already failing.** Target was already failing before this merge${at}.`);
+    lines.push('', action === 'fix-forward'
+      ? `**Fix forward — no revert.** Source: ${watch.fix_forward_source}. Fix the earlier failure first.`
+      : '**Investigate.** This merge waited behind the earlier failure; fix that first. Don\'t revert this merge for it.');
+  } else if (action === 'investigate') {
     const m = String(watch.failure_group || '').match(/^(kustomization \S+)@([0-9a-f]{40})$/);
     const ks = m ? (failing.find((d) => d.id === m[1]) || {}) : {};
     lines.push('', m
       ? `**Shared failure.** \`${m[1]}\` failed at revision \`${m[2].slice(0, 12)}\` (${ks.cond || 'failed'}), which includes all of these merges:`
       : '**Shared failure.** One Kustomization revision that includes all of these merges failed:');
-    lines.push(...watch.group.slice().sort((a, b) => a.pr - b.pr || String(a.merge_sha).localeCompare(String(b.merge_sha)))
+    lines.push(...sharedMembers(watch).sort((a, b) => a.pr - b.pr || String(a.merge_sha).localeCompare(String(b.merge_sha)))
       .map((g) => `- PR ${g.pr}, merge \`${String(g.merge_sha).slice(0, 12)}\``));
     lines.push('', '**Investigate.** The cause can\'t be attributed to one merge.');
     if (watch.fix_forward) lines.push('', `**This merge is fix forward — don't revert it.** Source: ${watch.fix_forward_source}.`);
@@ -2271,7 +2364,8 @@ function renderWatchComment(watch, config) {
 
 // planWatchPublish: the writes for one finished watch.
 //   watch  {repo, pr, merge_sha, status, fix_forward, fix_forward_source, detail,
-//           failure_group, group: [{id, pr, merge_sha, fix_forward}] | null}
+//           failure_group, preexisting (preexistingFailures),
+//           group: [{id, pr, merge_sha, fix_forward, preexisting}] | null}
 //   reads  {pr_labels: pages, comments: pages, repo_labels: [name] | null}
 //   ctx    {config, patterns, mode: off | labels}
 // Returns {action: publish | skip, outcome, actions, mode}. Nothing on ok. On
@@ -2325,7 +2419,8 @@ const RULES_EXPORTS = {
   triageComments, findOverride, headSince, planPublish,
   watchStaleFromConfigLine, WATCH_STATUSES, WATCH_LABELS, WATCH_LABEL_STYLES, WATCH_ACTIONS, WATCH_ACTION_TYPES, CLUSTER_PATHS,
   clusterPath, allowedClusterPath, patchLines, manifestDocs, kustomizationFor, planWatch, watchReads, revisionSha,
-  evaluateWatch, failureKeys, groupFailures, watchAction, watchAlert, outsideCode, fixForward, decodeBase64Utf8,
+  evaluateWatch, failureKeys, groupFailures, preexistingFailures, mergePreexisting, preexistingCause, sharedMembers,
+  watchAction, watchAlert, outsideCode, fixForward, decodeBase64Utf8,
   watchMarker, renderWatchComment, planWatchPublish,
 };
 

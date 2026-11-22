@@ -205,3 +205,7 @@ ALTER TABLE triage.heartbeat ADD COLUMN IF NOT EXISTS watch_last_success timesta
 -- group. Additive: a revert leaves it unused.
 ALTER TABLE triage.watches ADD COLUMN IF NOT EXISTS failure_group text;
 CREATE INDEX IF NOT EXISTS watches_failure_group_idx ON triage.watches (repo, failure_group) WHERE failure_group IS NOT NULL;
+
+-- R10 targets already failing before the merge (rules.js preexistingFailures):
+-- [{id, pr, merge_sha, failure_group, source}]. Additive: a revert leaves it unused.
+ALTER TABLE triage.watches ADD COLUMN IF NOT EXISTS preexisting jsonb NOT NULL DEFAULT '[]'::jsonb;

@@ -598,3 +598,95 @@ test('decodeBase64Utf8 matches Buffer, including multi-byte text', () => {
     assert.equal(rules.decodeBase64Utf8(b64), s);
   }
 });
+
+// ---------------------------------------------------------------- pre-existing failures
+
+const EARLY = 'c'.repeat(40);
+const AFTER = 'd'.repeat(40);
+const KEY_A = `kustomization apps@${EARLY}`;
+const KS_OK = { id: 'kustomization apps', state: 'ok', cond: 'applied' };
+const hist = (o) => Object.assign({ id: 1, pr: 400, merge_sha: EARLY, merged_at: at(-20), status: 'failed', failure_group: KEY_A, detail: [ksFail(EARLY)] }, o);
+const pre = (history, reads, compare) => rules.preexistingFailures([KS], { merge_sha: MERGE, merged_at: MERGED_AT, reads: reads || {}, compare: compare || {} }, history);
+
+test('preexistingFailures: a target an earlier merge left failing, with no ok since, is pre-existing from that merge', () => {
+  assert.deepEqual(pre([hist()]), [{ id: KS.id, pr: 400, merge_sha: EARLY, failure_group: KEY_A, source: 'watch' }]);
+  // The first failure since the target was last ok, not the latest.
+  const b = hist({ id: 2, pr: 401, merge_sha: LATER, merged_at: at(-10), failure_group: KEY_A, detail: [ksFail(LATER)] });
+  assert.equal(pre([b, hist()])[0].pr, 400);
+  // Nothing failing, an ok since, a later merge, or a still-pending watch: none.
+  assert.deepEqual(pre([]), []);
+  assert.deepEqual(pre([hist(), hist({ id: 3, pr: 402, merge_sha: OTHER, merged_at: at(-5), status: 'ok', failure_group: null, detail: [KS_OK] })]), []);
+  assert.deepEqual(pre([hist({ merged_at: at(5) })]), []);
+  assert.deepEqual(pre([hist({ status: 'pending', failure_group: null })]), []);
+  // Its own row is never its cause.
+  assert.deepEqual(pre([hist({ merge_sha: MERGE })]), []);
+});
+
+test('preexistingFailures: a Kustomization Ready=False at a revision before the merge is pre-existing', () => {
+  const pending = hist({ status: 'pending', failure_group: null, detail: [] });
+  const failingAt = (rev) => ({ [KS.id]: ks('False', 'HealthCheckFailed', OTHER, rev) });
+  // At an earlier watched merge: that PR, keyed by its revision.
+  assert.deepEqual(pre([pending], failingAt(EARLY)), [{ id: KS.id, pr: 400, merge_sha: EARLY, failure_group: KEY_A, source: 'cluster' }]);
+  // At an unwatched revision the compare API says is behind: no PR.
+  assert.deepEqual(pre([], failingAt(AFTER), { [AFTER]: 'behind' }), [{ id: KS.id, pr: null, merge_sha: AFTER, failure_group: `kustomization apps@${AFTER}`, source: 'cluster' }]);
+  // At the merge itself, at a revision not known to be earlier, or still progressing: none.
+  assert.deepEqual(pre([pending], failingAt(MERGE)), []);
+  assert.deepEqual(pre([], failingAt(AFTER), { [AFTER]: 'ahead' }), []);
+  assert.deepEqual(pre([pending], { [KS.id]: ks('False', 'Progressing', OTHER, EARLY) }), []);
+  assert.deepEqual(pre([pending], { [KS.id]: ks('True', 'ReconciliationSucceeded', EARLY) }), []);
+});
+
+test('mergePreexisting keeps what was recorded at creation and adds new targets only', () => {
+  const a = { id: KS.id, pr: 400, merge_sha: EARLY, failure_group: KEY_A, source: 'cluster' };
+  const b = { id: KS.id, pr: 401, merge_sha: LATER, failure_group: null, source: 'watch' };
+  const c = { id: HRT.id, pr: 401, merge_sha: LATER, failure_group: null, source: 'watch' };
+  assert.deepEqual(rules.mergePreexisting([a], [b, c]), [a, c]);
+  assert.deepEqual(rules.mergePreexisting(null, []), []);
+});
+
+test('groupFailures: a finished watch on a target already failing joins the earlier failure\'s group', () => {
+  const p = [{ id: KS.id, pr: 400, merge_sha: EARLY, failure_group: KEY_A, source: 'watch' }];
+  const c = (status, detail, preexisting) => Object.assign(chk(5, status, detail), { preexisting });
+  assert.deepEqual(groups([c('failed', [ksFail(LATER)], p)]), [[5, 'failed', KEY_A]]);
+  assert.deepEqual(groups([c('timeout', [{ id: KS.id, state: 'pending', cond: 'merge not applied yet' }], p)]), [[5, 'timeout', KEY_A]]);
+  // Pending, or failing only on a target that wasn't pre-existing: its own key.
+  assert.deepEqual(groups([c('pending', [ksFail(LATER)], p)]), [[5, 'pending', null]]);
+  assert.deepEqual(groups([c('failed', [KS_OK, hrFail], p)]), [[5, 'failed', null]]);
+});
+
+test('watchAction: merge B on a target already failing from A is investigate, named in the comment; A alone is revert', () => {
+  const a = { id: 1, pr: 400, merge_sha: EARLY, fix_forward: false, preexisting: [] };
+  const bPre = [{ id: KS.id, pr: 400, merge_sha: EARLY, failure_group: KEY_A, source: 'watch' }];
+  const b = { id: 2, pr: 401, merge_sha: MERGE, fix_forward: false, preexisting: bPre };
+  const group = [a, b];
+  const wA = watch({ pr: 400, merge_sha: EARLY, id: 1, status: 'failed', detail: [ksFail(EARLY)], failure_group: KEY_A, group, preexisting: [] });
+  const wB = watch({ pr: 401, id: 2, status: 'failed', detail: [ksFail(MERGE)], failure_group: KEY_A, group, preexisting: bPre });
+  // A is still attributed although B joined its group; one alert, A's.
+  assert.equal(rules.watchAction(wA), 'revert');
+  assert.deepEqual(rules.watchAlert(wA, 'T'), { source: 'pr-watch', pr: 400, prs: [400], status: 'failed', action: 'revert', fix_forward: false, checked: 'T' });
+  assert.equal(rules.watchAction(wB), 'investigate');
+  assert.equal(rules.watchAlert(wB, 'T'), null, 'the earlier failure alerted');
+  const p = pub(wB, reads({ repo_labels: [] }));
+  assert.deepEqual(p.labels, ['rollout:investigate']);
+  const body = p.actions[2].body;
+  assert.match(body, new RegExp(`\\*\\*Already failing\\.\\*\\* Target was already failing from PR 400 before this merge \\(\`kustomization apps\`, revision \`${EARLY.slice(0, 12)}\`\\)\\.`));
+  assert.match(body, /\*\*Investigate\.\*\*/);
+  assert.ok(!/Revert by hand|Shared failure|#\d/.test(body));
+  // No group to join (A failed on no Kustomization revision): B alerts itself, naming both.
+  const alone = Object.assign({}, wB, { failure_group: null, group: null, preexisting: [Object.assign({}, bPre[0], { failure_group: null })] });
+  assert.deepEqual(rules.watchAlert(alone, 'T'), { source: 'pr-watch', pr: 400, prs: [400, 401], status: 'failed', action: 'investigate', fix_forward: false, checked: 'T' });
+  // Pre-existing only on a target that rolled out fine: attributed as before.
+  assert.equal(rules.watchAction(Object.assign({}, wB, { detail: [KS_OK, hrFail], group: null })), 'revert');
+});
+
+test('watchAction: fix-forward still wins over investigate on a target already failing', () => {
+  const bPre = [{ id: KS.id, pr: 400, merge_sha: EARLY, failure_group: KEY_A, source: 'watch' }];
+  const w = watch({ pr: 401, id: 2, status: 'timeout', detail: [{ id: KS.id, state: 'pending', cond: 'merge not applied yet' }], failure_group: KEY_A, preexisting: bPre,
+    group: [{ id: 1, pr: 400, merge_sha: EARLY, preexisting: [] }, { id: 2, pr: 401, merge_sha: MERGE, preexisting: bPre }], fix_forward: true, fix_forward_source: 'marker in the PR description' });
+  assert.equal(rules.watchAction(w), 'fix-forward');
+  const p = pub(w, reads({ repo_labels: [] }));
+  assert.deepEqual(p.labels, ['rollout:fix-forward']);
+  assert.match(p.actions[2].body, /from PR 400 before this merge/);
+  assert.match(p.actions[2].body, /\*\*Fix forward — no revert\.\*\* Source: marker in the PR description\./);
+  assert.ok(!/Revert by hand/.test(p.actions[2].body));
+});
