@@ -1783,13 +1783,17 @@ function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) 
 // finish rolling out. Alert-only: nothing here reverts anything.
 
 const WATCH_STATUSES = ['pending', 'ok', 'failed', 'timeout'];
-const WATCH_LABELS = { ok: 'triage:post-merge-ok', failed: 'triage:post-merge-failed' };
+// Failure-only: ok gets no label. One of these on failed or timeout, by action.
+const WATCH_LABELS = { revert: 'rollout:revert', 'fix-forward': 'rollout:fix-forward', investigate: 'rollout:investigate' };
 const WATCH_LABEL_STYLES = {
-  'triage:post-merge-ok': { color: '0e8a16', description: 'PR triage: the merge rolled out' },
-  'triage:post-merge-failed': { color: 'b60205', description: 'PR triage: the merge did not roll out' },
+  'rollout:revert': { color: 'b60205', description: 'Post-merge: the rollout failed; revert by hand' },
+  'rollout:fix-forward': { color: 'd93f0b', description: 'Post-merge: the rollout failed; fix forward, no revert' },
+  'rollout:investigate': { color: 'fbca04', description: 'Post-merge: a shared rollout failure; find the cause' },
 };
+const WATCH_ACTIONS = Object.keys(WATCH_LABELS);
 const WATCH_MARKER_RE = /^<!-- pr-triage-watch:v1 sha=([0-9a-f]{40}) status=(failed|timeout) -->/;
-const WATCH_ACTION_TYPES = ['watch_ensure_label', 'watch_add_label', 'ensure_label', 'add_label', 'create_comment'];
+const WATCH_ACTION_TYPES = ['watch_ensure_label', 'watch_add_label', 'create_comment'];
+const FAILURE_GROUP_RE = /^kustomization [a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?@[0-9a-f]{40}$/;
 const WORKLOAD_KINDS = { Deployment: 'deployment', StatefulSet: 'statefulset' };
 // The only cluster reads TriageClusterV01 makes. {ns} and {name} are DNS labels.
 const CLUSTER_PATHS = [
@@ -1964,7 +1968,7 @@ function checkKustomization(t, read, includes) {
   // reconciles again (every interval, a few seconds), Ready is Unknown and
   // the applied revision still stands, so that counts as applied too.
   if (ready && ready.status === 'False' && !KS_WAIT_REASONS.includes(ready.reason) && includes(attempted) === true) {
-    return { state: 'fail', cond: `Ready=False (${safeWord(ready.reason)})` };
+    return { state: 'fail', cond: `Ready=False (${safeWord(ready.reason)})`, revision: attempted };
   }
   if (ready && ready.status !== 'False' && includes(applied) === true) {
     return { state: 'ok', cond: ready.status === 'True' ? 'applied' : 'applied (reconciling again)' };
@@ -2046,7 +2050,7 @@ function evaluateWatch(targets, observations, now, mergedAt, history, opts) {
     else if (t.type === 'helmrelease') r = checkHelmRelease(t, read);
     else if (t.type === 'deployment' || t.type === 'statefulset') r = checkWorkload(t, read);
     else r = { state: 'pending', cond: 'unknown target type' };
-    return { id: t.id, state: r.state, cond: r.cond };
+    return Object.assign({ id: t.id, state: r.state, cond: r.cond }, r.revision ? { revision: r.revision } : {});
   });
   const streak = {};
   for (const d of detail) {
@@ -2061,6 +2065,64 @@ function evaluateWatch(targets, observations, now, mergedAt, history, opts) {
   else if (Object.values(streak).some((s) => s.count >= 2)) status = 'failed';
   else if (elapsed >= timeoutMs) status = 'timeout';
   return { status, fail_streak: streak, detail };
+}
+
+// The shared-failure keys in one watch's detail: each Kustomization failing at
+// a revision, as `kustomization <name>@<sha>`, sorted.
+function failureKeys(detail) {
+  const keys = (detail || []).filter((d) => d && d.state === 'fail' && /^kustomization /.test(String(d.id)) && SHA_RE.test(String(d.revision)))
+    .map((d) => `${d.id}@${d.revision}`).filter((k) => FAILURE_GROUP_RE.test(k));
+  return Array.from(new Set(keys)).sort();
+}
+
+// groupFailures: shared failures among this run's checks.
+//   checks [{watch_id, status, detail}], evaluateWatch's results for every
+//          pending watch of one repo, checked against the same cluster reads
+// A Kustomization failing at revision R fails every watch whose merge R
+// includes. When one of them finishes (failed or timeout), every watch failing
+// on that Kustomization at R finishes with it, in the same run, so none is
+// published as attributed before the others are known. Returns the checks with
+// failure_group: the key for a finished watch that has one (the first sorted, a
+// group of one included), null otherwise. A pending member becomes failed, or
+// timeout when no member failed.
+function groupFailures(checks) {
+  const list = (checks || []).map((c) => Object.assign({}, c, { keys: failureKeys(c.detail) }));
+  const finished = (c) => c.status === 'failed' || c.status === 'timeout';
+  const byKey = {};
+  for (const c of list) for (const k of c.keys) (byKey[k] = byKey[k] || []).push(c);
+  for (const k of Object.keys(byKey).sort()) {
+    const members = byKey[k];
+    if (members.length < 2 || !members.some(finished)) continue;
+    const status = members.some((c) => c.status === 'failed') ? 'failed' : 'timeout';
+    for (const c of members) {
+      if (c.failure_group) continue;
+      c.failure_group = k;
+      if (!finished(c)) c.status = status;
+    }
+  }
+  return list.map(({ keys, ...c }) => Object.assign(c, { failure_group: c.failure_group || (finished(c) && keys.length ? keys[0] : null) }));
+}
+
+// The action for one finished, failed watch: investigate for a shared failure
+// (two or more watches in its group), else fix-forward or revert.
+function watchAction(watch) {
+  const w = watch || {};
+  if (Array.isArray(w.group) && w.group.length >= 2) return 'investigate';
+  return w.fix_forward === true ? 'fix-forward' : 'revert';
+}
+
+// The Home Assistant alert for one finished watch, or null: none on ok, and one
+// per group, sent by its lowest watch id.
+function watchAlert(watch, now) {
+  const w = watch || {};
+  if (!['failed', 'timeout'].includes(w.status)) return null;
+  const group = Array.isArray(w.group) && w.group.length >= 2 ? w.group.slice().sort((a, b) => a.id - b.id) : null;
+  if (group && group[0].id !== w.id) return null;
+  const prs = group ? Array.from(new Set(group.map((g) => g.pr))).filter(Number.isInteger).sort((a, b) => a - b) : [w.pr];
+  return {
+    source: 'pr-watch', pr: prs[0], prs, status: w.status, action: watchAction(w),
+    fix_forward: group ? group.some((g) => g.fix_forward === true) : w.fix_forward === true, checked: now,
+  };
 }
 
 // Text outside fenced code blocks.
@@ -2175,9 +2237,11 @@ function watchMarker(sha, status) {
   return `<!-- pr-triage-watch:v1 sha=${sha} status=${status} -->`;
 }
 
-// The failure comment: the marker, then fixed templates only.
+// The failure comment: the marker, then fixed templates only. It never
+// suggests a revert when fix-forward applies.
 function renderWatchComment(watch, config) {
   const failing = (watch.detail || []).filter((d) => d.state !== 'ok');
+  const action = watchAction(watch);
   const lines = [
     `### Post-merge check: \`${watch.status}\``,
     '',
@@ -2186,51 +2250,64 @@ function renderWatchComment(watch, config) {
       : `Merge commit \`${watch.merge_sha.slice(0, 12)}\` failed to roll out.`,
   ];
   if (failing.length) lines.push('', '**Not rolled out**', ...failing.map((d) => `- \`${d.id}\`: ${d.cond}`));
-  lines.push('', watch.fix_forward
-    ? `**Fix forward — no revert.** Source: ${watch.fix_forward_source}.`
-    : 'This merge was not made by an automated merger, so nothing reverts it automatically.');
+  if (action === 'investigate') {
+    const m = String(watch.failure_group || '').match(/^(kustomization \S+)@([0-9a-f]{40})$/);
+    const ks = m ? (failing.find((d) => d.id === m[1]) || {}) : {};
+    lines.push('', m
+      ? `**Shared failure.** \`${m[1]}\` failed at revision \`${m[2].slice(0, 12)}\` (${ks.cond || 'failed'}), which includes all of these merges:`
+      : '**Shared failure.** One Kustomization revision that includes all of these merges failed:');
+    lines.push(...watch.group.slice().sort((a, b) => a.pr - b.pr || String(a.merge_sha).localeCompare(String(b.merge_sha)))
+      .map((g) => `- PR ${g.pr}, merge \`${String(g.merge_sha).slice(0, 12)}\``));
+    lines.push('', '**Investigate.** The cause can\'t be attributed to one merge.');
+    if (watch.fix_forward) lines.push('', `**This merge is fix forward — don't revert it.** Source: ${watch.fix_forward_source}.`);
+  } else {
+    lines.push('', action === 'fix-forward'
+      ? `**Fix forward — no revert.** Source: ${watch.fix_forward_source}.`
+      : '**Revert by hand.** This merge was not made by an automated merger, so nothing reverts it automatically.');
+  }
   lines.push('', '<sub>Written by the PR triage post-merge watcher for this merge commit only. Nothing here reverts anything.</sub>');
   return `${watchMarker(watch.merge_sha, watch.status)}\n${withoutHashRefs(lines.join('\n'))}`;
 }
 
 // planWatchPublish: the writes for one finished watch.
-//   watch  {repo, pr, merge_sha, status, fix_forward, fix_forward_source, detail}
+//   watch  {repo, pr, merge_sha, status, fix_forward, fix_forward_source, detail,
+//           failure_group, group: [{id, pr, merge_sha, fix_forward}] | null}
 //   reads  {pr_labels: pages, comments: pages, repo_labels: [name] | null}
 //   ctx    {config, patterns, mode: off | labels}
-// Returns {action: publish | skip, outcome, actions, mode}. One comment per merge
-// SHA, only on failed or timeout; labels are only ever added.
+// Returns {action: publish | skip, outcome, actions, mode}. Nothing on ok. On
+// failed or timeout, one rollout label (watchAction) and one comment per merge
+// SHA; labels are only ever added.
 function planWatchPublish(watch, reads, ctx) {
   const config = ctx.config;
   const w = watch || {};
   const plan = { mode: ctx.mode, action: 'skip', outcome: null, reason: null, labels: [], comment: false, actions: [] };
   const skip = (reason) => Object.assign(plan, { reason, outcome: reason === 'up-to-date' ? reason : `skipped-${reason}` });
   if (!/^[\w.-]+\/[\w.-]+$/.test(String(w.repo)) || !Number.isInteger(w.pr) || !SHA_RE.test(String(w.merge_sha)) || !['ok', 'failed', 'timeout'].includes(w.status)) return skip('bad-input');
+  if (w.status === 'ok') return skip('up-to-date');
   const patterns = compilePatterns(ctx.patterns);
   if (patterns.list.length === 0 || patterns.invalid > 0) return skip('unhealthy');
   const labels = pagedItems((reads || {}).pr_labels);
   if (!labels) return skip('labels-incomplete');
   const on = labels.map((l) => l && l.name);
   const repoLabels = (reads || {}).repo_labels || [];
-  const want = w.status === 'ok' ? [WATCH_LABELS.ok] : [WATCH_LABELS.failed].concat(w.fix_forward ? [config.verdict_labels['deep-review']] : []);
+  plan.rollout_action = watchAction(w);
+  const want = [WATCH_LABELS[plan.rollout_action]];
   plan.labels = want;
   const actions = [];
   for (const name of want) {
     if (on.includes(name)) continue;
-    const watchLabel = Object.prototype.hasOwnProperty.call(WATCH_LABEL_STYLES, name);
-    if (!repoLabels.includes(name)) actions.push(Object.assign({ type: watchLabel ? 'watch_ensure_label' : 'ensure_label', name }, watchLabel ? WATCH_LABEL_STYLES[name] : LABEL_STYLES[name]));
-    actions.push({ type: watchLabel ? 'watch_add_label' : 'add_label', name });
+    if (!repoLabels.includes(name)) actions.push(Object.assign({ type: 'watch_ensure_label', name }, WATCH_LABEL_STYLES[name]));
+    actions.push({ type: 'watch_add_label', name });
   }
-  if (w.status !== 'ok') {
-    const comments = pagedItems((reads || {}).comments);
-    if (!comments) return skip('comments-incomplete');
-    const appLogin = appLoginOf(config);
-    const posted = comments.some((c) => isAppComment(c, appLogin) && (String(c.body || '').match(WATCH_MARKER_RE) || [])[1] === w.merge_sha);
-    if (!posted) {
-      const body = renderWatchComment(w, config);
-      // A redaction hit drops the comment; the labels are fixed strings.
-      if (countMatches(body, patterns.list)) plan.redaction_hit = true;
-      else { actions.push({ type: 'create_comment', body }); plan.comment = true; }
-    }
+  const comments = pagedItems((reads || {}).comments);
+  if (!comments) return skip('comments-incomplete');
+  const appLogin = appLoginOf(config);
+  const posted = comments.some((c) => isAppComment(c, appLogin) && (String(c.body || '').match(WATCH_MARKER_RE) || [])[1] === w.merge_sha);
+  if (!posted) {
+    const body = renderWatchComment(w, config);
+    // A redaction hit drops the comment; the labels are fixed strings.
+    if (countMatches(body, patterns.list)) plan.redaction_hit = true;
+    else { actions.push({ type: 'create_comment', body }); plan.comment = true; }
   }
   if (!actions.length) return skip('up-to-date');
   return Object.assign(plan, { action: 'publish', outcome: ctx.mode === 'labels' ? 'publishing' : 'planned-only', actions });
@@ -2246,9 +2323,10 @@ const RULES_EXPORTS = {
   SEVERITY, STATUS_STATES, LABEL_STYLES, PUBLISH_SKIPS, RUN_PUBLISH, ACTION_TYPES, OUTCOME_LABELS, RATE_LIMIT_URL,
   publishMarker, parseMarker, managedLabels, renderTriageComment, pagedItems, isAppComment, appLoginOf,
   triageComments, findOverride, headSince, planPublish,
-  watchStaleFromConfigLine, WATCH_STATUSES, WATCH_LABELS, WATCH_LABEL_STYLES, WATCH_ACTION_TYPES, CLUSTER_PATHS,
+  watchStaleFromConfigLine, WATCH_STATUSES, WATCH_LABELS, WATCH_LABEL_STYLES, WATCH_ACTIONS, WATCH_ACTION_TYPES, CLUSTER_PATHS,
   clusterPath, allowedClusterPath, patchLines, manifestDocs, kustomizationFor, planWatch, watchReads, revisionSha,
-  evaluateWatch, outsideCode, fixForward, decodeBase64Utf8, watchMarker, renderWatchComment, planWatchPublish,
+  evaluateWatch, failureKeys, groupFailures, watchAction, watchAlert, outsideCode, fixForward, decodeBase64Utf8,
+  watchMarker, renderWatchComment, planWatchPublish,
 };
 
 if (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {

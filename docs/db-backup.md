@@ -1,6 +1,6 @@
 # Database dumps
 
-A nightly logical backup of the two app databases in `tools`: `n8n` on `n8n-db`
+A daily logical backup of the two app databases in `tools`: `n8n` on `n8n-db`
 and `inventree` on `inventory-db`. Manifests are in `apps/tools/db-backup/`.
 
 Longhorn volume backups already cover both database volumes. They're
@@ -11,14 +11,14 @@ same major version. The dump adds four things:
   first, and a corrupt page fails the job instead of being copied offsite.
 - **It restores across Postgres majors**, so it is the dump a major upgrade needs.
 - **It allows a partial restore**: one table, or one schema.
-- **It is checked each night.** `pg_restore --list` reads every dump before it's
+- **It is checked every day.** `pg_restore --list` reads every dump before it's
   kept.
 
 ## What runs when
 
-`CronJob db-backup`, at 20:30 Australia/Brisbane. That's 30 minutes before
-Longhorn's `daily-backups` RecurringJob (11:00 UTC), so each offsite backup
-carries that night's dumps. One attempt (`backoffLimit: 0`), a 30-minute
+`CronJob db-backup`, at 10:30 Australia/Brisbane. That's 30 minutes before
+Longhorn's `daily-backups` RecurringJob (11:00 Brisbane time), so each daily
+offsite backup carries that morning's dumps. One attempt (`backoffLimit: 0`), a 30-minute
 deadline, and no overlap. For each database, as that database's owner user:
 
 1. Wait up to 90 s for `pg_isready`, polling every 2 s, and log how long it
@@ -48,7 +48,7 @@ and the n8n pod reseeds both from its Secret on every start.
 
 PVC `db-backup`, 5Gi, `longhorn-diskencrypt-global`, one directory per database:
 `/backup/n8n/` and `/backup/inventree/`. Like every other volume, it's in the
-default Longhorn recurring-job group with no label, so the nightly and weekly
+default Longhorn recurring-job group with no label, so the daily and weekly
 volume backups take it offsite. No other offsite step exists.
 
 The pod has no service-account token. It runs as the image's `postgres` user
@@ -97,7 +97,7 @@ kubectl -n tools delete job restore-test-$(date +%Y%m%d)
 ```
 
 `db-backup` is RWO, so the test pod schedules only on the node that has the
-volume attached, or anywhere once no pod has it. Don't run it while the nightly
+volume attached, or anywhere once no pod has it. Don't run it while the daily
 job is running.
 
 To take a dump by hand, before a Postgres major upgrade for example:

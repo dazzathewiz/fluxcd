@@ -115,16 +115,22 @@ function startWatch(db, now) {
   const c = db.cursor[REPO];
   const cursor = c ? c.merged_at : iso(now - 60 * 60000);
   const mine = db.watches.filter((w) => w.repo === REPO);
+  const groupOf = (w) => (w.failure_group ? mine.filter((g) => g.failure_group === w.failure_group).sort((a, b) => a.id - b.id) : []);
   const publishable = mine.filter((w) => w.status !== 'pending' && w.finished_at && Date.parse(w.finished_at) > now - 86400000
     && (!w.planned_actions || (w.planned_actions.mode === 'labels'
-      && (!w.published || (w.status !== 'ok' && w.alert_attempts < 3 && !(w.alert_status >= 200 && w.alert_status < 300))))));
+      && (!w.published || (w.status !== 'ok' && w.alert_attempts < 3 && !(w.alert_status >= 200 && w.alert_status < 300)
+        && !groupOf(w).some((g) => g.id < w.id))))));
   return {
     run,
     row: {
       run_id: run.id, repo: REPO, config_body: db.config, cursor, list_etag: c ? c.list_etag : null,
       known: mine.filter((w) => Date.parse(w.merged_at) >= Date.parse(cursor) - 86400000).map((w) => `${w.pr}@${w.merge_sha}`),
       pending: mine.filter((w) => w.status === 'pending').map((w) => ({ id: w.id, repo: w.repo, pr: w.pr, merge_sha: w.merge_sha, merged_at: w.merged_at, targets: w.targets, fail_streak: w.fail_streak })),
-      publishable: publishable.map((w) => ({ id: w.id, repo: w.repo, pr: w.pr, merge_sha: w.merge_sha, status: w.status, fix_forward: w.fix_forward, fix_forward_source: w.fix_forward_source, detail: w.last_detail, alert_status: w.alert_status, alert_attempts: w.alert_attempts })),
+      publishable: publishable.map((w) => ({
+        id: w.id, repo: w.repo, pr: w.pr, merge_sha: w.merge_sha, status: w.status, fix_forward: w.fix_forward, fix_forward_source: w.fix_forward_source,
+        detail: w.last_detail, alert_status: w.alert_status, alert_attempts: w.alert_attempts, failure_group: w.failure_group || null,
+        group: w.failure_group ? groupOf(w).map((g) => ({ id: g.id, pr: g.pr, merge_sha: g.merge_sha, fix_forward: g.fix_forward })) : null,
+      })),
       patterns: db.patterns, app_id: db.app_id, installation_id: db.installation_id,
     },
   };
@@ -231,10 +237,10 @@ function runWatchAt(opts) {
       });
     }
     for (const it of of('update')) {
-      const [wid, status, streak, detail] = h.param(node('Update watch').parameters.options.queryReplacement, h.scope(out, it.json, 0));
+      const [wid, status, streak, detail, group] = h.param(node('Update watch').parameters.options.queryReplacement, h.scope(out, it.json, 0));
       const w = db.watches.find((x) => x.id === wid);
       if (!w || w.status !== 'pending') continue;
-      Object.assign(w, { status, fail_streak: JSON.parse(streak), last_detail: JSON.parse(detail), finished_at: status !== 'pending' ? iso(now) : null });
+      Object.assign(w, { status, fail_streak: JSON.parse(streak), last_detail: JSON.parse(detail), finished_at: status !== 'pending' ? iso(now) : null, failure_group: group || null });
     }
     for (const it of of('plan')) {
       const [wid, plan, outcome, mode, runId] = h.param(node('Record watch plan').parameters.options.queryReplacement, h.scope(out, it.json, 0));
@@ -332,7 +338,7 @@ test('first run: the cursor starts an hour back, so a merge from 40 minutes ago 
   assert.deepEqual(r.clusterLog, []);
 });
 
-test('shadow (watch_write_mode off): this PR\'s own merge goes ok, plans the ok label and writes nothing', () => {
+test('shadow (watch_write_mode off): this PR\'s own merge goes ok, plans nothing and writes nothing', () => {
   const db = newDb(OFF_TEXT);
   const gh = fakeGithub();
   n8nMerge(gh, 287, sha('d'), T0 - 10 * 60000);
@@ -349,8 +355,8 @@ test('shadow (watch_write_mode off): this PR\'s own merge goes ok, plans the ok 
   const r3 = runWatch({ db, gh, now: T0 + 10 * 60000 });
   const w = db.watches[0];
   assert.equal(w.planned_actions.mode, 'off');
-  assert.equal(w.publish_outcome, 'planned-only');
-  assert.deepEqual(w.planned_actions.actions.map((a) => [a.type, a.name]), [['watch_ensure_label', 'triage:post-merge-ok'], ['watch_add_label', 'triage:post-merge-ok']]);
+  assert.equal(w.publish_outcome, 'up-to-date');
+  assert.deepEqual(w.planned_actions.actions, []);
   assert.equal(w.published, false);
   assert.deepEqual(writes(gh, before), [], 'nothing written to GitHub');
   assert.deepEqual(r3.alerts, []);
@@ -361,17 +367,21 @@ test('shadow (watch_write_mode off): this PR\'s own merge goes ok, plans the ok 
   assert.equal(r4.summary.busy, false);
 });
 
-test('labels: ok adds triage:post-merge-ok once, creating it, and never alerts', () => {
+test('labels: ok writes no label at all, reads no labels or comments, and never alerts', () => {
   const db = newDb(LABELS_TEXT);
   const gh = fakeGithub();
   n8nMerge(gh, 287, sha('d'), T0 - 10 * 60000);
   runWatch({ db, gh, now: T0 });
   runWatch({ db, gh, now: T0 + 5 * 60000, cluster: () => ksApps(sha('d')) });
+  assert.equal(db.watches[0].status, 'ok');
+  const from = gh.st.requests.length;
   const r3 = runWatch({ db, gh, now: T0 + 10 * 60000 });
-  assert.ok(gh.st.prs[287].labels.includes('triage:post-merge-ok'));
-  assert.ok(gh.st.labels.includes('triage:post-merge-ok'));
-  assert.equal(db.watches[0].published, true);
-  assert.equal(db.watches[0].publish_outcome, 'published');
+  assert.deepEqual(gh.st.prs[287].labels, ['triage:human']);
+  assert.deepEqual(writes(gh, from), [], 'no write of any kind');
+  assert.ok(!gh.st.requests.slice(from).some((q) => /\/issues\/287\//.test(q.url)), 'no label or comment read');
+  assert.equal(db.watches[0].published, true, 'recorded as done: nothing to publish');
+  assert.equal(db.watches[0].publish_outcome, 'up-to-date');
+  assert.equal(db.watches[0].status, 'ok', 'the row still records ok');
   assert.deepEqual(r3.alerts, []);
   assert.equal(r3.run.ok, true);
   assert.deepEqual(gh.st.comments, {});
@@ -381,7 +391,7 @@ test('labels: ok adds triage:post-merge-ok once, creating it, and never alerts',
   assert.equal(gh.st.requests.length - before, 1, 'only the listing');
 });
 
-test('labels: a HelmRelease failing twice is failed: the label, one comment, one alert with only five keys', () => {
+test('labels: a HelmRelease failing twice is failed: rollout:revert, one comment, one alert', () => {
   const db = newDb(LABELS_TEXT);
   const gh = fakeGithub();
   const HR = 'apiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\nmetadata:\n  name: reflector\n  namespace: flux-system\nspec:\n  chart:\n    spec:\n      chart: reflector\n      version: 10.0.81\n';
@@ -400,14 +410,16 @@ test('labels: a HelmRelease failing twice is failed: the label, one comment, one
   assert.equal(db.watches[0].status, 'failed');
   const r = runWatch({ db, gh, now: T0 + 15 * 60000, cluster });
   const pr = gh.st.prs[276];
-  assert.ok(pr.labels.includes('triage:post-merge-failed'));
-  assert.ok(!pr.labels.includes('triage:deep-review'), 'not fix-forward');
+  assert.deepEqual(pr.labels, ['triage:low-risk', 'rollout:revert']);
+  assert.ok(gh.st.labels.includes('rollout:revert'), 'created');
   const posted = Object.values(gh.st.comments);
   assert.equal(posted.length, 1);
   assert.ok(posted[0].body.startsWith(`<!-- pr-triage-watch:v1 sha=${sha('a')} status=failed -->`));
   assert.match(posted[0].body, /`helmrelease flux-system\/reflector`: Ready=False \(UpgradeFailed\)/);
   assert.ok(!posted[0].body.includes('secret details'), 'no cluster message text');
-  assert.deepEqual(r.alerts, [{ source: 'pr-watch', pr: 276, status: 'failed', fix_forward: false, checked: r.alerts[0].checked }]);
+  assert.match(posted[0].body, /Revert by hand/);
+  assert.deepEqual(r.alerts, [{ source: 'pr-watch', pr: 276, prs: [276], status: 'failed', action: 'revert', fix_forward: false, checked: r.alerts[0].checked }]);
+  assert.equal(db.watches[0].failure_group, null, 'its own target: no group');
   assert.equal(db.watches[0].alert_status, 200);
   // The next run: no second comment, no second alert.
   const r2 = runWatch({ db, gh, now: T0 + 20 * 60000, cluster });
@@ -415,7 +427,7 @@ test('labels: a HelmRelease failing twice is failed: the label, one comment, one
   assert.deepEqual(r2.alerts, []);
 });
 
-test('labels: a timeout with the owner\'s fix-forward marker says fix forward and adds deep-review', () => {
+test('labels: a timeout with the owner\'s fix-forward marker is rollout:fix-forward, with no deep-review', () => {
   const db = newDb(LABELS_TEXT);
   const gh = fakeGithub();
   n8nMerge(gh, 290, sha('b'), T0 - 2 * 60000);
@@ -433,12 +445,84 @@ test('labels: a timeout with the owner\'s fix-forward marker says fix forward an
   assert.equal(db.watches[0].status, 'timeout');
   const r = runWatch({ db, gh, now: T0 + 35 * 60000, ha: () => 200 });
   const pr = gh.st.prs[290];
-  assert.ok(pr.labels.includes('triage:post-merge-failed') && pr.labels.includes('triage:deep-review'));
+  assert.deepEqual(pr.labels, ['triage:human', 'rollout:fix-forward']);
   const body = Object.values(gh.st.comments).find((c) => c.user.login === APP_LOGIN).body;
   assert.match(body, /status=timeout -->/);
   assert.match(body, /Fix forward — no revert\.\*\* Source: marker in a comment\./);
   assert.match(body, /`kustomization apps`: merge not applied yet/);
-  assert.deepEqual(r.alerts.map((a) => [a.pr, a.status, a.fix_forward]), [[290, 'timeout', true]]);
+  assert.deepEqual(r.alerts.map((a) => [a.pr, a.prs, a.status, a.action, a.fix_forward]), [[290, [290], 'timeout', 'fix-forward', true]]);
+});
+
+// apps failing at a revision that includes every merge given.
+const ksFailing = (rev) => ({
+  statusCode: 200,
+  body: { status: { lastAppliedRevision: `main@sha1:${sha('0')}`, lastAttemptedRevision: `main@sha1:${rev}`, conditions: [{ type: 'Ready', status: 'False', reason: 'HealthCheckFailed', message: 'details here' }] } },
+});
+
+test('labels: two merges failing on one Kustomization revision are both rollout:investigate, with one alert and both PRs in each comment', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  // Merged a few minutes apart; Flux attempts one revision with both.
+  n8nMerge(gh, 300, sha('1'), T0 - 4 * 60000);
+  runWatch({ db, gh, now: T0 });
+  n8nMerge(gh, 301, sha('2'), T0 + 60000);
+  const rev = sha('2');
+  gh.st.compare[`${sha('1')}...${rev}`] = 'ahead';
+  const cluster = (p) => (p.endsWith('/kustomizations/apps') ? ksFailing(rev) : { statusCode: 404, body: {} });
+  runWatch({ db, gh, now: T0 + 5 * 60000, cluster });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status]), [[300, 'pending'], [301, 'pending']]);
+  // 300 sees its second failing check; 301 only its first, and finishes with it.
+  runWatch({ db, gh, now: T0 + 10 * 60000, cluster });
+  const key = `kustomization apps@${rev}`;
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status, w.failure_group]), [[300, 'failed', key], [301, 'failed', key]]);
+  const r = runWatch({ db, gh, now: T0 + 15 * 60000, cluster });
+  for (const n of [300, 301]) {
+    const pr = gh.st.prs[n];
+    assert.deepEqual(pr.labels, ['triage:human', 'rollout:investigate'], `PR ${n}`);
+    assert.equal(pr.comments.length, 1);
+    const body = gh.st.comments[pr.comments[0]].body;
+    assert.match(body, /`kustomization apps` failed at revision `2{12}` \(Ready=False \(HealthCheckFailed\)\)/);
+    assert.match(body, new RegExp(`- PR 300, merge \`${sha('1').slice(0, 12)}\`\n- PR 301, merge \`${sha('2').slice(0, 12)}\``));
+    assert.match(body, /can't be attributed to one merge/);
+    assert.ok(!/Revert by hand/.test(body) && !body.includes('details here'));
+  }
+  assert.ok(!gh.st.labels.includes('rollout:revert'), 'no attributed label created');
+  assert.deepEqual(r.alerts, [{ source: 'pr-watch', pr: 300, prs: [300, 301], status: 'failed', action: 'investigate', fix_forward: false, checked: r.alerts[0].checked }]);
+  assert.deepEqual(db.watches.map((w) => [w.alert_attempts, w.alert_status]), [[1, 200], [0, null]]);
+  // Nothing more: no second alert from the other member, no second comment.
+  const r2 = runWatch({ db, gh, now: T0 + 20 * 60000, cluster });
+  assert.deepEqual(r2.alerts, []);
+  assert.equal(Object.values(gh.st.comments).length, 2);
+  assert.equal(r2.summary.kind, 'work', 'idle: nothing left to publish');
+});
+
+test('labels: one merge failing on its own HelmRelease beside a fine one: only the first is labelled', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  const HR = 'apiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\nmetadata:\n  name: reflector\n  namespace: flux-system\nspec:\n  chart:\n    spec:\n      chart: reflector\n      version: 10.0.81\n';
+  gh.st.prs[310] = { number: 310, merge_sha: sha('3'), merged_at: iso(T0 - 4 * 60000), labels: [] };
+  gh.st.files[310] = [{ filename: 'infrastructure/controllers/reflector.yaml', status: 'modified', patch: '@@ -8,3 +8,3 @@\n     spec:\n       chart: reflector\n-      version: 10.0.78\n+      version: 10.0.81' }];
+  gh.st.contents[`infrastructure/controllers/reflector.yaml@${sha('3')}`] = HR;
+  gh.st.prs[311] = { number: 311, merge_sha: sha('4'), merged_at: iso(T0 - 3 * 60000), labels: [] };
+  gh.st.files[311] = [{ filename: 'apps/tools/n8n/workflows/triage-watch.json', status: 'modified', patch: '@@ -1 +1 @@\n-{}\n+{ }' }];
+  runWatch({ db, gh, now: T0 });
+  // Both Kustomizations applied a revision with both merges; the HelmRelease failed.
+  const rev = sha('4');
+  gh.st.compare[`${sha('3')}...${rev}`] = 'ahead';
+  const cluster = (p) => {
+    if (p.includes('/kustomizations/')) return ksApps(rev);
+    return { statusCode: 200, body: { metadata: { generation: 3 }, spec: { chart: { spec: { version: '10.0.81' } } }, status: { observedGeneration: 3, history: [{ chartVersion: '10.0.81', status: 'failed' }], conditions: [{ type: 'Ready', status: 'False', reason: 'UpgradeFailed' }] } } };
+  };
+  runWatch({ db, gh, now: T0 + 5 * 60000, cluster });
+  runWatch({ db, gh, now: T0 + 10 * 60000, cluster });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status, w.failure_group || null]), [[310, 'failed', null], [311, 'ok', null]]);
+  const from = gh.st.requests.length;
+  const r = runWatch({ db, gh, now: T0 + 15 * 60000, cluster });
+  assert.deepEqual(gh.st.prs[310].labels, ['rollout:revert']);
+  assert.deepEqual(gh.st.prs[311].labels, [], 'the fine one gets nothing');
+  assert.ok(!writes(gh, from).some((q) => q.url.includes('/issues/311/')));
+  assert.equal((gh.st.prs[310].comments || []).length, 1);
+  assert.deepEqual(r.alerts.map((a) => [a.prs, a.action]), [[[310], 'revert']]);
 });
 
 test('labels: a failed alert is retried, at most three tries', () => {

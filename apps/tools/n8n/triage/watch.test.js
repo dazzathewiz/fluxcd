@@ -379,6 +379,51 @@ test('evaluateWatch: reasons from the cluster are reduced to one word', () => {
   assert.equal(r.detail[0].cond, 'Ready=False (Unknown)');
 });
 
+test('evaluateWatch: a failing Kustomization records the revision it failed at', () => {
+  const bad = { [KS.id]: ks('False', 'ReconciliationFailed', LATER, MERGE) };
+  assert.deepEqual(ev([KS], bad, 5).detail, [{ id: KS.id, state: 'fail', cond: 'Ready=False (ReconciliationFailed)', revision: MERGE }]);
+  assert.equal(ev([KS], { [KS.id]: ks('True', 'x', MERGE) }, 5).detail[0].revision, undefined);
+  assert.deepEqual(rules.failureKeys(ev([KS], bad, 5).detail), [`kustomization apps@${MERGE}`]);
+  assert.deepEqual(rules.failureKeys([{ id: 'helmrelease a/b', state: 'fail', cond: 'x', revision: MERGE }, { id: 'kustomization apps', state: 'fail', cond: 'not found' }]), []);
+});
+
+// ---------------------------------------------------------------- groupFailures
+
+const ksFail = (rev) => ({ id: 'kustomization apps', state: 'fail', cond: 'Ready=False (HealthCheckFailed)', revision: rev });
+const hrFail = { id: 'helmrelease flux-system/reflector', state: 'fail', cond: 'Ready=False (UpgradeFailed)' };
+const chk = (id, status, detail) => ({ watch_id: id, status, fail_streak: {}, detail });
+const groups = (list) => rules.groupFailures(list).map((c) => [c.watch_id, c.status, c.failure_group]);
+
+test('groupFailures: two watches failing on one Kustomization revision finish together, in one group', () => {
+  const key = `kustomization apps@${LATER}`;
+  assert.deepEqual(groups([chk(1, 'failed', [ksFail(LATER)]), chk(2, 'failed', [ksFail(LATER)])]), [[1, 'failed', key], [2, 'failed', key]]);
+  // One reached two checks in a row, the other one so far: it finishes with it.
+  assert.deepEqual(groups([chk(1, 'failed', [ksFail(LATER)]), chk(2, 'pending', [ksFail(LATER)])]), [[1, 'failed', key], [2, 'failed', key]]);
+  assert.deepEqual(groups([chk(1, 'timeout', [ksFail(LATER)]), chk(2, 'pending', [ksFail(LATER)])]), [[1, 'timeout', key], [2, 'timeout', key]]);
+  // Nobody finished: nothing moves.
+  assert.deepEqual(groups([chk(1, 'pending', [ksFail(LATER)]), chk(2, 'pending', [ksFail(LATER)])]), [[1, 'pending', null], [2, 'pending', null]]);
+});
+
+test('groupFailures: a different revision or Kustomization, or the watch\'s own target, is not shared', () => {
+  assert.deepEqual(groups([chk(1, 'failed', [ksFail(LATER)]), chk(2, 'pending', [ksFail(MERGE)])]), [[1, 'failed', `kustomization apps@${LATER}`], [2, 'pending', null]]);
+  const other = { id: 'kustomization grafana', state: 'fail', cond: 'x', revision: LATER };
+  assert.deepEqual(groups([chk(1, 'failed', [ksFail(LATER)]), chk(2, 'pending', [other])]).map((g) => g[1]), ['failed', 'pending']);
+  // Its own HelmRelease, and the other watch fine: attributed, no group.
+  assert.deepEqual(groups([chk(1, 'failed', [{ id: 'kustomization apps', state: 'ok', cond: 'applied' }, hrFail]), chk(2, 'ok', [{ id: 'kustomization apps', state: 'ok', cond: 'applied' }])]), [[1, 'failed', null], [2, 'ok', null]]);
+});
+
+test('watchAction and watchAlert: one alert per group, from its lowest id, listing every PR', () => {
+  const group = [{ id: 7, pr: 300, merge_sha: MERGE, fix_forward: false }, { id: 8, pr: 299, merge_sha: LATER, fix_forward: true }];
+  const lead = { id: 7, pr: 300, status: 'failed', fix_forward: false, group };
+  assert.equal(rules.watchAction(lead), 'investigate');
+  assert.deepEqual(rules.watchAlert(lead, 'T'), { source: 'pr-watch', pr: 299, prs: [299, 300], status: 'failed', action: 'investigate', fix_forward: true, checked: 'T' });
+  assert.equal(rules.watchAlert(Object.assign({}, lead, { id: 8, pr: 299 }), 'T'), null, 'not the lowest id');
+  assert.deepEqual(rules.watchAlert({ id: 3, pr: 12, status: 'timeout', fix_forward: false, group: null }, 'T'), { source: 'pr-watch', pr: 12, prs: [12], status: 'timeout', action: 'revert', fix_forward: false, checked: 'T' });
+  assert.equal(rules.watchAlert({ id: 3, pr: 12, status: 'failed', fix_forward: true, group: [{ id: 3, pr: 12 }] }, 'T').action, 'fix-forward');
+  assert.equal(rules.watchAlert({ id: 3, pr: 12, status: 'ok' }, 'T'), null, 'never on ok');
+  assert.deepEqual(rules.WATCH_ACTIONS, ['revert', 'fix-forward', 'investigate']);
+});
+
 // ---------------------------------------------------------------- fixForward
 
 const pr = (body, login) => ({ body, user: { login: login || 'someone-else' } });
@@ -446,59 +491,97 @@ const watch = (o) => Object.assign({ repo: 'o/r', pr: 287, merge_sha: MERGE, sta
 const reads = (o) => Object.assign({ pr_labels: page([{ name: 'triage:human' }]), comments: page([]), repo_labels: ['triage:deep-review'] }, o);
 const pub = (w, r, mode) => rules.planWatchPublish(w, r, { config: CONFIG, patterns: PATTERNS, mode: mode || 'labels' });
 
-test('planWatchPublish: ok adds the ok label, creating it if missing, and no comment', () => {
-  const p = pub(watch(), reads());
-  assert.equal(p.action, 'publish');
-  assert.equal(p.outcome, 'publishing');
-  assert.deepEqual(p.actions, [
-    { type: 'watch_ensure_label', name: 'triage:post-merge-ok', color: '0e8a16', description: 'PR triage: the merge rolled out' },
-    { type: 'watch_add_label', name: 'triage:post-merge-ok' },
-  ]);
-  const again = pub(watch(), reads({ pr_labels: page([{ name: 'triage:post-merge-ok' }]) }));
-  assert.equal(again.action, 'skip');
-  assert.equal(again.outcome, 'up-to-date');
-  assert.equal(pub(watch(), reads(), 'off').outcome, 'planned-only');
+test('planWatchPublish: ok writes nothing at all, and reads nothing', () => {
+  const p = pub(watch(), {});
+  assert.equal(p.action, 'skip');
+  assert.equal(p.outcome, 'up-to-date');
+  assert.deepEqual(p.actions, []);
+  assert.deepEqual(p.labels, []);
+  assert.equal(pub(watch(), {}, 'off').outcome, 'up-to-date');
 });
 
-test('planWatchPublish: failed adds the failed label and one comment; fix forward adds deep-review', () => {
-  const detail = [{ id: 'helmrelease flux-system/reflector', state: 'fail', cond: 'Ready=False (UpgradeFailed)' }, { id: 'kustomization apps', state: 'ok', cond: 'applied' }];
-  const p = pub(watch({ status: 'failed', detail }), reads({ repo_labels: ['triage:post-merge-failed', 'triage:deep-review'] }));
-  assert.deepEqual(p.actions.map((a) => a.type), ['watch_add_label', 'create_comment']);
-  const body = p.actions[1].body;
+const HR_FAIL = [{ id: 'helmrelease flux-system/reflector', state: 'fail', cond: 'Ready=False (UpgradeFailed)' }, { id: 'kustomization apps', state: 'ok', cond: 'applied' }];
+
+test('planWatchPublish: an attributed failure gets rollout:revert and one comment saying revert by hand', () => {
+  const p = pub(watch({ status: 'failed', detail: HR_FAIL }), reads({ repo_labels: [] }));
+  assert.equal(p.rollout_action, 'revert');
+  assert.deepEqual(p.labels, ['rollout:revert']);
+  assert.deepEqual(p.actions.map((a) => [a.type, a.name]), [['watch_ensure_label', 'rollout:revert'], ['watch_add_label', 'rollout:revert'], ['create_comment', undefined]]);
+  assert.deepEqual([p.actions[0].color, p.actions[0].description], ['b60205', rules.WATCH_LABEL_STYLES['rollout:revert'].description]);
+  const body = p.actions[2].body;
   assert.ok(body.startsWith(`<!-- pr-triage-watch:v1 sha=${MERGE} status=failed -->\n`));
   assert.match(body, /`helmrelease flux-system\/reflector`: Ready=False \(UpgradeFailed\)/);
   assert.ok(!body.includes('kustomization apps'), 'only what did not roll out');
-  assert.match(body, /not made by an automated merger, so nothing reverts it automatically/);
-  assert.ok(!/fix forward/i.test(body));
-  const ff = pub(watch({ status: 'timeout', detail, fix_forward: true, fix_forward_source: 'Longhorn chart change' }), reads({ repo_labels: [] }));
-  assert.deepEqual(ff.actions.map((a) => [a.type, a.name]), [
-    ['watch_ensure_label', 'triage:post-merge-failed'], ['watch_add_label', 'triage:post-merge-failed'],
-    ['ensure_label', 'triage:deep-review'], ['add_label', 'triage:deep-review'], ['create_comment', undefined],
-  ]);
-  assert.equal(ff.actions[0].color, 'b60205');
-  const text = ff.actions[4].body;
-  assert.match(text, /status=timeout -->/);
+  assert.match(body, /\*\*Revert by hand\.\*\* This merge was not made by an automated merger, so nothing reverts it automatically\./);
+  assert.ok(!/fix forward|shared/i.test(body));
+  // Already labelled: only the comment is left.
+  const again = pub(watch({ status: 'failed', detail: HR_FAIL }), reads({ pr_labels: page([{ name: 'rollout:revert' }]), repo_labels: ['rollout:revert'] }));
+  assert.deepEqual(again.actions.map((a) => a.type), ['create_comment']);
+});
+
+test('planWatchPublish: a fix-forward failure gets rollout:fix-forward, never a revert, and no deep-review', () => {
+  const ff = pub(watch({ status: 'failed', detail: HR_FAIL, fix_forward: true, fix_forward_source: 'Longhorn chart change' }), reads({ repo_labels: ['triage:deep-review'] }));
+  assert.equal(ff.rollout_action, 'fix-forward');
+  assert.deepEqual(ff.actions.map((a) => [a.type, a.name]), [['watch_ensure_label', 'rollout:fix-forward'], ['watch_add_label', 'rollout:fix-forward'], ['create_comment', undefined]]);
+  assert.equal(ff.actions[0].color, 'd93f0b');
+  assert.ok(!ff.actions.some((a) => a.name === 'triage:deep-review' || a.type === 'add_label' || a.type === 'ensure_label'));
+  const text = ff.actions[2].body;
   assert.match(text, /\*\*Fix forward — no revert\.\*\* Source: Longhorn chart change\./);
-  assert.match(text, /30 minutes after the merge/);
-  assert.ok(!/automated merger/.test(text));
+  assert.ok(!/revert by hand|automated merger/i.test(text));
+});
+
+test('planWatchPublish: a timeout is labelled exactly like a failure', () => {
+  const t = pub(watch({ status: 'timeout', detail: HR_FAIL }), reads({ repo_labels: ['rollout:revert'] }));
+  assert.deepEqual(t.actions.map((a) => [a.type, a.name]), [['watch_add_label', 'rollout:revert'], ['create_comment', undefined]]);
+  assert.match(t.actions[1].body, /status=timeout -->/);
+  assert.match(t.actions[1].body, /30 minutes after the merge/);
+  assert.match(t.actions[1].body, /Revert by hand/);
+  const tf = pub(watch({ status: 'timeout', detail: HR_FAIL, fix_forward: true, fix_forward_source: 'marker in a comment' }), reads({ repo_labels: [] }));
+  assert.deepEqual(tf.labels, ['rollout:fix-forward']);
+});
+
+const OTHER = 'e'.repeat(40);
+const GROUP = [{ id: 11, pr: 288, merge_sha: OTHER, fix_forward: false }, { id: 10, pr: 287, merge_sha: MERGE, fix_forward: false }];
+const KS_FAIL = [{ id: 'kustomization apps', state: 'fail', cond: 'Ready=False (HealthCheckFailed)', revision: LATER }];
+
+test('planWatchPublish: a shared failure gets rollout:investigate and a comment listing every PR in the group', () => {
+  const w = watch({ status: 'failed', detail: KS_FAIL, failure_group: `kustomization apps@${LATER}`, group: GROUP });
+  const p = pub(w, reads({ repo_labels: [] }));
+  assert.equal(p.rollout_action, 'investigate');
+  assert.deepEqual(p.actions.map((a) => [a.type, a.name]), [['watch_ensure_label', 'rollout:investigate'], ['watch_add_label', 'rollout:investigate'], ['create_comment', undefined]]);
+  assert.equal(p.actions[0].color, 'fbca04');
+  const body = p.actions[2].body;
+  assert.match(body, new RegExp(`\`kustomization apps\` failed at revision \`${LATER.slice(0, 12)}\` \\(Ready=False \\(HealthCheckFailed\\)\\), which includes all of these merges:`));
+  assert.ok(body.indexOf(`- PR 287, merge \`${MERGE.slice(0, 12)}\``) < body.indexOf(`- PR 288, merge \`${OTHER.slice(0, 12)}\``), 'both PRs, in order');
+  assert.match(body, /\*\*Investigate\.\*\* The cause can't be attributed to one merge\./);
+  assert.ok(!/revert by hand|automated merger/i.test(body), 'no revert suggested');
+  assert.ok(!/#\d/.test(body));
+  // A fix-forward member is told not to revert.
+  const ffw = pub(Object.assign({}, w, { fix_forward: true, fix_forward_source: 'Postgres major change' }), reads({ repo_labels: [] }));
+  assert.equal(ffw.rollout_action, 'investigate');
+  assert.match(ffw.actions[2].body, /This merge is fix forward — don't revert it\.\*\* Source: Postgres major change\./);
+  // A group of one is attributed.
+  const one = pub(watch({ status: 'failed', detail: KS_FAIL, failure_group: `kustomization apps@${LATER}`, group: [GROUP[1]] }), reads({ repo_labels: [] }));
+  assert.equal(one.rollout_action, 'revert');
+  assert.ok(!/Shared failure/.test(one.actions[2].body));
 });
 
 test('planWatchPublish: never a second comment for the same merge SHA; only the App\'s marker counts', () => {
   const mine = { id: 5, body: `<!-- pr-triage-watch:v1 sha=${MERGE} status=failed -->\nx`, user: { login: APP }, performed_via_github_app: { slug: CONFIG.app_slug } };
-  const p = pub(watch({ status: 'timeout' }), reads({ pr_labels: page([{ name: 'triage:post-merge-failed' }]), comments: page([mine]) }));
+  const p = pub(watch({ status: 'timeout' }), reads({ pr_labels: page([{ name: 'rollout:revert' }]), comments: page([mine]) }));
   assert.equal(p.outcome, 'up-to-date');
   const forged = Object.assign({}, mine, { user: { login: 'someone' }, performed_via_github_app: null });
-  assert.deepEqual(pub(watch({ status: 'failed' }), reads({ pr_labels: page([{ name: 'triage:post-merge-failed' }]), comments: page([forged]) })).actions.map((a) => a.type), ['create_comment']);
+  assert.deepEqual(pub(watch({ status: 'failed' }), reads({ pr_labels: page([{ name: 'rollout:revert' }]), comments: page([forged]) })).actions.map((a) => a.type), ['create_comment']);
   const other = Object.assign({}, mine, { body: mine.body.replace(MERGE, LATER) });
-  assert.equal(pub(watch({ status: 'failed' }), reads({ pr_labels: page([{ name: 'triage:post-merge-failed' }]), comments: page([other]) })).actions.length, 1);
+  assert.equal(pub(watch({ status: 'failed' }), reads({ pr_labels: page([{ name: 'rollout:revert' }]), comments: page([other]) })).actions.length, 1);
 });
 
 test('planWatchPublish: incomplete reads, no patterns or a redaction hit publish safely', () => {
-  assert.equal(pub(watch(), reads({ pr_labels: page([], '<https://api.github.com/x?page=2>; rel="next"') })).outcome, 'skipped-labels-incomplete');
+  assert.equal(pub(watch({ status: 'failed' }), reads({ pr_labels: page([], '<https://api.github.com/x?page=2>; rel="next"') })).outcome, 'skipped-labels-incomplete');
   assert.equal(pub(watch({ status: 'failed' }), reads({ comments: [{ statusCode: 500, body: null }] })).outcome, 'skipped-comments-incomplete');
-  assert.equal(rules.planWatchPublish(watch(), reads(), { config: CONFIG, patterns: [], mode: 'labels' }).outcome, 'skipped-unhealthy');
+  assert.equal(rules.planWatchPublish(watch({ status: 'failed' }), reads(), { config: CONFIG, patterns: [], mode: 'labels' }).outcome, 'skipped-unhealthy');
   assert.equal(pub(watch({ status: 'pending' }), reads()).outcome, 'skipped-bad-input');
-  const hit = pub(watch({ status: 'failed', detail: [{ id: 'deployment tools/secret-word', state: 'fail', cond: 'not found' }] }), reads({ repo_labels: ['triage:post-merge-failed'] }));
+  const hit = pub(watch({ status: 'failed', detail: [{ id: 'deployment tools/secret-word', state: 'fail', cond: 'not found' }] }), reads({ repo_labels: ['rollout:revert'] }));
   assert.equal(hit.redaction_hit, true);
   assert.deepEqual(hit.actions.map((a) => a.type), ['watch_add_label'], 'the label still goes on; the comment does not');
 });

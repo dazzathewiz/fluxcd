@@ -332,7 +332,7 @@ notification live in Home Assistant, outside this repo.
   doesn't fit.
 - **Only `PR triage: alert (unsaved)` (`TriageAlertV01`) reads it.** The heartbeat
   calls it once per run with the five keys above, and the watcher once per failed
-  watch (see [R10](#r10-post-merge-watch)). It reads the URL, POSTs with a 10 s
+  watch or shared-failure group (see [R10](#r10-post-merge-watch)). It reads the URL, POSTs with a 10 s
   timeout and one retry on a network error, and returns only the HTTP status. It
   saves no executions, and its caller policy admits only those two. The tests
   check that no other workflow names the table.
@@ -607,8 +607,8 @@ exactly: method, URL, body and headers.
 | `POST /repos/{r}/issues/{n}/comments` | Create comment |
 | `PATCH /repos/{r}/issues/comments/{id}` | Edit comment (body only) |
 | `POST /repos/{r}/statuses/{sha}` | Set status |
-| `POST /repos/{r}/labels` | Create watch label (R10's two labels only) |
-| `POST /repos/{r}/issues/{n}/labels` | Add watch label (R10's two labels only) |
+| `POST /repos/{r}/labels` | Create watch label (R10's three `rollout:` labels only) |
+| `POST /repos/{r}/issues/{n}/labels` | Add watch label (R10's three `rollout:` labels only) |
 
 It refuses any other non-GET request in the sub-workflow, any GitHub write
 outside it, a call into it that doesn't come through a `Write gate` true output,
@@ -775,8 +775,8 @@ past its progress deadline, or a target that's gone. `timeout` is
 the few seconds each reconcile takes, and the watcher and Flux both run every 5
 minutes, so a check can land in that window every time.
 
-**Fix forward.** A failure says "Fix forward — no revert" when the change is
-one-way, or the PR says so:
+**Fix forward.** A failure is fix-forward, and its comment says "Fix forward —
+no revert", when the change is one-way, or the PR says so:
 
 - a line `rollback: fix-forward` (case-insensitive, its own line, not in a code
   block or a quote) in the PR description, a review or a comment, written by the
@@ -789,19 +789,44 @@ one-way, or the PR says so:
   version in the Longhorn HelmRelease; or a removed `kind: PersistentVolumeClaim`
   document. Naming a package anywhere else doesn't count.
 
-**What it publishes.** On `ok`, the label `triage:post-merge-ok`. On `failed` or
-`timeout`, `triage:post-merge-failed` (plus `triage:deep-review` when fix-forward),
-one App comment marked `<!-- pr-triage-watch:v1 sha=<merge> status=<status> -->`
-listing what didn't roll out, and one Home Assistant alert through
-`TriageAlertV01`:
+**Shared failures.** A Kustomization failing at revision R fails every pending
+watch whose merge R includes, so one failure can't be pinned on one of them. When
+a watch finishes (`failed` or `timeout`) and another watch fails on the same
+Kustomization at the same revision in that run, they finish together, as one
+group: `triage.watches.failure_group` holds `kustomization <name>@<sha>` for each.
+A watch failing only on its own HelmRelease or workload has no group. A group of
+one is attributed like any other failure.
+
+**What it publishes.** Nothing on `ok`: no label and no comment. The row still
+records `ok`. On `failed` or `timeout`, exactly one of these labels:
+
+| Label | When | What to do |
+| --- | --- | --- |
+| `rollout:revert` | attributed to this merge, not fix-forward | Revert by hand: no automated merger made the merge, so nothing reverts it |
+| `rollout:fix-forward` | attributed to this merge, fix-forward | Fix forward; never revert |
+| `rollout:investigate` | a shared failure (a group of two or more) | Find which merge broke it; a fix-forward member still isn't reverted |
+
+The watcher creates them if missing (`b60205`, `d93f0b`, `fbca04`). Each failed PR
+also gets one App comment marked
+`<!-- pr-triage-watch:v1 sha=<merge> status=<status> -->`, listing what didn't
+roll out. For a shared failure it lists every PR in the group with its merge SHA,
+and the failing Kustomization, revision and condition.
+
+One Home Assistant alert goes through `TriageAlertV01` per attributed failure, and
+one per group (sent for its lowest watch id):
 
 ```json
-{"source": "pr-watch", "pr": 287, "status": "failed", "fix_forward": false, "checked": "<ISO-8601 UTC>"}
+{"source": "pr-watch", "pr": 287, "prs": [287], "status": "failed", "action": "revert", "fix_forward": false, "checked": "<ISO-8601 UTC>"}
 ```
+
+`action` is `revert`, `fix-forward` or `investigate`. `prs` lists the PR numbers,
+one for an attributed failure; `pr` is the first of them. `fix_forward` is true
+if any PR in it is. No URL, name or cluster detail goes in it.
 
 There is never a second comment for one merge SHA, and never an alert on `ok`.
 The watcher only reads the fix-forward marker; the triage comment doesn't mention
-it.
+it. The old `triage:post-merge-*` labels stay on the PRs that have them; the
+watcher no longer writes them.
 
 **`watch_write_mode`** in `config.yaml` is `labels` (on since the R10 shadow run) or `off`. `off`
 records each plan in `triage.watches.planned_actions` and writes nothing, sends no
@@ -816,7 +841,7 @@ makes one request, the listing, usually a `304`. Each run is a row in
 
 ```sh
 kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
-  "select pr, left(merge_sha, 12), status, fix_forward, fix_forward_source, targets, planned_actions, publish_outcome, alert_status from triage.watches order by created_at desc limit 10;"
+  "select pr, left(merge_sha, 12), status, fix_forward, failure_group, targets, planned_actions->>'rollout_action', publish_outcome, alert_status from triage.watches order by created_at desc limit 10;"
 ```
 
 ## Upgrades

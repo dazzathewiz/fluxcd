@@ -653,12 +653,16 @@ test('the sub-workflow saves nothing, only the poll and the watcher may call it,
   const bad = h.runPublish({ kind: 'action', type: 'remove_label', name: 'bug', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, []);
   assert.equal(bad[0].json.ok, false);
   assert.ok(!gh.state.requests.some((q) => q.method === 'DELETE' && q.url.includes('/labels/bug')));
-  // R10's label writes take only its two labels, and the triage writes never take them.
-  const act = (type, name) => h.runPublish({ kind: 'action', type, name, color: '0e8a16', description: 'd', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, [])[0].json;
-  assert.equal(act('watch_ensure_label', 'triage:post-merge-ok').ok, true);
-  assert.equal(act('watch_add_label', 'triage:post-merge-ok').ok, true);
-  assert.ok(gh.state.prs[5].labels.includes('triage:post-merge-ok'));
-  for (const [type, name] of [['watch_add_label', 'triage:review'], ['watch_add_label', 'merge'], ['add_label', 'triage:post-merge-failed'], ['watch_ensure_label', 'bug']]) {
+  // R10's label writes take only its three rollout labels, and the triage writes never take them.
+  const act = (type, name) => h.runPublish({ kind: 'action', type, name, color: 'b60205', description: 'd', run_id: 1, repo: REPO, pr: 5, head_sha: S.a, app_id: APP_ID, installation_id: INSTALLATION, app_slug: APP_SLUG, index: 0, count: 1 }, gh.github, [])[0].json;
+  for (const name of ['rollout:revert', 'rollout:fix-forward', 'rollout:investigate']) {
+    assert.equal(act('watch_ensure_label', name).ok, true, name);
+    assert.equal(act('watch_add_label', name).ok, true, name);
+    assert.ok(gh.state.prs[5].labels.includes(name));
+  }
+  const rejected = [['watch_add_label', 'triage:review'], ['watch_add_label', 'merge'], ['add_label', 'rollout:revert'], ['watch_ensure_label', 'bug'],
+    ['watch_add_label', 'triage:post-merge-ok'], ['watch_add_label', 'triage:post-merge-failed'], ['watch_add_label', 'triage:deep-review'], ['watch_ensure_label', 'rollout:other']];
+  for (const [type, name] of rejected) {
     const n = gh.state.requests.length;
     assert.equal(act(type, name).ok, false, `${type} ${name}`);
     assert.ok(!gh.state.requests.slice(n).some((q) => q.method === 'POST' && q.url.includes('/labels') && JSON.stringify(q.body).includes(name)), `${type} ${name} reached GitHub`);
@@ -695,14 +699,19 @@ test('allowlist: exactly the nine writes, all in the sub-workflow, reached throu
   assert.deepEqual(watch.writes.map((w) => w.node), ['Publish']);
 });
 
-test('allowlist: the watch label writes take only the two R10 labels', () => {
-  assert.deepEqual(WATCH_LABELS, ['triage:post-merge-ok', 'triage:post-merge-failed']);
+test('allowlist: the watch label writes take only the three R10 rollout labels', () => {
+  assert.deepEqual(WATCH_LABELS, ['rollout:revert', 'rollout:fix-forward', 'rollout:investigate']);
   for (const node of ['Create watch label', 'Add watch label']) {
-    const wider = clone(h.PUBLISH);
-    const n = wider.nodes.find((x) => x.name === node);
-    n.parameters.jsonBody = n.parameters.jsonBody.replace("'triage:post-merge-failed']", "'triage:post-merge-failed', 'merge']");
-    assert.match(problems(wider), new RegExp(`"${node}" is a POST .* matches no allowed write`));
+    for (const extra of ['merge', 'triage:post-merge-ok', 'triage:deep-review']) {
+      const wider = clone(h.PUBLISH);
+      const n = wider.nodes.find((x) => x.name === node);
+      n.parameters.jsonBody = n.parameters.jsonBody.replace("'rollout:investigate']", `'rollout:investigate', '${extra}']`);
+      assert.match(problems(wider), new RegExp(`"${node}" is a POST .* matches no allowed write`), `${node} + ${extra}`);
+    }
   }
+  // The Result node counts a watch label write only for the same three.
+  const result = h.PUBLISH.nodes.find((x) => x.name === 'Result').parameters.jsCode;
+  assert.match(result, /const WATCH_LABELS = \['rollout:revert', 'rollout:fix-forward', 'rollout:investigate'\];/);
   // The watcher can't call around its gate either.
   const around = clone(WATCH);
   around.connections['One item per action'].main = [[{ node: 'Publish', type: 'main', index: 0 }]];

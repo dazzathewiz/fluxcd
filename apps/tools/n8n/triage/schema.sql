@@ -199,3 +199,9 @@ CREATE TABLE IF NOT EXISTS triage.watch_runs (
 );
 
 ALTER TABLE triage.heartbeat ADD COLUMN IF NOT EXISTS watch_last_success timestamptz;
+
+-- R10 shared failures: `kustomization <name>@<sha>`, the Kustomization and
+-- revision a finished watch failed on. Watches with the same value are one
+-- group. Additive: a revert leaves it unused.
+ALTER TABLE triage.watches ADD COLUMN IF NOT EXISTS failure_group text;
+CREATE INDEX IF NOT EXISTS watches_failure_group_idx ON triage.watches (repo, failure_group) WHERE failure_group IS NOT NULL;
