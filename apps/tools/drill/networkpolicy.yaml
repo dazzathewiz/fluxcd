@@ -1,0 +1,14 @@
+---
+# rollout-drill: deny all ingress and egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rollout-drill
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: rollout-drill
+  policyTypes:
+    - Ingress
+    - Egress
