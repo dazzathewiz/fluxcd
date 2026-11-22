@@ -49,9 +49,11 @@ and the n8n pod reseeds both from its Secret on every start.
 PVC `db-backup`, 5Gi, `longhorn-diskencrypt-global`, one directory per database:
 `/backup/n8n/` and `/backup/inventree/`. Like every other volume, it's in the
 default Longhorn recurring-job group with no label, so the nightly and weekly
-volume backups take it offsite. It's detached outside the dump job, so that
-relies on Longhorn's `allowRecurringJobWhileVolumeDetached` setting, in
-`infrastructure/controllers/longhorn.yaml`. No other offsite step exists.
+volume backups take it offsite. No other offsite step exists.
+
+The volume is detached outside the dump job. Longhorn backs it up anyway only
+because `allowRecurringJobWhileVolumeDetached` is on, in
+`infrastructure/controllers/longhorn.yaml`.
 
 The pod has no service-account token. It runs as the image's `postgres` user
 (UID/GID 70) with a read-only root filesystem, and it can reach DNS, the two
