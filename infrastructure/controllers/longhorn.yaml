@@ -48,3 +48,6 @@ spec:
       # Move volumes to the new engine automatically after a Longhorn upgrade,
       # one live upgrade per node at a time. 0 leaves them on old engines.
       concurrentAutomaticEngineUpgradePerNodeLimit: 1
+      # Run recurring backups on detached volumes too. Without it Longhorn skips
+      # any volume not attached at 11:00, e.g. db-backup, which only the dump job mounts.
+      allowRecurringJobWhileVolumeDetached: true
