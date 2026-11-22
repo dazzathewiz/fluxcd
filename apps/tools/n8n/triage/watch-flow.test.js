@@ -125,11 +125,13 @@ function startWatch(db, now) {
     row: {
       run_id: run.id, repo: REPO, config_body: db.config, cursor, list_etag: c ? c.list_etag : null,
       known: mine.filter((w) => Date.parse(w.merged_at) >= Date.parse(cursor) - 86400000).map((w) => `${w.pr}@${w.merge_sha}`),
-      pending: mine.filter((w) => w.status === 'pending').map((w) => ({ id: w.id, repo: w.repo, pr: w.pr, merge_sha: w.merge_sha, merged_at: w.merged_at, targets: w.targets, fail_streak: w.fail_streak })),
+      pending: mine.filter((w) => w.status === 'pending').map((w) => ({ id: w.id, repo: w.repo, pr: w.pr, merge_sha: w.merge_sha, merged_at: w.merged_at, targets: w.targets, fail_streak: w.fail_streak, preexisting: w.preexisting })),
+      history: mine.filter((w) => Date.parse(w.merged_at) > now - 7 * 86400000).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at) || a.id - b.id)
+        .map((w) => ({ id: w.id, pr: w.pr, merge_sha: w.merge_sha, merged_at: w.merged_at, status: w.status, failure_group: w.failure_group || null, detail: w.last_detail })),
       publishable: publishable.map((w) => ({
         id: w.id, repo: w.repo, pr: w.pr, merge_sha: w.merge_sha, status: w.status, fix_forward: w.fix_forward, fix_forward_source: w.fix_forward_source,
-        detail: w.last_detail, alert_status: w.alert_status, alert_attempts: w.alert_attempts, failure_group: w.failure_group || null,
-        group: w.failure_group ? groupOf(w).map((g) => ({ id: g.id, pr: g.pr, merge_sha: g.merge_sha, fix_forward: g.fix_forward })) : null,
+        detail: w.last_detail, alert_status: w.alert_status, alert_attempts: w.alert_attempts, failure_group: w.failure_group || null, preexisting: w.preexisting,
+        group: w.failure_group ? groupOf(w).map((g) => ({ id: g.id, pr: g.pr, merge_sha: g.merge_sha, fix_forward: g.fix_forward, preexisting: g.preexisting })) : null,
       })),
       patterns: db.patterns, app_id: db.app_id, installation_id: db.installation_id,
     },
@@ -228,19 +230,19 @@ function runWatchAt(opts) {
     assert.deepEqual(next('Watch'), ['New watches only', 'Checks only', 'Plans only', 'Alerts only', 'Run summary only']);
     const of = (kind) => out.Watch.filter((i) => i.json.kind === kind);
     for (const it of of('insert')) {
-      const [repo, pr, msha, mergedAt, mergedBy, targets, notes, status, ff, ffs, detail] = h.param(node('Insert watch').parameters.options.queryReplacement, h.scope(out, it.json, 0));
+      const [repo, pr, msha, mergedAt, mergedBy, targets, notes, status, ff, ffs, detail, pre] = h.param(node('Insert watch').parameters.options.queryReplacement, h.scope(out, it.json, 0));
       if (db.watches.some((w) => w.repo === repo && w.pr === pr && w.merge_sha === msha)) continue;
       db.watches.push({
         id: db.watches.length + 1, repo, pr, merge_sha: msha, merged_at: mergedAt, merged_by: mergedBy || null, targets: JSON.parse(targets), notes: JSON.parse(notes),
-        status, fix_forward: ff, fix_forward_source: ffs || null, fail_streak: {}, last_detail: JSON.parse(detail), planned_actions: null, published: false,
+        status, fix_forward: ff, fix_forward_source: ffs || null, fail_streak: {}, last_detail: JSON.parse(detail), preexisting: JSON.parse(pre), planned_actions: null, published: false,
         publish_outcome: null, run_id: null, alert_status: null, alert_attempts: 0, created_at: iso(now), finished_at: status !== 'pending' ? iso(now) : null,
       });
     }
     for (const it of of('update')) {
-      const [wid, status, streak, detail, group] = h.param(node('Update watch').parameters.options.queryReplacement, h.scope(out, it.json, 0));
+      const [wid, status, streak, detail, group, pre] = h.param(node('Update watch').parameters.options.queryReplacement, h.scope(out, it.json, 0));
       const w = db.watches.find((x) => x.id === wid);
       if (!w || w.status !== 'pending') continue;
-      Object.assign(w, { status, fail_streak: JSON.parse(streak), last_detail: JSON.parse(detail), finished_at: status !== 'pending' ? iso(now) : null, failure_group: group || null });
+      Object.assign(w, { status, fail_streak: JSON.parse(streak), last_detail: JSON.parse(detail), finished_at: status !== 'pending' ? iso(now) : null, failure_group: group || null, preexisting: JSON.parse(pre) });
     }
     for (const it of of('plan')) {
       const [wid, plan, outcome, mode, runId] = h.param(node('Record watch plan').parameters.options.queryReplacement, h.scope(out, it.json, 0));
@@ -578,4 +580,115 @@ test('the watcher workflow: unsaved settings aren\'t needed, but it reads no tok
   assert.deepEqual(trigger.parameters.rule.interval, [{ field: 'minutes', minutesInterval: 5 }]);
   assert.match(read('deployment.yaml'), /n8n publish:workflow --id=TriageWatch00001\n/);
   assert.match(read('kustomization.yaml'), /- workflows\/triage-watch\.json/);
+});
+
+// ------------------------------------------------------------ pre-existing failures
+
+// A (PR 310) breaks apps at its own revision and is labelled rollout:revert.
+function aFails(db, gh) {
+  n8nMerge(gh, 310, sha('3'), T0 - 4 * 60000);
+  runWatch({ db, gh, now: T0 });
+  const cluster = (p) => (p.endsWith('/kustomizations/apps') ? ksFailing(sha('3')) : { statusCode: 404, body: {} });
+  runWatch({ db, gh, now: T0 + 5 * 60000, cluster });
+  runWatch({ db, gh, now: T0 + 10 * 60000, cluster });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status, w.failure_group]), [[310, 'failed', `kustomization apps@${sha('3')}`]]);
+  return cluster;
+}
+const commentOf = (gh, n) => gh.st.comments[gh.st.prs[n].comments[0]].body;
+
+test('pre-existing: merge B on a target already failing from A is rollout:investigate, in A\'s group, and its comment names A', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  const failingAtA = aFails(db, gh);
+  n8nMerge(gh, 311, sha('4'), T0 + 11 * 60000);
+  const r1 = runWatch({ db, gh, now: T0 + 15 * 60000, cluster: failingAtA });
+  assert.deepEqual(r1.alerts.map((a) => [a.prs, a.action]), [[[310], 'revert']]);
+  assert.deepEqual(db.watches[1].preexisting, [{ id: 'kustomization apps', pr: 310, merge_sha: sha('3'), failure_group: `kustomization apps@${sha('3')}`, source: 'watch' }]);
+  // Flux then attempts B, which still carries A's breakage.
+  const failingAtB = (p) => (p.endsWith('/kustomizations/apps') ? ksFailing(sha('4')) : { statusCode: 404, body: {} });
+  runWatch({ db, gh, now: T0 + 20 * 60000, cluster: failingAtB });
+  runWatch({ db, gh, now: T0 + 25 * 60000, cluster: failingAtB });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status, w.failure_group]), [[310, 'failed', `kustomization apps@${sha('3')}`], [311, 'failed', `kustomization apps@${sha('3')}`]]);
+  const r2 = runWatch({ db, gh, now: T0 + 30 * 60000, cluster: failingAtB });
+  assert.deepEqual(gh.st.prs[310].labels, ['triage:human', 'rollout:revert']);
+  assert.deepEqual(gh.st.prs[311].labels, ['triage:human', 'rollout:investigate']);
+  const body = commentOf(gh, 311);
+  assert.match(body, /Target was already failing from PR 310 before this merge/);
+  assert.ok(!/Revert by hand/.test(body));
+  assert.deepEqual(r2.alerts, [], 'A\'s alert covered the failure');
+});
+
+test('pre-existing: B merged while A is still pending, with apps Ready=False at A\'s revision, is recorded at creation; A stays revert', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  n8nMerge(gh, 310, sha('3'), T0 - 4 * 60000);
+  runWatch({ db, gh, now: T0 });
+  const failingAtA = (p) => (p.endsWith('/kustomizations/apps') ? ksFailing(sha('3')) : { statusCode: 404, body: {} });
+  n8nMerge(gh, 311, sha('4'), T0 + 4 * 60000);
+  gh.st.compare[`${sha('4')}...${sha('3')}`] = 'behind';
+  runWatch({ db, gh, now: T0 + 5 * 60000, cluster: failingAtA });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status]), [[310, 'pending'], [311, 'pending']]);
+  assert.deepEqual(db.watches[1].preexisting.map((p) => [p.pr, p.source]), [[310, 'cluster']]);
+  runWatch({ db, gh, now: T0 + 10 * 60000, cluster: failingAtA });
+  // B is held behind A until it times out.
+  for (let m = 15; m <= 35; m += 5) runWatch({ db, gh, now: T0 + m * 60000, cluster: failingAtA });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status, w.failure_group]), [[310, 'failed', `kustomization apps@${sha('3')}`], [311, 'timeout', `kustomization apps@${sha('3')}`]]);
+  runWatch({ db, gh, now: T0 + 40 * 60000, cluster: failingAtA });
+  assert.deepEqual(gh.st.prs[310].labels, ['triage:human', 'rollout:revert']);
+  assert.deepEqual(gh.st.prs[311].labels, ['triage:human', 'rollout:investigate']);
+  assert.match(commentOf(gh, 311), /status=timeout -->[\s\S]*already failing from PR 310 before this merge/);
+});
+
+test('pre-existing: A failing alone is still rollout:revert', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  const cluster = aFails(db, gh);
+  const r = runWatch({ db, gh, now: T0 + 15 * 60000, cluster });
+  assert.deepEqual(db.watches[0].preexisting, []);
+  assert.deepEqual(gh.st.prs[310].labels, ['triage:human', 'rollout:revert']);
+  assert.match(commentOf(gh, 310), /Revert by hand/);
+  assert.ok(!/already failing/i.test(commentOf(gh, 310)));
+  assert.deepEqual(r.alerts.map((a) => [a.pr, a.prs, a.action]), [[310, [310], 'revert']]);
+});
+
+test('pre-existing: B with a fix-forward marker on a target already failing is rollout:fix-forward', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  const failingAtA = aFails(db, gh);
+  n8nMerge(gh, 312, sha('6'), T0 + 11 * 60000, { body: 'rollback: fix-forward', author: OWNER });
+  runWatch({ db, gh, now: T0 + 15 * 60000, cluster: failingAtA });
+  const failingAtB = (p) => (p.endsWith('/kustomizations/apps') ? ksFailing(sha('6')) : { statusCode: 404, body: {} });
+  runWatch({ db, gh, now: T0 + 20 * 60000, cluster: failingAtB });
+  runWatch({ db, gh, now: T0 + 25 * 60000, cluster: failingAtB });
+  runWatch({ db, gh, now: T0 + 30 * 60000, cluster: failingAtB });
+  assert.equal(db.watches[1].failure_group, `kustomization apps@${sha('3')}`);
+  assert.deepEqual(gh.st.prs[312].labels, ['triage:human', 'rollout:fix-forward']);
+  const body = commentOf(gh, 312);
+  assert.match(body, /already failing from PR 310 before this merge/);
+  assert.match(body, /Fix forward — no revert\.\*\* Source: marker in the PR description\./);
+});
+
+test('pre-existing: once A is reverted and apps is ok, a new merge C that fails is rollout:revert, not in A\'s group', () => {
+  const db = newDb(LABELS_TEXT);
+  const gh = fakeGithub();
+  aFails(db, gh);
+  // The revert of A (PR 313) rolls out.
+  n8nMerge(gh, 313, sha('5'), T0 + 11 * 60000);
+  const okAtRevert = (p) => (p.endsWith('/kustomizations/apps') ? ksApps(sha('5')) : { statusCode: 404, body: {} });
+  runWatch({ db, gh, now: T0 + 15 * 60000, cluster: okAtRevert });
+  runWatch({ db, gh, now: T0 + 20 * 60000, cluster: okAtRevert });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status]), [[310, 'failed'], [313, 'ok']]);
+  // C (PR 314) breaks apps again, on its own.
+  n8nMerge(gh, 314, sha('7'), T0 + 21 * 60000);
+  runWatch({ db, gh, now: T0 + 25 * 60000, cluster: okAtRevert });
+  assert.deepEqual(db.watches[2].preexisting, []);
+  const failingAtC = (p) => (p.endsWith('/kustomizations/apps') ? ksFailing(sha('7')) : { statusCode: 404, body: {} });
+  runWatch({ db, gh, now: T0 + 30 * 60000, cluster: failingAtC });
+  runWatch({ db, gh, now: T0 + 35 * 60000, cluster: failingAtC });
+  assert.deepEqual(db.watches.map((w) => [w.pr, w.status, w.failure_group]),
+    [[310, 'failed', `kustomization apps@${sha('3')}`], [313, 'ok', null], [314, 'failed', `kustomization apps@${sha('7')}`]]);
+  const r = runWatch({ db, gh, now: T0 + 40 * 60000, cluster: failingAtC });
+  assert.deepEqual(gh.st.prs[314].labels, ['triage:human', 'rollout:revert']);
+  assert.ok(!/already failing/i.test(commentOf(gh, 314)));
+  assert.deepEqual(r.alerts.map((a) => [a.pr, a.prs, a.action]), [[314, [314], 'revert']]);
 });

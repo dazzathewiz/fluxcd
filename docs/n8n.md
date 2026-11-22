@@ -797,6 +797,8 @@ group: `triage.watches.failure_group` holds `kustomization <name>@<sha>` for eac
 A watch failing only on its own HelmRelease or workload has no group. A group of
 one is attributed like any other failure.
 
+**Already failing.** A merge whose failing target was already failing from an earlier merge (`triage.watches.preexisting`) joins that failure's group as `rollout:investigate` (fix-forward still wins), and its comment names the earlier PR.
+
 **What it publishes.** Nothing on `ok`: no label and no comment. The row still
 records `ok`. On `failed` or `timeout`, exactly one of these labels:
 
