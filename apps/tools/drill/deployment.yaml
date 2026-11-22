@@ -1,0 +1,41 @@
+# Deliberate rollout failure for the R10 drill (the tag doesn't exist); remove by revert.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollout-drill
+  namespace: tools
+  labels:
+    app: rollout-drill
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 120
+  selector:
+    matchLabels:
+      app: rollout-drill
+  template:
+    metadata:
+      labels:
+        app: rollout-drill
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: drill
+        image: busybox:0.0.0-rollout-drill
+        command: ["sleep", "infinity"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 4Mi
+          limits:
+            memory: 16Mi

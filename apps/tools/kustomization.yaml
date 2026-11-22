@@ -9,3 +9,4 @@ resources:
   - inventory
   - n8n
   - db-backup
+  - drill
