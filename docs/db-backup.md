@@ -51,6 +51,10 @@ PVC `db-backup`, 5Gi, `longhorn-diskencrypt-global`, one directory per database:
 default Longhorn recurring-job group with no label, so the daily and weekly
 volume backups take it offsite. No other offsite step exists.
 
+The volume is detached outside the dump job. Longhorn backs it up anyway only
+because `allowRecurringJobWhileVolumeDetached` is on, in
+`infrastructure/controllers/longhorn.yaml`.
+
 The pod has no service-account token. It runs as the image's `postgres` user
 (UID/GID 70) with a read-only root filesystem, and it can reach DNS, the two
 databases on 5432 and Home Assistant on 8123. `n8n-db`'s NetworkPolicy admits it
