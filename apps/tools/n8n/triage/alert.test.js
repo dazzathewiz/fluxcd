@@ -18,7 +18,7 @@ const BEAT = wf('triage-heartbeat.json');
 const ALERT = wf('triage-alert.json');
 const next = (w, name) => (((w.connections[name] || {}).main || [])[0] || []).map((l) => l.node);
 const KEYS = ['checked', 'last_success', 'source', 'stale', 'watch_last_success'];
-const WATCH_KEYS = ['checked', 'fix_forward', 'pr', 'source', 'status'];
+const WATCH_KEYS = ['action', 'checked', 'fix_forward', 'pr', 'prs', 'source', 'status'];
 const WATCH = wf('triage-watch.json');
 
 // What Record last success returns: pg hands timestamptz back as Dates.
@@ -61,16 +61,17 @@ test('payload: the body TriageAlertV01 sends is the same five keys, with no URL'
   assert.equal(expr(post.parameters.url, { url }, {}), url);
 });
 
-test('payload: a watcher alert is exactly source, pr, status, fix_forward and checked', () => {
+test('payload: a watcher alert is exactly source, pr, prs, status, action, fix_forward and checked', () => {
   const post = h.nodeOf(ALERT, 'POST');
   // What the watcher's Alert node passes: the alert item, with the watch id and anything else.
-  const item = { kind: 'alert', watch_id: 9, source: 'pr-watch', pr: 287, status: 'timeout', fix_forward: true, checked: '2026-11-21T10:35:00.000Z', repo: 'o/r', url: 'https://x', detail: [{ id: 'deployment tools/n8n' }] };
+  const item = { kind: 'alert', watch_id: 9, source: 'pr-watch', pr: 287, prs: [287, 288], status: 'timeout', action: 'investigate', fix_forward: true, checked: '2026-11-21T10:35:00.000Z', repo: 'o/r', url: 'https://x', detail: [{ id: 'deployment tools/n8n' }] };
   const body = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': item }));
   assert.deepEqual(Object.keys(body).sort(), WATCH_KEYS);
-  assert.deepEqual(body, { source: 'pr-watch', pr: 287, status: 'timeout', fix_forward: true, checked: '2026-11-21T10:35:00.000Z' });
+  assert.deepEqual(body, { source: 'pr-watch', pr: 287, prs: [287, 288], status: 'timeout', action: 'investigate', fix_forward: true, checked: '2026-11-21T10:35:00.000Z' });
   // Nothing else gets through: no ok status, no stray types.
-  const odd = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': Object.assign({}, item, { status: 'ok', pr: '287', fix_forward: 'yes' }) }));
-  assert.deepEqual([odd.status, odd.pr, odd.fix_forward], [null, null, false]);
+  const odd = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': Object.assign({}, item, { status: 'ok', pr: '287', fix_forward: 'yes', action: 'merge', prs: [288, '289', 'https://x'] }) }));
+  assert.deepEqual([odd.status, odd.pr, odd.fix_forward, odd.action, odd.prs], [null, null, false, null, [288]]);
+  assert.deepEqual(JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': Object.assign({}, item, { prs: 'x' }) })).prs, []);
   // The watcher's Alert gate passes only failed and timeout, under labels.
   const gate = h.nodeOf(WATCH, 'Alert gate');
   const pass = (mode, wmode, status) => h.ifResult(gate, h.scope({ Watch: [{ json: { mode, watch_write_mode: wmode } }] }, { kind: 'alert', status }, 0));

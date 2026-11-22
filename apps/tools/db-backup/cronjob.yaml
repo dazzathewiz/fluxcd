@@ -1,6 +1,6 @@
 ---
-# 30 minutes before Longhorn's daily-backups (11:00 UTC), so each offsite
-# backup carries that night's dumps. The image tracks the two DB Deployments:
+# 30 minutes before Longhorn's daily-backups (11:00 Brisbane), so each
+# offsite backup carries that morning's dumps. The image tracks the two DB Deployments:
 # pg_dump must not be older than the server.
 apiVersion: batch/v1
 kind: CronJob
@@ -10,7 +10,7 @@ metadata:
   labels:
     app: db-backup
 spec:
-  schedule: "30 20 * * *"
+  schedule: "30 10 * * *"
   timeZone: Australia/Brisbane
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3

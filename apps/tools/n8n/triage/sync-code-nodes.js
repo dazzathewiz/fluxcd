@@ -34,7 +34,7 @@ const APP_TOKEN = `=token {{ ${TOKEN}.body.token }}`;
 
 // The only writes any workflow may make. labels are rule 1's names and context
 // the status context, both from config.yaml (rules.js pins them). watchLabels
-// are R10's two labels (rules.js WATCH_LABELS).
+// are R10's three rollout labels (rules.js WATCH_LABELS).
 function writeTemplates(labels, context, watchLabels) {
   const list = `[${labels.map((l) => `'${l}'`).join(', ')}]`;
   const wlist = `[${(watchLabels || []).map((l) => `'${l}'`).join(', ')}]`;
