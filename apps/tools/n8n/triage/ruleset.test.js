@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const rules = require('./rules.js');
 
 const N8N = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(N8N, p), 'utf8');
@@ -117,7 +118,7 @@ test('the driver carries an unchanged result forward and records a changed one i
   const [fresh] = await runDriver(null);
   assert.equal(fresh.verdict, 'low-risk', JSON.stringify(fresh.reasons));
   assert.equal(fresh.carried_from, null);
-  assert.equal(fresh.checks.length, 9);
+  assert.equal(fresh.checks.length, rules.CHECK_IDS.length);
   assert.deepEqual(fresh.dependants.map((d) => d.id), ['media-serving']);
   const same = { id: 40, verdict: 'low-risk', results: fresh.checks.map((c) => ({ id: c.id, result: c.result })) };
   const [carried] = await runDriver(same);
@@ -128,7 +129,7 @@ test('the driver carries an unchanged result forward and records a changed one i
   changed.results[0].result = 'flag';
   const [full] = await runDriver(changed);
   assert.equal(full.carried_from, null);
-  assert.equal(full.checks.length, 9);
+  assert.equal(full.checks.length, rules.CHECK_IDS.length);
 });
 
 test('the triage role can insert but not update or delete verdicts', () => {

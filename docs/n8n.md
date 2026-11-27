@@ -7,7 +7,8 @@ on the PR (a label, a comment and a commit status) through a GitHub App. It ship
 with `write_mode: "off"`, which records what it would publish and writes nothing to
 the source host. See [PR triage](#pr-triage) and [write_mode](#write_mode) below.
 After each merge, a watcher checks the change rolled out and alerts if it didn't;
-see [R10: post-merge watch](#r10-post-merge-watch).
+see [R10: post-merge watch](#r10-post-merge-watch). Helm chart bumps also get a
+rendered-chart diff; see [R11: rendered-chart diff](#r11-rendered-chart-diff).
 
 ## What's deployed
 
@@ -24,6 +25,7 @@ them up.
 | `Service n8n` + `IngressRoute n8n` | ClusterIP on 5678, routed at `n8n.inf.${PERSONAL_DOMAIN}` on `websecure` with the wildcard `.inf` certificate and the namespace's `default-headers` Middleware. |
 | `ServiceAccount n8n` + `ClusterRoleBinding n8n-view` | Read-only cluster identity. See below. |
 | `NetworkPolicy n8n`, `NetworkPolicy n8n-db` | Network isolation. See below. |
+| `CronJob triage-render` + `ConfigMap triage-render-scripts-<hash>`, `ExternalSecret triage-render-secrets`, `NetworkPolicy triage-render` | The R11 render job. See [R11](#r11-rendered-chart-diff). |
 
 Probes: liveness on `/healthz`, which answers without the database. Startup and
 readiness on `/healthz/readiness`, which also waits for the database connection and
@@ -47,8 +49,9 @@ into Secret `n8n-secrets`:
 | `github-app-installation-id` | `GITHUB_APP_INSTALLATION_ID` | Seeded into `triage.config`; the installation token exchange |
 | `github-app-private-key-b64` | Only decoded, inside `CREDENTIALS_OVERWRITE_DATA` (`jwtAuth`) | Signs the App JWT in the `PR triage: publish` sub-workflow |
 | `ha-heartbeat-url` | `HA_HEARTBEAT_URL` | Seeded into `triage.alert_target`; see [Dead-man](#dead-man) |
+| `triage-render-db-password` | `TRIAGE_RENDER_DB_PASSWORD` (also the only key of `triage-render-secrets`) | The `triage_render` role's password, set by the `triage-schema` initContainer; the [R11](#r11-rendered-chart-diff) job's login |
 
-All eight fields must exist before the ExternalSecret syncs: a missing one stops
+All nine fields must exist before the ExternalSecret syncs: a missing one stops
 the whole Secret updating. The private key is the App's PEM, base64-encoded onto
 one line, because 1Password password fields flatten line breaks. The template
 decodes it (`b64dec`) into the `jwtAuth` overwrite, the key's only copy in the
@@ -97,8 +100,11 @@ servers don't run with `--disable-network-policy`.
   - TCP 6443 to the control-plane VIP and each control-plane node
   - TCP 8123 to the home automation server, for the [dead-man](#dead-man) ping
   - Anything outside `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`
-- **n8n-db:** ingress on 5432 from `n8n` and from the nightly dump (`app:
-  db-backup`, see [db-backup.md](db-backup.md)). Egress is DNS only.
+- **n8n-db:** ingress on 5432 from `n8n`, from the nightly dump (`app:
+  db-backup`, see [db-backup.md](db-backup.md)) and from the R11 render job
+  (`app: triage-render`). Egress is DNS only.
+- **triage-render:** no ingress. Egress to CoreDNS, `n8n-db:5432`, and TCP 443
+  outside the three private ranges.
 
 So n8n can reach the internet, the k3s API and that one port, and it can't reach
 anything else on the LAN or in the cluster.
@@ -140,6 +146,9 @@ Longhorn recurring-job group with no label. The backing PVs are reclaimed with
   (`triage.prune_runs()`). `watches`, `verdicts` and `publications` are kept, and
   a pruned run's `run_id` becomes NULL in them. The gate is the `retention` row in
   `triage.heartbeat`, and the counts go to the `n8n-db` log.
+- **R11 renders are kept 30 days.** The same `prune_runs()` deletes
+  `triage.render_requests` requested more than 30 days ago, and their renders
+  with them (`ON DELETE CASCADE`).
 - `n8n-data` holds n8n's local config, including the copy of the encryption key.
   Binary data is not on it: it lives in a memory-backed `emptyDir`. See
   [Cluster version](#cluster-version).
@@ -248,7 +257,9 @@ password, revokes everything and grants back exactly:
 | `triage.heartbeat` | `SELECT`, `INSERT`, `UPDATE` | heartbeat upsert |
 | `triage.alert_target` | `SELECT` | `TriageAlertV01` |
 | `triage.watches`, `triage.watch_cursor`, `triage.watch_runs` | `SELECT`, `INSERT`, `UPDATE` | the [watcher](#r10-post-merge-watch) |
-| the four `id` sequences | `USAGE` | inserts |
+| `triage.render_requests` | `SELECT`, `INSERT` | [R11](#r11-rendered-chart-diff): Queue render, Renders |
+| `triage.renders` | `SELECT` | R11: Renders |
+| the five `id` sequences | `USAGE` | inserts |
 | function `triage.prune_runs()` | `EXECUTE` | heartbeat Retention |
 
 No `DELETE`: the one delete is `prune_runs()`, a `SECURITY DEFINER` function with a
@@ -300,7 +311,8 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
 6. **Triage** parses the config and checks it lists the same
    repos, and runs the negative control against that response. It keeps PRs whose
    `head_sha` has no verdict under this ruleset and no finalised one, oldest first, up to `per_run_cap`. Then it fetches
-   the Helm index and registry manifests and runs R1–R9.
+   the Helm index and registry manifests and runs R1–R9, and R11 from what
+   **Renders** read. **Queue render** inserts R11's render requests.
    Then it plans the publish for every open PR it read (`planPublish` in
    `rules.js`). Planning only reads.
 7. Three branches follow, top to bottom (n8n's v1 execution order runs one
@@ -442,6 +454,7 @@ what was read.
 | R7 mergeability, age | PR detail | Informational only |
 | R8 amd64 image | Registry manifest | No `linux/amd64` |
 | R9 hygiene (non-Renovate PRs) | Added lines, PR text, redaction patterns | A pattern matches. Only counts and file paths are recorded, never the pattern |
+| R11 rendered chart | The old and new chart, rendered with the repo's values | Not required. Shown, and used only with `r11_mode: "on"`; see [R11](#r11-rendered-chart-diff) |
 
 The first matching verdict wins:
 
@@ -859,6 +872,97 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   "select pr, left(merge_sha, 12), status, fix_forward, failure_group, targets, planned_actions->>'rollout_action', publish_outcome, alert_status from triage.watches order by created_at desc limit 10;"
 ```
 
+## R11: rendered-chart diff
+
+`flux diff` sees a HelmRelease's version line, not what the chart renders. R11
+renders the old and the new chart with the repo's values, and classifies the
+difference. The poll queues, a CronJob renders, `rules.js` classifies.
+
+**Queue.** When the poll triages a PR whose R1 change is a HelmRelease chart
+version, it reads the HelmRelease file at the head commit (public raw URL) and
+inserts one `triage.render_requests` row per release (`Queue render`,
+`ON CONFLICT DO NOTHING` on `(repo, pr, head_sha, path, release)`). The row
+holds the chart, both versions, the repository URL from `helm_index`, the
+cluster version R4 read, and the release and namespace resolved the way Flux
+does: `releaseName`, else `<targetNamespace>-<name>`, else the name; the
+namespace is `targetNamespace`, else the Flux Kustomization's, else the
+object's. A chart with no `helm_index` entry or an OCI source is inserted as
+`unsupported`. A file that can't be read, or no cluster version, inserts
+nothing, and R11 says why.
+
+**Render.** `CronJob triage-render` (every 5 minutes, one at a time, 10-minute
+deadline) runs `triage/render.sh` in the Postgres image, with static `helm` and
+`yq` copied in by two initContainers. It logs in as `triage_render`, claims up
+to 3 pending requests (`FOR UPDATE SKIP LOCKED`, `attempts + 1`) and for each:
+
+1. fetches the HelmRelease at the head commit and finds the matching document;
+2. stops at `valuesFrom` or `postRenderers` (`unsupported`);
+3. takes `spec.values` and replaces every `${VAR}` with `subst-<var>`, so no
+   resolved value enters the job or the database;
+4. pulls each chart version, records the `.tgz` SHA-256 and `appVersion`, and
+   runs `helm template --include-crds --skip-tests --kube-version <cluster>`;
+5. stores both renders as JSON arrays in `triage.renders` (over 8 MiB is
+   `failed`) and marks the request `done`.
+
+An error marks it `failed` with an error code. A fetch or pull error is
+retried until 3 attempts. The new chart failing to render where the old one
+rendered keeps the old render: that is a finding, not a miss. The job logs one
+line per request, never values. It mounts no service-account token, runs
+non-root on a read-only root filesystem, and has no cluster credentials.
+
+`triage_render` is a login role with the same hardening as `triage`, limited
+to 2 connections. It has `SELECT, UPDATE` on `render_requests` and `INSERT` on
+`renders`, and nothing else: no `DELETE`, no other table.
+
+**Classify.** The poll's `Renders` node reads each open PR's requests and
+renders. `classifyRender` keys objects by `apiVersion/kind/namespace/name` and
+drops noise: the `helm.sh/chart`, `app.kubernetes.io/version` and `chart`
+labels, `checksum/*` annotations, and an image tag that moves exactly from the
+old `appVersion` to the new one. Then:
+
+| Difference | Level |
+| --- | --- |
+| A CRD added, removed, or with a changed spec | `deep-review` |
+| A Service's type, ports (port, targetPort, protocol, nodePort) or selector | `deep-review` |
+| A kind added or removed, a new image, another pod-template change, the new chart failing to render, or any other change | `review` |
+| Nothing left | `clean` |
+
+Findings name kinds and counts only, never a rendered value, because they
+reach a public comment. The `R11` check records the request ids, both chart
+digests and the classification. Pending, `failed` and `unsupported` are
+`not_run` with the reason.
+
+**In the comment.** The triage comment gets one line, built from fixed
+templates and checked by the redaction filter with the rest of the comment:
+`R11 (shadow, not used): <level> — <findings>`, or `not run yet` / `not run`
+with a reason. A render usually finishes after the PR was triaged, so the line
+is worked out on every run that reads the PR, and the comment is edited in
+place when it changes. A render that finished since the last run makes the next
+run skip the PR-list ETag, so it reads every PR. The plan stores the result
+(`publications.planned.r11`), and `Renders` sends the rendered objects only
+while no plan holds the result under the current ruleset, so each render is
+read about once.
+
+**`r11_mode`** in `config.yaml`:
+
+- `shadow` (shipped): the line is shown, and the verdict is computed exactly as
+  without R11.
+- `on`: a `review` or `deep-review` result raises the verdict to that level,
+  never lowers it. A render that finishes after triage raises the published
+  verdict on the next run, like any escalation. Not run changes nothing.
+
+Turning it on is a one-line PR, and re-triages open PRs like any `config.yaml`
+change.
+
+**Testing a render locally.** `RENDER_DRY_RUN=1 RENDER_REQUESTS=<file> sh
+triage/render.sh` takes one request per line as JSON, skips the database, and
+prints each result (status, digests, `appVersion`s and both renders) as one JSON
+line, ready for `classifyRender`. It needs `helm`, `yq` and `wget`, and no
+database.
+
+**Rollback** is `git revert`: the CronJob, its Secret and its network policy
+are pruned. The tables and the role stay behind, unused.
+
 ## Upgrades
 
 - The n8n image is pinned to an exact version, and Renovate bumps it after a 7-day
@@ -888,3 +992,5 @@ kubectl -n tools exec deploy/n8n-db -- psql -U n8n -d n8n -c \
   from what it reads there.
 - `triage.watches`, `triage.watch_cursor` and `triage.watch_runs`: the watcher's
   working record. A lost cursor restarts the watch an hour back.
+- `triage.render_requests` and `triage.renders`: R11's working record. A lost
+  request is queued again the next time the PR is triaged.

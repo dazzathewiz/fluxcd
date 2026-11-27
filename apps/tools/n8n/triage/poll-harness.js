@@ -107,7 +107,7 @@ function code(n, out, input, idx) {
 // ------------------------------------------------------------ the database
 
 function newDb() {
-  return { runs: [], verdicts: [], publications: {}, config: {}, clock: Date.parse('2026-11-20T00:00:00Z') };
+  return { runs: [], verdicts: [], publications: {}, config: {}, render_requests: [], renders: [], clock: Date.parse('2026-11-20T00:00:00Z') };
 }
 const iso = (t) => new Date(t).toISOString();
 const keyOf = (o) => `${o.repo}#${o.pr}@${o.head_sha}`;
@@ -145,6 +145,55 @@ function startRun(db, repo, ruleset, configText, patterns) {
       app_id: db.config['github-app-id'] || null, installation_id: db.config['github-app-installation-id'] || null,
     },
   };
+}
+
+// The Renders node's SQL, for one PR read URLs item: the head SHA's requests,
+// the stored R11 cache under this ruleset, and docs only where it has no result.
+function readRenders(db, item, ruleset) {
+  const j = item || {};
+  const pub = j.key ? db.publications[j.key] : null;
+  const cache = pub && pub.planned && pub.planned.r11 && pub.planned.r11.ruleset === ruleset ? pub.planned.r11 : null;
+  const cached = (rq) => !!cache && Array.isArray(cache.results)
+    && cache.results.some((c) => String(c.id) === String(rq.id) && c.status === rq.status && c.state === 'done');
+  const side = (rq, s) => {
+    const r = db.renders.find((x) => x.request_id === rq.id && x.side === s);
+    return r ? { digest: r.chart_digest, app_version: r.app_version, bytes: r.bytes } : null;
+  };
+  const requests = db.render_requests
+    .filter((rq) => rq.repo === j.repo && rq.pr === j.pr && rq.head_sha === j.head_sha)
+    .sort((a, b) => a.id - b.id)
+    .map((rq) => {
+      let docs = null;
+      if ((rq.status === 'done' || rq.status === 'failed') && !cached(rq)) {
+        const rs = db.renders.filter((x) => x.request_id === rq.id);
+        if (rs.length) { docs = {}; for (const r of rs) docs[r.side] = r.docs; }
+      }
+      return {
+        id: rq.id, path: rq.path, release: rq.release, chart: rq.chart, old_version: rq.old_version, new_version: rq.new_version,
+        status: rq.status, error: rq.error, attempts: rq.attempts, old: side(rq, 'old'), new: side(rq, 'new'), docs,
+      };
+    });
+  return { key: j.key || null, cache, requests };
+}
+
+// Queue render's SQL: insert unless (repo, pr, head_sha, path, release) exists.
+function queueRender(db, j) {
+  if (db.render_requests.some((x) => x.repo === j.repo && x.pr === j.pr && x.head_sha === j.head_sha && x.path === j.path && x.release === j.release)) return false;
+  db.render_requests.push({
+    id: db.render_requests.length + 1, repo: j.repo, pr: j.pr, head_sha: j.head_sha, path: j.path, release: j.release,
+    namespace: j.namespace, chart: j.chart, helm_repo_url: j.helm_repo_url || null, old_version: j.old_version,
+    new_version: j.new_version, kube_version: j.kube_version || null, status: j.status, error: j.error || null, attempts: 0,
+    requested: iso(db.clock), finished: j.status === 'unsupported' ? iso(db.clock) : null,
+  });
+  return true;
+}
+
+// The render job finishing one request: both renders stored, status done.
+function finishRender(db, id, old, neu, status, error) {
+  const rq = db.render_requests.find((x) => x.id === id);
+  if (old) db.renders.push({ request_id: id, side: 'old', chart_digest: old.digest, app_version: old.app_version, docs: old.docs, bytes: JSON.stringify(old.docs).length });
+  if (neu) db.renders.push({ request_id: id, side: 'new', chart_digest: neu.digest, app_version: neu.app_version, docs: neu.docs, bytes: JSON.stringify(neu.docs).length });
+  Object.assign(rq, { status: status || 'done', error: error || null, attempts: rq.attempts + 1, finished: iso(db.clock) });
 }
 
 // ------------------------------------------------------------ the sub-workflow
@@ -215,6 +264,8 @@ async function runPoll(opts) {
   each('Label events', out['PR read URLs']);
   each('Stored comment', out['PR read URLs']);
   each('PR comments', out['Stored comment']);
+  assert.deepEqual(next(POLL, 'PR read URLs'), ['Label events', 'Stored comment', 'Renders', 'Cluster version']);
+  out.Renders = out['PR read URLs'].map((it, i) => ({ json: readRenders(db, it.json, start.row.ruleset), pairedItem: { item: i } }));
   out['Cluster version'] = [{ json: opts.cluster || { statusCode: 200, headers: {}, body: { gitVersion: 'v1.34.12+k3s1', gitCommit: 'c' } } }];
   const ctx = vm.createContext({
     helpers: { httpRequest: async (o) => (opts.external ? opts.external(o) : { statusCode: 404, headers: {}, body: '' }) },
@@ -227,8 +278,9 @@ async function runPoll(opts) {
   const runItem = out.Triage[0].json;
   assert.equal(runItem.kind, 'run');
 
-  // Branches in canvas order (executionOrder v1): verdicts, plans, run summary.
-  assert.deepEqual(next(POLL, 'Triage'), ['Verdicts only', 'Plans only', 'Run summary only']);
+  // Branches in canvas order (executionOrder v1): verdicts, plans, render
+  // requests, run summary.
+  assert.deepEqual(next(POLL, 'Triage'), ['Verdicts only', 'Plans only', 'Render requests only', 'Run summary only']);
   const ys = next(POLL, 'Triage').map((n) => nodeOf(POLL, n).position[1]);
   assert.deepEqual(ys.slice().sort((a, b) => a - b), ys, 'branches top to bottom');
 
@@ -280,6 +332,12 @@ async function runPoll(opts) {
       }
     }
   }
+  // Queue render
+  const queued = out.Triage.filter((i) => i.json.kind === 'render_request');
+  for (const it of queued) {
+    const [repo2, pr2, sha2, path2, release2, ns2, chart2, url2, from2, to2, kube2, status2, error2] = param(nodeOf(POLL, 'Queue render').parameters.options.queryReplacement, scope(out, it.json, 0));
+    queueRender(db, { repo: repo2, pr: Number(pr2), head_sha: sha2, path: path2, release: release2, namespace: ns2, chart: chart2, helm_repo_url: url2, old_version: from2, new_version: to2, kube_version: kube2, status: status2, error: error2 });
+  }
   // Finish run
   const [runId, , ok, etags, mode, healthy] = param(nodeOf(POLL, 'Finish run').parameters.options.queryReplacement, scope(out, runItem, 0));
   const outcomes = Object.values(db.publications).filter((p) => p.run_id === runId).map((p) => p.outcome);
@@ -295,4 +353,4 @@ async function runPoll(opts) {
   return { run: start.run, runItem, plans: plans.map((p) => p.json.plan), calls, out };
 }
 
-module.exports = { POLL, PUBLISH, nodeOf, param, ifResult, scope, http, code, newDb, startRun, runPublish, runPoll, iso };
+module.exports = { POLL, PUBLISH, nodeOf, param, ifResult, scope, http, code, newDb, startRun, readRenders, queueRender, finishRender, runPublish, runPoll, iso };

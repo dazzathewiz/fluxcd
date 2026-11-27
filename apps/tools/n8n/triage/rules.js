@@ -1,5 +1,5 @@
 'use strict';
-// PR triage rules R1-R9. Pure functions: no n8n APIs, no require().
+// PR triage rules R1-R11. Pure functions: no n8n APIs, no require().
 // Network access is injected as `http(opts) -> {statusCode, headers, body}`.
 // The triage-poll workflow's Triage Code node carries a verbatim copy of
 // this file (check with sync-code-nodes.js). Edit here, then run
@@ -9,7 +9,7 @@ const RESULTS = ['pass', 'flag', 'fail', 'not_run'];
 const VERDICTS = ['blocked', 'deep-review', 'review', 'low-risk', 'human'];
 // off: plans are recorded, nothing is written. labels: the GitHub App writes them.
 const WRITE_MODES = ['off', 'labels'];
-const CHECK_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9'];
+const CHECK_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R11'];
 const CONFIG_SOURCE = 'git:apps/tools/n8n/triage/config.yaml';
 
 // ---------------------------------------------------------------- config
@@ -159,6 +159,7 @@ const CONFIG_KEYS = [
   'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
   'verdict_labels', 'outcome_labels', 'status_context', 'app_slug',
   'watch_write_mode', 'watch_timeout_min', 'watch_stale_min', 'watch_kustomizations', 'fix_forward_packages',
+  'r11_mode',
 ];
 const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
 // clusters/ and gotk-components always go to deep-review, and apps/ needs no override.
@@ -257,6 +258,8 @@ function loadConfig(text) {
     throw new Error('config: per_run_cap must be a positive integer');
   }
   const helmIndex = cfg.helm_index || {};
+  const r11Mode = cfg.r11_mode === undefined ? 'shadow' : cfg.r11_mode;
+  if (!R11_MODES.includes(r11Mode)) throw new Error(`config: r11_mode must be one of ${R11_MODES.join(', ')}`);
   const reviewFloor = asList(cfg.review_floor_packages);
   reviewFloor.forEach((p, i) => checkPackage(`review_floor_packages[${i}]`, p));
   return Object.assign({
@@ -282,6 +285,7 @@ function loadConfig(text) {
     release_note_keywords: asList(cfg.release_note_keywords),
     low_risk_update_types: asList(cfg.low_risk_update_types),
     helm_index: helmIndex,
+    r11_mode: r11Mode,
   }, loadLabels(cfg), loadWatchConfig(cfg));
 }
 
@@ -1402,9 +1406,14 @@ function evaluate(facts, config) {
     checkR7(facts),
     checkR8(facts, ctx),
     checkR9(facts, ctx),
-  ].map(finalize);
+  ];
+  // R11: this PR's render requests, and what has been rendered for them.
+  const renderRequests = planRenderRequests(facts, ctx, config);
+  const r11 = r11Summary(r11Results(facts.render_rows, renderRequests, facts.r11_cache), config.r11_mode);
+  checks.push(checkR11(r11));
+  checks.forEach(finalize);
   const dependants = dependantsOf(ctx, config);
-  const v = verdictFor(checks, facts, ctx, config, floorsOf(ctx, config, dependants));
+  const v = applyR11(verdictFor(checks, facts, ctx, config, floorsOf(ctx, config, dependants)), r11);
   // Dependants go into the reasons, which every row stores (carried or not),
   // so the review sees what outside the repo to check.
   const reasons = v.reasons.concat(dependants.map((d) => `dependant ${d.id} (${d.where}): ${d.check}`));
@@ -1414,6 +1423,8 @@ function evaluate(facts, config) {
     checks,
     dependants: dependants.map((d) => ({ id: d.id, where: d.where, check: d.check })),
     finalise: false,
+    render_requests: renderRequests.filter((q) => q.queue),
+    r11,
   };
 }
 
@@ -1422,6 +1433,7 @@ async function triagePR(http, facts, config, caches) {
   const ctx = buildContext(facts, config);
   if (!ctx.isRenovate) return evaluate(facts, config);
   const external = await gatherExternalFacts(http, ctx.changes, config, caches);
+  external.hr_files = await fetchHelmReleaseFiles(http, facts, ctx.changes, caches);
   return evaluate(Object.assign({}, facts, external), config);
 }
 
@@ -1442,7 +1454,7 @@ function carryForward(result, previous) {
 }
 
 function newCaches() {
-  return { index: {}, image: {}, tokens: {} };
+  return { index: {}, image: {}, tokens: {}, files: {} };
 }
 
 // A synthetic chart that no cluster satisfies. A run whose control does not
@@ -1486,6 +1498,442 @@ function selectPRs(lists, seen, config) {
     for (const c of candidates.slice(config.per_run_cap)) etags[c.repo] = null;
   }
   return { selected, etags, candidates: candidates.length };
+}
+
+// ------------------------------------------- R11: rendered-chart diff
+
+// flux diff can't see what a chart renders. For each HelmRelease chart bump
+// the poll queues a render request; the triage-render CronJob renders the old
+// and new chart with the repo's values and stores both; the poll classifies
+// them here. shadow: the result is shown, and the verdict ignores it. on: a
+// result can only raise the verdict.
+const R11_MODES = ['shadow', 'on'];
+const R11_LEVELS = ['clean', 'review', 'deep-review'];
+const RENDER_STATUSES = ['pending', 'done', 'failed', 'unsupported'];
+const RENDER_SOURCE = 'postgres:triage.renders';
+// The error codes the poll and the render job write, as `<code>` or
+// `<code>: <detail>`. Only the code's text reaches a comment.
+const RENDER_ERRORS = {
+  'not-in-helm-index': 'chart has no helm_index entry',
+  'oci-source': 'OCI chart source',
+  'bad-request': 'request failed validation',
+  'fetch-failed': 'HelmRelease file not read',
+  'helmrelease-not-found': 'HelmRelease not found at the head commit',
+  'cluster-unread': 'cluster version not read',
+  'values-from': 'HelmRelease uses valuesFrom',
+  'post-renderers': 'HelmRelease uses postRenderers',
+  'pull-failed': 'chart pull failed',
+  'show-failed': 'chart metadata not read',
+  'template-failed': 'old chart failed to render',
+  'new-template-failed': 'new chart failed to render',
+  'too-large': 'render over 8 MiB',
+  'db-failed': 'render not stored',
+  'render-failed': 'render failed',
+  'renders-not-read': 'renders not read',
+};
+// Dropped before comparing: they move on every chart bump.
+const RENDER_NOISE_LABELS = ['helm.sh/chart', 'app.kubernetes.io/version', 'chart'];
+const RENDER_POD_TEMPLATE = {
+  Deployment: ['spec', 'template'],
+  StatefulSet: ['spec', 'template'],
+  DaemonSet: ['spec', 'template'],
+  ReplicaSet: ['spec', 'template'],
+  ReplicationController: ['spec', 'template'],
+  Job: ['spec', 'template'],
+  CronJob: ['spec', 'jobTemplate', 'spec', 'template'],
+  Pod: ['spec'],
+};
+const APP_VERSION_TAG = '<app-version>';
+
+function canon(v) {
+  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`;
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+const stripV = (s) => String(s === undefined || s === null ? '' : s).replace(/^v/, '');
+
+// An image whose tag is the chart's appVersion (with or without a leading v)
+// gets a fixed tag, so a tag that moves exactly old appVersion -> new
+// appVersion compares equal.
+function appVersionImage(ref, appVersion) {
+  if (typeof ref !== 'string' || !appVersion) return ref;
+  const at = ref.indexOf('@');
+  const name = at >= 0 ? ref.slice(0, at) : ref;
+  const colon = name.lastIndexOf(':');
+  if (colon <= name.lastIndexOf('/')) return ref;
+  if (stripV(name.slice(colon + 1)) !== stripV(appVersion)) return ref;
+  return `${name.slice(0, colon + 1)}${APP_VERSION_TAG}${at >= 0 ? ref.slice(at) : ''}`;
+}
+
+function renderKey(d) {
+  const m = (d && d.metadata) || {};
+  return `${d.apiVersion || ''}/${d.kind || ''}/${m.namespace || ''}/${m.name || ''}`;
+}
+
+// A copy of one rendered object without the noise.
+function normaliseRender(doc, appVersion) {
+  const out = JSON.parse(JSON.stringify(doc));
+  const walk = (o) => {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (!o || typeof o !== 'object') return;
+    const md = o.metadata;
+    if (md && typeof md === 'object' && !Array.isArray(md)) {
+      if (md.labels && typeof md.labels === 'object') {
+        for (const l of RENDER_NOISE_LABELS) delete md.labels[l];
+        if (!Object.keys(md.labels).length) delete md.labels;
+      }
+      if (md.annotations && typeof md.annotations === 'object') {
+        for (const k of Object.keys(md.annotations)) if (k.startsWith('checksum/')) delete md.annotations[k];
+        if (!Object.keys(md.annotations).length) delete md.annotations;
+      }
+    }
+    for (const [k, v] of Object.entries(o)) {
+      if (k === 'image' && typeof v === 'string') o[k] = appVersionImage(v, appVersion);
+      else walk(v);
+    }
+  };
+  walk(out);
+  return out;
+}
+
+function getPath(o, path) {
+  let cur = o;
+  for (const k of path) cur = cur && typeof cur === 'object' ? cur[k] : undefined;
+  return cur;
+}
+
+function imagesIn(o, acc) {
+  const out = acc || new Set();
+  if (Array.isArray(o)) o.forEach((x) => imagesIn(x, out));
+  else if (o && typeof o === 'object') {
+    for (const [k, v] of Object.entries(o)) {
+      if (k === 'image' && typeof v === 'string') out.add(v);
+      else imagesIn(v, out);
+    }
+  }
+  return out;
+}
+
+function withoutImages(o) {
+  if (Array.isArray(o)) return o.map(withoutImages);
+  if (!o || typeof o !== 'object') return o;
+  const out = {};
+  for (const [k, v] of Object.entries(o)) if (!(k === 'image' && typeof v === 'string')) out[k] = withoutImages(v);
+  return out;
+}
+
+function withoutPath(o, path) {
+  const out = JSON.parse(JSON.stringify(o));
+  let cur = out;
+  for (let i = 0; i < path.length - 1; i++) {
+    cur = cur && typeof cur === 'object' ? cur[path[i]] : undefined;
+  }
+  if (cur && typeof cur === 'object') delete cur[path[path.length - 1]];
+  return out;
+}
+
+function servicePorts(spec) {
+  return (Array.isArray((spec || {}).ports) ? spec.ports : []).map((p) => ({
+    port: p.port === undefined ? null : p.port,
+    targetPort: p.targetPort === undefined ? null : p.targetPort,
+    protocol: p.protocol || 'TCP',
+    nodePort: p.nodePort === undefined ? null : p.nodePort,
+  })).map(canon).sort();
+}
+
+const renderKind = (k) => (/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(String(k)) ? String(k) : 'object');
+
+// classifyRender(oldDocs, newDocs, {oldAppVersion, newAppVersion}): the two
+// renders as arrays of objects (null for a side that failed to render).
+// Returns {level: clean | review | deep-review, findings: [text], docs}. A
+// finding names kinds and counts only, never a rendered value: they reach a
+// public comment.
+function classifyRender(oldDocs, newDocs, opts) {
+  const o = opts || {};
+  const counts = {};
+  const levels = {};
+  const note = (level, text) => {
+    counts[text] = (counts[text] || 0) + 1;
+    levels[text] = level;
+  };
+  const finish = (docs) => {
+    const texts = Object.keys(counts).sort((a, b) => R11_LEVELS.indexOf(levels[b]) - R11_LEVELS.indexOf(levels[a]) || (a < b ? -1 : a > b ? 1 : 0));
+    const level = texts.reduce((l, t) => (R11_LEVELS.indexOf(levels[t]) > R11_LEVELS.indexOf(l) ? levels[t] : l), 'clean');
+    return { level, findings: texts.map((t) => (counts[t] > 1 ? `${t} (${counts[t]})` : t)), docs };
+  };
+  const oldOk = Array.isArray(oldDocs);
+  const newOk = Array.isArray(newDocs);
+  if (!oldOk || !newOk) {
+    note('review', !newOk && oldOk ? 'new chart failed to render' : oldOk || newOk ? 'old chart failed to render' : 'neither chart rendered');
+    return finish({ old: oldOk ? oldDocs.length : null, new: newOk ? newDocs.length : null });
+  }
+  const index = (docs, app) => {
+    const m = new Map();
+    for (const d of docs) if (d && typeof d === 'object' && !Array.isArray(d) && d.kind) m.set(renderKey(d), normaliseRender(d, app));
+    return m;
+  };
+  const a = index(oldDocs, o.oldAppVersion);
+  const b = index(newDocs, o.newAppVersion);
+  const kinds = (m) => new Set(Array.from(m.values()).map((d) => d.kind));
+  const kindsA = kinds(a);
+  const kindsB = kinds(b);
+  for (const [k, d] of b) {
+    if (a.has(k)) continue;
+    if (d.kind === 'CustomResourceDefinition') note('deep-review', 'CRD added');
+    else if (!kindsA.has(d.kind)) note('review', `kind added: ${renderKind(d.kind)}`);
+    else note('review', `${renderKind(d.kind)} added`);
+  }
+  for (const [k, d] of a) {
+    if (b.has(k)) continue;
+    if (d.kind === 'CustomResourceDefinition') note('deep-review', 'CRD removed');
+    else if (!kindsB.has(d.kind)) note('review', `kind removed: ${renderKind(d.kind)}`);
+    else note('review', `${renderKind(d.kind)} removed`);
+  }
+  for (const [k, nd] of b) {
+    const od = a.get(k);
+    if (!od || canon(od) === canon(nd)) continue;
+    const kind = nd.kind;
+    if (kind === 'CustomResourceDefinition') {
+      note(canon(od.spec) !== canon(nd.spec) ? 'deep-review' : 'review', canon(od.spec) !== canon(nd.spec) ? 'CRD spec changed' : 'CRD metadata changed');
+      continue;
+    }
+    if (kind === 'Service') {
+      const os = od.spec || {};
+      const ns = nd.spec || {};
+      let hit = false;
+      if ((os.type || 'ClusterIP') !== (ns.type || 'ClusterIP')) { note('deep-review', 'Service type changed'); hit = true; }
+      if (canon(servicePorts(os)) !== canon(servicePorts(ns))) { note('deep-review', 'Service ports changed'); hit = true; }
+      if (canon(os.selector || {}) !== canon(ns.selector || {})) { note('deep-review', 'Service selector changed'); hit = true; }
+      if (!hit) note('review', 'Service changed');
+      continue;
+    }
+    const tplPath = RENDER_POD_TEMPLATE[kind];
+    if (tplPath) {
+      const ot = getPath(od, tplPath);
+      const nt = getPath(nd, tplPath);
+      const before = imagesIn(ot);
+      const added = Array.from(imagesIn(nt)).filter((im) => !before.has(im));
+      for (let i = 0; i < added.length; i++) note('review', 'new image');
+      if (canon(withoutImages(ot)) !== canon(withoutImages(nt))) note('review', `${renderKind(kind)} pod template changed`);
+      if (canon(withoutPath(od, tplPath)) !== canon(withoutPath(nd, tplPath))) note('review', `${renderKind(kind)} changed`);
+      continue;
+    }
+    note('review', `${renderKind(kind)} changed`);
+  }
+  return finish({ old: a.size, new: b.size });
+}
+
+const R11_FINDING = new RegExp('^(?:'
+  + 'CRD (?:added|removed|spec changed|metadata changed)'
+  + '|Service (?:type |ports |selector )?changed'
+  + '|new image'
+  + '|kind (?:added|removed): [A-Za-z][A-Za-z0-9]{0,63}'
+  + '|[A-Za-z][A-Za-z0-9]{0,63} (?:added|removed|changed|pod template changed)'
+  + '|(?:new|old) chart failed to render|neither chart rendered'
+  + '|\\d+ releases? not rendered'
+  + ')(?: \\(\\d+\\))?$');
+
+function renderErrorCode(error) {
+  const m = String(error || '').match(/^([a-z][a-z-]{0,40})(?::|$)/);
+  return m && RENDER_ERRORS[m[1]] ? m[1] : 'render-failed';
+}
+
+// One request's R11 result. row is a triage.render_requests row as Start run
+// returns it: {id, path, release, status, error, old: {digest, app_version} |
+// null, new: ..., docs: {old, new} | null}. cached is the result the last plan
+// stored for it under this ruleset; Start run leaves docs out when there is one.
+function r11ForRequest(row, cached) {
+  const r = row || {};
+  const base = {
+    id: Number.isInteger(r.id) ? r.id : null,
+    path: r.path || null,
+    release: r.release || null,
+    status: RENDER_STATUSES.includes(r.status) ? r.status : null,
+    old_digest: r.old && r.old.digest ? r.old.digest : null,
+    new_digest: r.new && r.new.digest ? r.new.digest : null,
+  };
+  if (base.status === 'pending') return Object.assign(base, { state: 'pending' });
+  if (cached && base.id !== null && cached.id === base.id && cached.status === base.status && R11_LEVELS.includes(cached.level)) {
+    return Object.assign(base, { state: 'done', level: cached.level, findings: (cached.findings || []).slice() });
+  }
+  const code = renderErrorCode(r.error);
+  const docs = r.docs || {};
+  const classify = (oldDocs, newDocs) => {
+    const c = classifyRender(oldDocs, newDocs, { oldAppVersion: r.old ? r.old.app_version : null, newAppVersion: r.new ? r.new.app_version : null });
+    return Object.assign(base, { state: 'done', level: c.level, findings: c.findings });
+  };
+  if (base.status === 'done') {
+    if (!Array.isArray(docs.old) || !Array.isArray(docs.new)) return Object.assign(base, { state: 'not_run', reason: 'renders-not-read' });
+    return classify(docs.old, docs.new);
+  }
+  // The old chart rendered and the new one didn't: that is a finding, not a miss.
+  if (base.status === 'failed' && code === 'new-template-failed' && r.old) {
+    if (!Array.isArray(docs.old)) return Object.assign(base, { state: 'not_run', reason: 'renders-not-read' });
+    return classify(docs.old, null);
+  }
+  return Object.assign(base, { state: 'not_run', reason: base.status ? code : 'render-failed' });
+}
+
+// The PR's R11 result from its per-request results.
+function r11Summary(results, mode) {
+  const list = results || [];
+  const m = R11_MODES.includes(mode) ? mode : 'shadow';
+  if (!list.length) return { mode: m, state: 'none', level: null, findings: [], reasons: [], results: [] };
+  const done = list.filter((r) => r.state === 'done');
+  const notRun = list.filter((r) => r.state === 'not_run');
+  const reasons = Array.from(new Set(notRun.map((r) => r.reason || 'render-failed')));
+  if (list.some((r) => r.state === 'pending')) return { mode: m, state: 'pending', level: null, findings: [], reasons, results: list };
+  if (!done.length) return { mode: m, state: 'not_run', level: null, findings: [], reasons, results: list };
+  const level = done.reduce((l, r) => (R11_LEVELS.indexOf(r.level) > R11_LEVELS.indexOf(l) ? r.level : l), 'clean');
+  const findings = [];
+  for (const r of done) for (const f of r.findings || []) if (!findings.includes(f)) findings.push(f);
+  if (notRun.length) findings.push(`${notRun.length} ${notRun.length === 1 ? 'release' : 'releases'} not rendered`);
+  return { mode: m, state: 'done', level, findings, reasons, results: list };
+}
+
+// The triage comment's R11 line. Fixed templates only.
+function r11Line(summary) {
+  if (!summary || summary.state === 'none') return null;
+  const head = summary.mode === 'on' ? 'R11' : 'R11 (shadow, not used)';
+  if (summary.state === 'pending') return `${head}: not run yet — render pending`;
+  if (summary.state === 'not_run') {
+    const why = Array.from(new Set((summary.reasons || []).map((c) => RENDER_ERRORS[c] || RENDER_ERRORS['render-failed'])));
+    return `${head}: not run — ${why.join('; ') || RENDER_ERRORS['render-failed']}`;
+  }
+  const findings = (summary.findings || []).map((f) => (R11_FINDING.test(f) ? f : 'other finding'));
+  return `${head}: ${summary.level} — ${findings.length ? findings.join('; ') : 'nothing beyond chart labels and the app version'}`;
+}
+
+// What a plan stores, so the next run can skip reading the renders again.
+function r11Cache(summary, ruleset) {
+  return {
+    ruleset,
+    mode: summary.mode,
+    state: summary.state,
+    level: summary.level,
+    results: (summary.results || []).map((r) => ({
+      id: r.id, path: r.path, release: r.release, status: r.status, state: r.state,
+      level: r.level || null, findings: r.findings || [], reason: r.reason || null,
+      old_digest: r.old_digest, new_digest: r.new_digest,
+    })),
+  };
+}
+
+function checkR11(summary) {
+  const s = summary || r11Summary([], 'shadow');
+  if (s.state === 'none') return check('R11', 'not_run', { compared: 'not applicable: no HelmRelease chart version in the diff' }, { required: false });
+  const requests = s.results.map((r) => ({
+    id: r.id, path: r.path, release: r.release, status: r.status, state: r.state,
+    old_digest: r.old_digest, new_digest: r.new_digest, level: r.level || null, findings: r.findings || [], reason: r.reason || null,
+  }));
+  const compared = { mode: s.mode, state: s.state, level: s.level, findings: s.findings, requests };
+  const extra = { required: false, shadow: s.mode === 'shadow', level: s.level };
+  if (s.state !== 'done') {
+    return check('R11', 'not_run', { compared, reason: s.state === 'pending' ? 'not run yet' : `not run: ${s.reasons.join(', ')}` }, extra);
+  }
+  const rendered = requests.filter((r) => r.state === 'done');
+  const evidence = {
+    source_url: `${RENDER_SOURCE}?request_id=${rendered.map((r) => r.id).join(',')}`,
+    etag_or_sha: rendered.map((r) => `${r.id}:${r.old_digest || '-'}..${r.new_digest || '-'}`).join(','),
+    compared,
+  };
+  return check('R11', s.level === 'clean' ? 'pass' : 'flag', evidence, extra);
+}
+
+// r11_mode on: a review or deep-review result raises the verdict, never
+// lowers it. shadow, or no result: the verdict as it is.
+function applyR11(v, summary) {
+  if (!summary || summary.mode !== 'on' || summary.state !== 'done' || !R11_LEVELS.includes(summary.level) || summary.level === 'clean') return v;
+  if (severity(v.verdict) >= severity(summary.level)) return v;
+  const reasons = (v.reasons || []).filter((r) => r !== 'all low-risk conditions hold');
+  return { verdict: summary.level, reasons: reasons.concat(`R11 rendered chart: ${summary.level}`) };
+}
+
+const RELEASE_NAME = /^[a-z0-9](?:[-a-z0-9.]{0,51}[a-z0-9])?$/;
+const CHART_VERSION = /^v?[0-9][0-9A-Za-z.+_-]{0,63}$/;
+const KUBE_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+_-]{0,32}$/;
+const RENDER_PATH = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\.ya?ml$/;
+
+function rawFileUrl(repo, sha, path) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(String(repo)) || !SHA_RE.test(String(sha)) || !RENDER_PATH.test(String(path))) return null;
+  if (/(^|\/)\.\.?(\/|$)/.test(String(path))) return null;
+  return `https://raw.githubusercontent.com/${repo}/${sha}/${path}`;
+}
+
+// The render requests for one PR: one per HelmRelease chart version change,
+// with release and namespace resolved the way Flux does. hr_files holds each
+// HelmRelease file's text at the head commit (null when not read). An entry
+// with queue false is not inserted: it has no release to key on, or a
+// transient cause.
+function planRenderRequests(facts, ctx, config) {
+  const out = [];
+  const seen = new Set();
+  const charts = ctx.changes.filter((c) => c.kind === 'chart' && c.package && c.from && c.to);
+  for (const c of charts) {
+    const base = {
+      repo: facts.repo, pr: facts.pr.number, head_sha: facts.pr.head_sha, path: c.file, chart: c.package,
+      old_version: c.from, new_version: c.to, kube_version: (facts.cluster && facts.cluster.gitVersion) || null,
+      release: null, namespace: null, helm_repo_url: null, status: null, error: null, queue: false,
+    };
+    const text = (facts.hr_files || {})[c.file];
+    if (typeof text !== 'string') { out.push(Object.assign(base, { error: 'fetch-failed' })); continue; }
+    const doc = manifestDocs(text).find((d) => d.kind === 'HelmRelease' && /^helm\.toolkit\.fluxcd\.io\//.test(String(d.apiVersion))
+      && d.chart === c.package && d.version === c.to);
+    if (!doc || !doc.name) { out.push(Object.assign(base, { error: 'helmrelease-not-found' })); continue; }
+    if (!base.kube_version) { out.push(Object.assign(base, { error: 'cluster-unread' })); continue; }
+    const ks = kustomizationFor(c.file, config);
+    const namespace = doc.targetNamespace || (ks && ks.target_namespace) || doc.namespace || '';
+    const release = doc.releaseName || (doc.targetNamespace ? `${doc.targetNamespace}-${doc.name}` : doc.name);
+    const url = config.helm_index[c.package] || null;
+    Object.assign(base, { release, namespace, helm_repo_url: url, status: 'pending', queue: true });
+    if (!url) Object.assign(base, { status: 'unsupported', error: 'not-in-helm-index' });
+    else if (/^oci:\/\//i.test(url) || doc.chartRef || doc.sourceKind === 'OCIRepository') Object.assign(base, { status: 'unsupported', error: 'oci-source' });
+    else if (!/^https:\/\/[^\s'"`$\\]+$/.test(url) || !RELEASE_NAME.test(release) || !DNS_LABEL.test(namespace) || !PACKAGE_NAME.test(c.package)
+      || !CHART_VERSION.test(c.from) || !CHART_VERSION.test(c.to) || !KUBE_VERSION.test(base.kube_version) || !rawFileUrl(facts.repo, facts.pr.head_sha, c.file)) {
+      Object.assign(base, { status: 'unsupported', error: 'bad-request' });
+    }
+    const key = `${c.file}|${release}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(base);
+  }
+  return out;
+}
+
+// The per-request results for a PR: its stored requests, then any request
+// this run planned that has no row yet.
+function r11Results(rows, planned, cache) {
+  const cached = (id) => ((cache && cache.results) || []).find((c) => c.id === id) || null;
+  const results = (rows || []).map((row) => r11ForRequest(row, cached(row.id)));
+  for (const p of planned || []) {
+    if (p.queue && results.some((r) => r.path === p.path && r.release === p.release)) continue;
+    const base = { id: null, path: p.path, release: p.release, status: p.status, old_digest: null, new_digest: null };
+    results.push(Object.assign(base, p.queue && p.status === 'pending' ? { state: 'pending' } : { state: 'not_run', reason: p.error || 'render-failed' }));
+  }
+  if (!results.length && cache && Array.isArray(cache.results)) {
+    for (const c of cache.results) if (c.id === null) results.push(Object.assign({}, c));
+  }
+  return results;
+}
+
+async function fetchHelmReleaseFiles(http, facts, changes, caches) {
+  const out = {};
+  for (const c of changes.filter((x) => x.kind === 'chart' && x.package && x.from && x.to)) {
+    if (Object.prototype.hasOwnProperty.call(out, c.file)) continue;
+    const url = rawFileUrl(facts.repo, facts.pr.head_sha, c.file);
+    if (!url) { out[c.file] = null; continue; }
+    if (!(url in caches.files)) {
+      try {
+        const r = await http({ method: 'GET', url, headers: { Accept: 'text/plain' } });
+        caches.files[url] = r.statusCode === 200 ? bodyText(r.body) : null;
+      } catch (e) {
+        caches.files[url] = null;
+      }
+    }
+    out[c.file] = caches.files[url];
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- publish (write_mode labels)
@@ -1570,6 +2018,7 @@ const REASON_TEMPLATES = [
   tpl('all low-risk conditions hold'),
   tpl('not a Renovate PR: triaged by hand'),
   tpl('R9 not run: left unfinalised'),
+  tpl('R11 rendered chart: (?:review|deep-review)'),
 ];
 
 function templatedReason(reason, config) {
@@ -1615,6 +2064,7 @@ function renderTriageComment(input, config) {
   ];
   if (why.length) lines.push('', '**Why**', ...why.map((r) => `- ${r}`));
   if (deps.length) lines.push('', '**Check outside the repo**', ...deps.map((d) => `- ${d}`));
+  if (input.r11_line) lines.push('', input.r11_line);
   if (triaged && triaged !== verdict) {
     lines.push('', `Held at \`${verdict}\`: this ruleset gave \`${triaged}\`, and triage only escalates a commit.`);
   }
@@ -1698,7 +2148,8 @@ function headSince(seenShas, headSha, events) {
 //   publication the triage.publications row for this head SHA, or null
 //   labelEvents the PR's issue-event pages [{statusCode, headers, body}]
 //   appLogin    the App's login, appLoginOf(config): <app_slug>[bot]
-//   ctx         {config, healthy, patterns, app_id, installation_id}
+//   ctx         {config, healthy, patterns, app_id, installation_id, r11}
+//               r11 is the PR's R11 summary now (r11Summary), or null.
 // Returns {action: publish | skip, outcome, actions: [...], ...}. A skip makes
 // no request; publish lists the writes in the order they run.
 function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) {
@@ -1727,13 +2178,15 @@ function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) 
 
   const managed = managedLabels(config);
   const published = publication && VERDICTS.includes(publication.verdict) ? publication : null;
-  const triaged = verdict.verdict;
+  // r11_mode on: a render that finished after the verdict can still raise it.
+  const raised = applyR11({ verdict: verdict.verdict, reasons: verdict.reasons || [] }, ctx.r11);
+  const triaged = raised.verdict;
   // Rule 2: on one head SHA the automation only escalates.
   const eff = published && severity(published.verdict) > severity(triaged) ? published.verdict : triaged;
   const label = config.verdict_labels[eff];
   const override = findOverride(events, appLogin, managed, p.since);
   const status = { state: STATUS_STATES[eff], context: config.status_context, description: STATUS_DESCRIPTIONS[eff] };
-  const body = renderTriageComment({ head_sha: p.head_sha, ruleset: verdict.ruleset, verdict: eff, triaged_verdict: triaged, reasons: verdict.reasons, override: !!override }, config);
+  const body = renderTriageComment({ head_sha: p.head_sha, ruleset: verdict.ruleset, verdict: eff, triaged_verdict: triaged, reasons: raised.reasons, override: !!override, r11_line: r11Line(ctx.r11) }, config);
   Object.assign(plan, {
     verdict: eff, triaged_verdict: triaged, ruleset: verdict.ruleset,
     label: override ? (published ? published.label || null : null) : label,
@@ -1855,7 +2308,10 @@ function manifestDocs(text) {
   let doc = null;
   let stack = [];
   const open = (start) => {
-    doc = { start, end: start, kind: null, apiVersion: null, name: null, namespace: null, chart: null, version: null, images: [] };
+    doc = {
+      start, end: start, kind: null, apiVersion: null, name: null, namespace: null, chart: null, version: null, images: [],
+      releaseName: null, targetNamespace: null, sourceKind: null, chartRef: false, valuesFrom: false, postRenderers: false,
+    };
     docs.push(doc);
     stack = [];
   };
@@ -1882,6 +2338,12 @@ function manifestDocs(text) {
     else if (path === 'spec.chart.spec.chart') doc.chart = value;
     else if (path === 'spec.chart.spec.version') { doc.version = value; doc.version_line = no; }
     else if (path === 'spec.version') doc.plan_version_line = no;
+    else if (path === 'spec.releaseName') doc.releaseName = value;
+    else if (path === 'spec.targetNamespace') doc.targetNamespace = value;
+    else if (path === 'spec.chart.spec.sourceRef.kind') doc.sourceKind = value;
+    else if (path === 'spec.chartRef') doc.chartRef = true;
+    else if (path === 'spec.valuesFrom') doc.valuesFrom = true;
+    else if (path === 'spec.postRenderers') doc.postRenderers = true;
   });
   return docs.filter((d) => d.kind);
 }
@@ -2422,6 +2884,8 @@ const RULES_EXPORTS = {
   evaluateWatch, failureKeys, groupFailures, preexistingFailures, mergePreexisting, preexistingCause, sharedMembers,
   watchAction, watchAlert, outsideCode, fixForward, decodeBase64Utf8,
   watchMarker, renderWatchComment, planWatchPublish,
+  R11_MODES, R11_LEVELS, RENDER_STATUSES, RENDER_ERRORS, classifyRender, normaliseRender, appVersionImage, renderErrorCode,
+  r11ForRequest, r11Summary, r11Line, r11Cache, checkR11, applyR11, planRenderRequests, r11Results, rawFileUrl, fetchHelmReleaseFiles,
 };
 
 if (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {

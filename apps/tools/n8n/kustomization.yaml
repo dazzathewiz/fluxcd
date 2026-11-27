@@ -12,6 +12,7 @@ resources:
   - service.yaml
   - ingress.yaml
   - networkpolicy.yaml
+  - triage-render.yaml
 # Hash-suffixed, so a change to any file rolls the n8n pod and re-runs the
 # initContainers. Workflow and rules code carry JS template literals, which
 # Flux postBuild substitution would blank: substitution is disabled on them.
@@ -36,6 +37,15 @@ configMapGenerator:
       - triage/schema.sql
       - triage/seed.sql
       - triage/roles.sql
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled
+  # The R11 render job's script (triage-render.yaml). Shell ${...} would be
+  # blanked by Flux postBuild substitution.
+  - name: triage-render-scripts
+    namespace: tools
+    files:
+      - triage/render.sh
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled

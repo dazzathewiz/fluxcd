@@ -4,9 +4,11 @@
 -- with the n8n superuser. Re-running resets the role and its grants exactly.
 --
 -- TRIAGE_DB_PASSWORD comes from the Secret as env (derived in the
--- ExternalSecret from db-password).
+-- ExternalSecret from db-password). TRIAGE_RENDER_DB_PASSWORD is the
+-- triage-render CronJob's login (1Password field triage-render-db-password).
 
 \getenv triage_password TRIAGE_DB_PASSWORD
+\getenv render_password TRIAGE_RENDER_DB_PASSWORD
 
 SELECT coalesce(length(:'triage_password'), 0) >= 32 AS password_ok \gset
 \if :password_ok
@@ -14,7 +16,14 @@ SELECT coalesce(length(:'triage_password'), 0) >= 32 AS password_ok \gset
   DO $$ BEGIN RAISE EXCEPTION 'TRIAGE_DB_PASSWORD is missing or too short'; END $$;
 \endif
 
+SELECT coalesce(length(:'render_password'), 0) >= 32 AS render_password_ok \gset
+\if :render_password_ok
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'TRIAGE_RENDER_DB_PASSWORD is missing or too short'; END $$;
+\endif
+
 SELECT 'CREATE ROLE triage' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'triage') \gexec
+SELECT 'CREATE ROLE triage_render' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'triage_render') \gexec
 
 BEGIN;
 
@@ -47,8 +56,28 @@ GRANT SELECT, INSERT, UPDATE ON triage.watches, triage.watch_cursor, triage.watc
 -- itself can't delete. Functions are executable by PUBLIC unless revoked.
 REVOKE ALL ON FUNCTION triage.prune_runs() FROM PUBLIC, triage;
 GRANT EXECUTE ON FUNCTION triage.prune_runs() TO triage;
-GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq, triage.watches_id_seq, triage.watch_runs_id_seq TO triage;
+-- R11: the poll queues render requests (ON CONFLICT DO NOTHING) and reads the
+-- finished renders. The CronJob does the rest.
+GRANT SELECT, INSERT ON triage.render_requests TO triage;
+GRANT SELECT ON triage.renders TO triage;
+GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq, triage.watches_id_seq, triage.watch_runs_id_seq, triage.render_requests_id_seq TO triage;
+
+-- The triage-render CronJob: claims pending requests (FOR UPDATE needs
+-- UPDATE), records the outcome and inserts the two renders. renders has no
+-- sequence, and the role inserts no request, so it needs none. No DELETE.
+ALTER ROLE triage_render WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+  NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 2 PASSWORD :'render_password';
+
+REVOKE ALL ON ALL TABLES IN SCHEMA triage FROM triage_render;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA triage FROM triage_render;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA triage FROM triage_render;
+REVOKE ALL ON SCHEMA triage FROM triage_render;
+
+GRANT USAGE ON SCHEMA triage TO triage_render;
+GRANT SELECT, UPDATE ON triage.render_requests TO triage_render;
+GRANT INSERT ON triage.renders TO triage_render;
 
 COMMIT;
 
+SELECT 'triage_render role ready' AS status;
 SELECT 'triage role ready' AS status;
