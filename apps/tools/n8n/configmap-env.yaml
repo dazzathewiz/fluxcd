@@ -36,6 +36,7 @@ data:
   # n8n compares the file's real path, and /var/run links to /run in the image.
   N8N_RESTRICT_FILE_ACCESS_TO: "~/.n8n-files;/var/run/secrets/kubernetes.io/serviceaccount;/run/secrets/kubernetes.io/serviceaccount"
 
-  # Execution history: prune after 14 days
+  # Execution history: prune after 7 days, and keep at most 2000 executions
   EXECUTIONS_DATA_PRUNE: "true"
-  EXECUTIONS_DATA_MAX_AGE: "336"
+  EXECUTIONS_DATA_MAX_AGE: "168"
+  EXECUTIONS_DATA_PRUNE_MAX_COUNT: "2000"

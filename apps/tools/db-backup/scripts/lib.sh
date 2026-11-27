@@ -26,6 +26,28 @@ prune() { # dir db
   find "$1" -maxdepth 1 -name "$2-*.dump.tmp" -mtime +0 -exec rm -f {} + || return 1
 }
 
+USAGE_LIMIT=${USAGE_LIMIT:-80}
+
+# Percent used on the filesystem holding a directory, from POSIX df output.
+used_pct() { # dir
+  df -P "$1" | awk 'NR == 2 { sub(/%$/, "", $5); print $5 }'
+}
+
+# Logs the volume's usage. False when it is above $USAGE_LIMIT percent, or
+# when df gives no number.
+check_usage() { # dir
+  df -hP "$1" || return 1
+  pct=$(used_pct "$1")
+  case $pct in
+    '' | *[!0-9]*) echo "$1: usage unknown"; return 1 ;;
+  esac
+  if [ "$pct" -gt "$USAGE_LIMIT" ]; then
+    echo "$1: ${pct}% used, over the ${USAGE_LIMIT}% limit"
+    return 1
+  fi
+  echo "$1: ${pct}% used (limit ${USAGE_LIMIT}%)"
+}
+
 # Poll pg_isready every 2 s until the database answers or the timeout passes.
 # A fresh pod's IP can take a moment to be admitted by an ingress NetworkPolicy.
 wait_ready() { # host [timeout_s]

@@ -154,7 +154,8 @@ test('heartbeat: no disabled node, and it pings on every run', () => {
   for (const n of BEAT.nodes) assert.ok(n.disabled !== true, `"${n.name}" is disabled`);
   assert.ok(!BEAT.nodes.some((n) => n.name === 'Alert Home Assistant (P2)'));
   assert.ok(!BEAT.nodes.some((n) => n.type === 'n8n-nodes-base.httpRequest'), 'the heartbeat makes no request itself');
-  assert.deepEqual(next(BEAT, 'Every 30 minutes'), ['Record last success']);
+  // Retention (retention.test.js) is a second branch, run after this one.
+  assert.deepEqual(next(BEAT, 'Every 30 minutes'), ['Record last success', 'Retention']);
   assert.deepEqual(next(BEAT, 'Record last success'), ['Ping payload']);
   assert.deepEqual(next(BEAT, 'Ping payload'), ['Ping Home Assistant']);
   assert.deepEqual(next(BEAT, 'Ping Home Assistant'), ['Record ping']);
@@ -180,7 +181,7 @@ test('heartbeat: Record ping writes last_ping and the status, NULL on a network 
   assert.deepEqual(args(200), [200]);
   assert.deepEqual(args(null), [0]);
   assert.deepEqual(args(undefined), [0]);
-  // The heartbeat never writes the runs table.
+  // The heartbeat never writes the runs table itself (Retention calls triage.prune_runs()).
   for (const n of BEAT.nodes) {
     if (n.type === 'n8n-nodes-base.postgres') assert.ok(!/(INSERT INTO|UPDATE|DELETE FROM)\s+triage\.runs/i.test(n.parameters.query), n.name);
   }

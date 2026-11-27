@@ -1617,7 +1617,9 @@
   "settings": {
     "executionOrder": "v1",
     "timezone": "UTC",
-    "callerPolicy": "workflowsFromSameOwner"
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
   },
   "pinData": {},
   "active": false

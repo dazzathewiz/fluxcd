@@ -209,3 +209,24 @@ CREATE INDEX IF NOT EXISTS watches_failure_group_idx ON triage.watches (repo, fa
 -- R10 targets already failing before the merge (rules.js preexistingFailures):
 -- [{id, pr, merge_sha, failure_group, source}]. Additive: a revert leaves it unused.
 ALTER TABLE triage.watches ADD COLUMN IF NOT EXISTS preexisting jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+-- Retention for the run logs: deletes triage.runs and triage.watch_runs rows
+-- started more than 90 days ago, and returns the counts. The heartbeat calls it
+-- at most once a day. Runs as its owner, so the triage role needs EXECUTE only
+-- (roles.sql), and has no DELETE on any table. verdicts.run_id and
+-- publications.run_id are ON DELETE SET NULL; watches.run_id has no FK.
+CREATE OR REPLACE FUNCTION triage.prune_runs() RETURNS jsonb
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, triage
+AS $$
+DECLARE
+  runs_deleted       bigint;
+  watch_runs_deleted bigint;
+BEGIN
+  DELETE FROM triage.runs WHERE started < now() - interval '90 days';
+  GET DIAGNOSTICS runs_deleted = ROW_COUNT;
+  DELETE FROM triage.watch_runs WHERE started < now() - interval '90 days';
+  GET DIAGNOSTICS watch_runs_deleted = ROW_COUNT;
+  RAISE LOG 'triage.prune_runs: deleted % runs, % watch_runs', runs_deleted, watch_runs_deleted;
+  RETURN jsonb_build_object('runs', runs_deleted, 'watch_runs', watch_runs_deleted);
+END
+$$;
