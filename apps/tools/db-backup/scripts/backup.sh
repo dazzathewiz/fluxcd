@@ -1,7 +1,8 @@
 #!/bin/sh
 # Nightly, per database: pg_amcheck, then pg_dump -Fc, verified with
-# pg_restore --list before it replaces the .tmp name. Pings Home Assistant with
-# the result. Never set -x: the env holds passwords and the webhook URL.
+# pg_restore --list before it replaces the .tmp name. Then logs the n8n
+# database's size and the volume's usage, and fails over $USAGE_LIMIT percent.
+# Pings Home Assistant with the result. Never set -x: the env holds passwords and the webhook URL.
 set -eu
 . /scripts/lib.sh
 
@@ -43,7 +44,18 @@ failed=""
 # shellcheck disable=SC2086
 backup_db n8n n8n-db "${N8N_DB_PASSWORD:-}" $N8N_EXCLUDE || failed="$failed n8n"
 backup_db inventree inventory-db "${INVENTORY_DB_PASSWORD:-}" || failed="$failed inventree"
+
+# The n8n database and its five largest relations, to show what the dump holds.
+# Logging only: a failed query doesn't fail the job.
+PGHOST=n8n-db PGUSER=n8n PGDATABASE=n8n PGPASSWORD="${N8N_DB_PASSWORD:-}" psql -X -At -v ON_ERROR_STOP=1 \
+  -c "SELECT 'n8n: database ' || pg_size_pretty(pg_database_size(current_database()))" \
+  -c "SELECT 'n8n: ' || n.nspname || '.' || c.relname || ' ' || pg_size_pretty(pg_total_relation_size(c.oid))
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('r', 'm') ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 5" \
+  || echo "n8n: size report FAILED"
 unset PGPASSWORD
+
+check_usage "$OUT" || failed="$failed backup-volume"
 
 ok=true list=""
 for db in $failed; do ok=false list="$list\"$db\","; done

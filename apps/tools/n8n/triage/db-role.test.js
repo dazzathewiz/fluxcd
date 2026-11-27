@@ -30,6 +30,11 @@ test('roles.sql grants only what the workflows use, inside the triage schema', (
     assert.match(g, /\bTO triage;$/);
     assert.match(g, /(SCHEMA triage|triage\.)/, `outside the triage schema: ${g}`);
   }
+  // The one way the role deletes: the heartbeat's retention function, run as its owner.
+  assert.match(sql, /^GRANT EXECUTE ON FUNCTION triage\.prune_runs\(\) TO triage;$/m);
+  const revoke = sql.indexOf('REVOKE ALL ON FUNCTION triage.prune_runs() FROM PUBLIC, triage;');
+  assert.ok(revoke >= 0 && revoke < sql.indexOf('GRANT EXECUTE ON FUNCTION triage.prune_runs()'), 'PUBLIC loses EXECUTE before triage gets it');
+  assert.equal(grants.filter((g) => /\bFUNCTION\b/.test(g)).length, 1, 'no other function grant');
   assert.match(sql, /NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT/);
   assert.match(sql, /REVOKE ALL ON ALL TABLES IN SCHEMA triage FROM triage;/);
   assert.match(sql, /RAISE EXCEPTION 'TRIAGE_DB_PASSWORD is missing or too short'/);

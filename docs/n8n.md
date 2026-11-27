@@ -18,7 +18,7 @@ them up.
 | --- | --- |
 | `Deployment n8n` | One replica, `Recreate`, runs as UID/GID 1000. `/home/node/.n8n` is on PVC `n8n-data` (1Gi). Binary data is on a 16Mi memory-backed `emptyDir`. |
 | `Deployment n8n-db` + `Service n8n-db` | Postgres 17, database and user `n8n`, data on PVC `n8n-db` (5Gi). No service-account token mounted. |
-| `ConfigMap n8n-env` | Non-secret env only: database coordinates, public URL, proxy hops, timezone, telemetry off, community packages off, env access from nodes blocked, execution pruning after 14 days. |
+| `ConfigMap n8n-env` | Non-secret env only: database coordinates, public URL, proxy hops, timezone, telemetry off, community packages off, env access from nodes blocked, execution pruning after 7 days or 2000 executions. |
 | `ConfigMap n8n-workflows-<hash>`, `n8n-triage-<hash>`, `n8n-credentials-<hash>` | Generated from `workflows/`, `triage/` and `credentials/`. A change to any file changes the hash, which rolls the pod. See below. |
 | `ExternalSecret n8n-secrets` | Every secret value. See below. |
 | `Service n8n` + `IngressRoute n8n` | ClusterIP on 5678, routed at `n8n.inf.${PERSONAL_DOMAIN}` on `websecure` with the wildcard `.inf` certificate and the namespace's `default-headers` Middleware. |
@@ -130,6 +130,16 @@ Longhorn recurring-job group with no label. The backing PVs are reclaimed with
 - `n8n-db` holds workflows, credentials (encrypted), users and execution history.
   A nightly `pg_dump`, checked with `pg_amcheck`, also goes to its own volume;
   see [db-backup.md](db-backup.md).
+- **Execution history is kept short.** n8n prunes executions older than 7 days,
+  and keeps at most 2000 (`EXECUTIONS_DATA_MAX_AGE`, `EXECUTIONS_DATA_PRUNE_MAX_COUNT`).
+  The watcher and the heartbeat save failed executions only. Their successful runs
+  are already in `triage.watch_runs` and `triage.heartbeat`. The poll still saves
+  every run.
+- **The triage run logs are kept 90 days.** Once a day, the heartbeat's `Retention`
+  step deletes `triage.runs` and `triage.watch_runs` rows that started more than 90 days ago
+  (`triage.prune_runs()`). `watches`, `verdicts` and `publications` are kept, and
+  a pruned run's `run_id` becomes NULL in them. The gate is the `retention` row in
+  `triage.heartbeat`, and the counts go to the `n8n-db` log.
 - `n8n-data` holds n8n's local config, including the copy of the encryption key.
   Binary data is not on it: it lives in a memory-backed `emptyDir`. See
   [Cluster version](#cluster-version).
@@ -239,8 +249,10 @@ password, revokes everything and grants back exactly:
 | `triage.alert_target` | `SELECT` | `TriageAlertV01` |
 | `triage.watches`, `triage.watch_cursor`, `triage.watch_runs` | `SELECT`, `INSERT`, `UPDATE` | the [watcher](#r10-post-merge-watch) |
 | the four `id` sequences | `USAGE` | inserts |
+| function `triage.prune_runs()` | `EXECUTE` | heartbeat Retention |
 
-No `DELETE`, no DDL, and nothing in `public`, where n8n's tables live and where
+No `DELETE`: the one delete is `prune_runs()`, a `SECURITY DEFINER` function with a
+pinned `search_path` and a fixed 90-day cutoff, run as its owner. No DDL, and nothing in `public`, where n8n's tables live and where
 `PUBLIC` has no table privileges. The role is `NOSUPERUSER NOCREATEDB
 NOCREATEROLE NOINHERIT` with a 10-connection limit. A manual grant is reset on the
 next pod start. Admin work, such as finalising a verdict (see
@@ -308,7 +320,8 @@ the run stays unfinished, no ETag is stored, and the next run retries.
 
 `PR triage: heartbeat` runs every 30 minutes, writes the last successful run times
 of the poll and the watcher to `triage.heartbeat`, and pings Home Assistant; see
-[Dead-man](#dead-man).
+[Dead-man](#dead-man). A second branch prunes the run logs once a day; see
+[Storage, backup and restore](#storage-backup-and-restore).
 
 ### Dead-man
 

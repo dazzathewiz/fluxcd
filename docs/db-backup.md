@@ -32,12 +32,14 @@ deadline, and no overlap. For each database, as that database's owner user:
 4. Keep the newest 14 dumps (by name, which is by time) and delete older ones
    with their `.sha256`. `.tmp` files older than a day are deleted.
 
-One database failing doesn't stop the other. The job exits non-zero if either
-failed.
+One database failing doesn't stop the other. After both, the job logs the `n8n`
+database's size and its five largest relations, then `df` for `/backup`. That's
+logging only. Over 80% used (`USAGE_LIMIT`), `backup-volume` is added to the
+failures. The job exits non-zero if anything failed.
 
 The script is `apps/tools/db-backup/scripts/backup.sh`. It's mounted from a
 generated ConfigMap with Flux substitution disabled. The retention, naming,
-wait and data-directory logic in `scripts/lib.sh` has tests:
+wait, usage and data-directory logic in `scripts/lib.sh` has tests:
 `node --test apps/tools/db-backup/`.
 
 **Two n8n tables are dumped without their rows:** `triage.alert_target` (the
@@ -78,7 +80,8 @@ the same webhook as the n8n heartbeat, with a 10 s timeout:
 {"source": "pg-dump", "ok": true, "checked": "<ISO-8601 UTC>", "failed": []}
 ```
 
-`failed` lists the databases that failed. A failed ping logs one line, without
+`failed` lists the databases that failed, and `backup-volume` when the volume is
+over 80% used. A failed ping logs one line, without
 the URL, and doesn't change the exit code. The receiver and its alerts live in
 Home Assistant, outside this repo. A missing ping is the signal that the job
 didn't run at all.

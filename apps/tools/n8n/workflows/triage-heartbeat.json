@@ -146,6 +146,28 @@
       "parameters": {
         "errorMessage": "=Home Assistant ping failed (status {{ $json.ping_status === null ? 'none' : $json.ping_status }})"
       }
+    },
+    {
+      "id": "0b7c1d8e-0108-4a00-9000-000000000108",
+      "name": "Retention",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        500
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- At most once a day: claim the retention row (inserted on the first run),\n-- then delete run logs older than 90 days. No claim, no prune. One statement,\n-- so a failed prune also undoes the claim and the next run retries.\nWITH claim AS (\n  INSERT INTO triage.heartbeat AS h (name, last_success, checked)\n  VALUES ('retention', now(), now())\n  ON CONFLICT (name) DO UPDATE\n    SET last_success = excluded.last_success, checked = excluded.checked\n    WHERE h.last_success IS NULL OR h.last_success <= now() - interval '1 day'\n  RETURNING h.name\n)\nSELECT name, triage.prune_runs() AS deleted FROM claim;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Postgres triage (credential overwrite)"
+        }
+      },
+      "notes": "Runs after the ping branch (it sits below it). The deleted counts go to the n8n-db log via triage.prune_runs()."
     }
   ],
   "connections": {
@@ -154,6 +176,11 @@
         [
           {
             "node": "Record last success",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Retention",
             "type": "main",
             "index": 0
           }
@@ -220,7 +247,9 @@
   "settings": {
     "executionOrder": "v1",
     "timezone": "UTC",
-    "callerPolicy": "workflowsFromSameOwner"
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
   },
   "pinData": {},
   "active": false

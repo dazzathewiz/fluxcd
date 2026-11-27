@@ -43,6 +43,10 @@ GRANT SELECT, INSERT, UPDATE ON triage.heartbeat TO triage;
 GRANT SELECT ON triage.alert_target TO triage;
 -- R10: the watcher inserts and updates watches, its cursor and its runs.
 GRANT SELECT, INSERT, UPDATE ON triage.watches, triage.watch_cursor, triage.watch_runs TO triage;
+-- The heartbeat's daily retention step runs as the function's owner; the role
+-- itself can't delete. Functions are executable by PUBLIC unless revoked.
+REVOKE ALL ON FUNCTION triage.prune_runs() FROM PUBLIC, triage;
+GRANT EXECUTE ON FUNCTION triage.prune_runs() TO triage;
 GRANT USAGE ON SEQUENCE triage.runs_id_seq, triage.verdicts_id_seq, triage.watches_id_seq, triage.watch_runs_id_seq TO triage;
 
 COMMIT;
