@@ -56,11 +56,41 @@ caps:
 one_minor_per_pr:
   - longhorn
   - rancher
+  - k3s-io/k3s
+  - fluxcd/flux2
 
 groups:
   - name: portainer
     branch: renovate/portainer
     packages: [portainer, portainer/agent]
+
+# renovate.json rules (matched by their match* keys) or top-level keys with no
+# mirror above, on purpose. keys: only those options. rules.test.js fails on
+# any other difference, and on an entry that matches nothing.
+drift_ignore:
+  - rule: "matchFileNames=infrastructure/experiments/**"
+    reason: "turns Renovate off for a path; no PR to triage"
+  - rule: "matchFileNames=.archive/**"
+    reason: "turns Renovate off for a path; no PR to triage"
+  - rule: "matchFileNames=**/gotk-components.yaml matchManagers=kubernetes"
+    reason: "turns Renovate off for a path; no PR to triage"
+  - rule: "matchDatasources=github-releases matchPackageNames=k3s-io/k3s"
+    keys: [versioning]
+    reason: "how Renovate reads k3s versions; the triage compares the versions it gets"
+  - rule: "matchDatasources=docker matchPackageNames=n8nio/n8n"
+    keys: [minimumReleaseAge, schedule]
+    reason: "when Renovate opens the PR, not what it may contain"
+  - rule: "matchPackageNames=rancher/system-upgrade-controller"
+    keys: [groupName]
+    reason: "a group's branch name changes with the update type; R3 gates it already"
+  - top_level: customManagers
+    reason: "where Renovate finds versions, not what a PR may contain"
+  - top_level: extends
+    reason: "presets are not expanded, so their own rules are not checked"
+  - top_level: kubernetes
+    reason: "which files the manager reads"
+  - top_level: flux
+    reason: "which files the manager reads"
 
 # Removed from the cluster; any package or path containing these fails R5.
 removed:

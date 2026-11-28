@@ -107,14 +107,14 @@ function code(n, out, input, idx) {
 // ------------------------------------------------------------ the database
 
 function newDb() {
-  return { runs: [], verdicts: [], publications: {}, config: {}, render_requests: [], renders: [], clock: Date.parse('2026-11-20T00:00:00Z') };
+  return { runs: [], verdicts: [], publications: {}, config: {}, render_requests: [], renders: [], heartbeat: {}, clock: Date.parse('2026-11-20T00:00:00Z') };
 }
 const iso = (t) => new Date(t).toISOString();
 const keyOf = (o) => `${o.repo}#${o.pr}@${o.head_sha}`;
 
 // Start run's SQL, for one repo.
-function startRun(db, repo, ruleset, configText, patterns) {
-  const run = { id: db.runs.length + 1, ruleset, started: iso(db.clock), list_etags: {}, ok: null, publish: null };
+function startRun(db, repo, ruleset, configText, patterns, configSha) {
+  const run = { id: db.runs.length + 1, ruleset, started: iso(db.clock), list_etags: {}, ok: null, publish: null, drift: null };
   db.runs.push(run);
   const latest = {};
   const current = {};
@@ -137,10 +137,14 @@ function startRun(db, repo, ruleset, configText, patterns) {
     pubs[k] = { verdict: p.verdict, ruleset: p.ruleset, label: p.label, comment_id: p.comment_id, status_state: p.status_state, human_override: p.human_override, outcome: p.outcome };
     if (p.planned_at) touch(p, p.planned_at);
   }
+  const sha = configSha || 'sha';
+  const rd = (db.heartbeat['rules-drift'] || {}).detail || null;
   return {
     run,
     row: {
-      run_id: run.id, ruleset, repo, list_etag: null, config_body: configText, config_sha: 'sha', patterns,
+      run_id: run.id, ruleset, repo, list_etag: null, config_body: configText, config_sha: sha, patterns,
+      rules_drift: rd,
+      rules_drift_etag: rd && rd.config_sha === sha && typeof rd.drift === 'boolean' ? rd.etag || null : null,
       seen: Array.from(seen), previous: {}, publications: pubs, sha_seen: shaSeen, current_verdicts: current,
       app_id: db.config['github-app-id'] || null, installation_id: db.config['github-app-installation-id'] || null,
     },
@@ -236,13 +240,14 @@ function runPublish(action, github, calls) {
 
 // ------------------------------------------------------------ the poll
 
-// opts: {db, github, repo, ruleset, config (text), patterns, cluster, external, now}
+// opts: {db, github, repo, ruleset, config (text), config_sha, patterns, cluster, external, alert, now}
+// alert(payload) -> the HTTP status Home Assistant answers (TriageAlertV01's Result).
 async function runPoll(opts) {
   const db = opts.db;
   const github = opts.github;
   const repo = opts.repo;
   const configText = opts.config;
-  const start = startRun(db, repo, opts.ruleset, configText, opts.patterns);
+  const start = startRun(db, repo, opts.ruleset, configText, opts.patterns, opts.config_sha);
   const out = { 'Start run': [{ json: start.row }] };
   const each = (name, input) => {
     const n = nodeOf(POLL, name);
@@ -253,7 +258,8 @@ async function runPoll(opts) {
   };
   each('Get dashboard', out['Start run']);
   each('Repo labels', out['Get dashboard']);
-  each('List PRs', out['Repo labels']);
+  each('Get renovate.json', out['Repo labels']);
+  each('List PRs', out['Get renovate.json']);
   const list = out['List PRs'][0].json;
   const prItems = list.statusCode === 200 && Array.isArray(list.body) && list.body.length ? list.body.map((b, i) => ({ json: b, pairedItem: { item: i } })) : [{ json: {} }];
   out['One item per PR'] = prItems;
@@ -279,8 +285,8 @@ async function runPoll(opts) {
   assert.equal(runItem.kind, 'run');
 
   // Branches in canvas order (executionOrder v1): verdicts, plans, render
-  // requests, run summary.
-  assert.deepEqual(next(POLL, 'Triage'), ['Verdicts only', 'Plans only', 'Render requests only', 'Run summary only']);
+  // requests, rules drift, run summary.
+  assert.deepEqual(next(POLL, 'Triage'), ['Verdicts only', 'Plans only', 'Render requests only', 'Rules drift only', 'Run summary only']);
   const ys = next(POLL, 'Triage').map((n) => nodeOf(POLL, n).position[1]);
   assert.deepEqual(ys.slice().sort((a, b) => a - b), ys, 'branches top to bottom');
 
@@ -338,8 +344,31 @@ async function runPoll(opts) {
     const [repo2, pr2, sha2, path2, release2, ns2, chart2, url2, from2, to2, kube2, status2, error2] = param(nodeOf(POLL, 'Queue render').parameters.options.queryReplacement, scope(out, it.json, 0));
     queueRender(db, { repo: repo2, pr: Number(pr2), head_sha: sha2, path: path2, release: release2, namespace: ns2, chart: chart2, helm_repo_url: url2, old_version: from2, new_version: to2, kube_version: kube2, status: status2, error: error2 });
   }
+  // Rules drift: Record rules drift, then the alert and Record drift alert.
+  const alerts = [];
+  const driftItems = out.Triage.filter((i) => i.json.kind === 'rules_drift');
+  assert.equal(driftItems.length, 1, 'one rules drift item per run');
+  out['Rules drift only'] = driftItems;
+  assert.deepEqual(next(POLL, 'Rules drift only'), ['Record rules drift']);
+  const [detailJson] = param(nodeOf(POLL, 'Record rules drift').parameters.options.queryReplacement, scope(out, driftItems[0].json, 0));
+  const detail = JSON.parse(detailJson);
+  const hb = db.heartbeat['rules-drift'] || { name: 'rules-drift', last_success: null };
+  db.heartbeat['rules-drift'] = Object.assign(hb, { checked: iso(db.clock), detail, last_success: detail.drift !== null ? iso(db.clock) : hb.last_success });
+  out['Record rules drift'] = [{ json: { name: 'rules-drift' } }];
+  assert.deepEqual(next(POLL, 'Record rules drift'), ['Drift alert?']);
+  if (ifResult(nodeOf(POLL, 'Drift alert?'), scope(out, out['Record rules drift'][0].json, 0))) {
+    out['Drift alert payload'] = code(nodeOf(POLL, 'Drift alert payload'), out, out['Record rules drift'], 0);
+    assert.deepEqual(next(POLL, 'Drift alert payload'), ['Alert rules drift']);
+    const payload = out['Drift alert payload'][0].json;
+    const status = opts.alert ? opts.alert(payload) : 200;
+    alerts.push({ payload, status });
+    out['Alert rules drift'] = [{ json: { status } }];
+    assert.deepEqual(next(POLL, 'Alert rules drift'), ['Record drift alert']);
+    const [alertedJson, code2] = param(nodeOf(POLL, 'Record drift alert').parameters.options.queryReplacement, scope(out, out['Alert rules drift'][0].json, 0));
+    if (code2 >= 200 && code2 <= 299) db.heartbeat['rules-drift'].detail.alerted = JSON.parse(alertedJson);
+  }
   // Finish run
-  const [runId, , ok, etags, mode, healthy] = param(nodeOf(POLL, 'Finish run').parameters.options.queryReplacement, scope(out, runItem, 0));
+  const [runId, , ok, etags, mode, healthy, driftJson] = param(nodeOf(POLL, 'Finish run').parameters.options.queryReplacement, scope(out, runItem, 0));
   const outcomes = Object.values(db.publications).filter((p) => p.run_id === runId).map((p) => p.outcome);
   let publish;
   if (mode === 'off') publish = 'planned-only';
@@ -348,9 +377,9 @@ async function runPoll(opts) {
   else if (outcomes.includes('redaction-hit')) publish = 'redaction-hit';
   else if (outcomes.includes('published')) publish = 'published';
   else publish = 'no-op';
-  Object.assign(start.run, { finished: iso(db.clock), ok: ok && publish !== 'failed', publish, list_etags: publish === 'failed' ? {} : JSON.parse(etags) });
+  Object.assign(start.run, { finished: iso(db.clock), ok: ok && publish !== 'failed', publish, list_etags: publish === 'failed' ? {} : JSON.parse(etags), drift: JSON.parse(driftJson) });
   db.clock += 15 * 60 * 1000;
-  return { run: start.run, runItem, plans: plans.map((p) => p.json.plan), calls, out };
+  return { run: start.run, runItem, plans: plans.map((p) => p.json.plan), calls, alerts, out };
 }
 
 module.exports = { POLL, PUBLISH, nodeOf, param, ifResult, scope, http, code, newDb, startRun, readRenders, queueRender, finishRender, runPublish, runPoll, iso };

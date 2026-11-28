@@ -159,7 +159,7 @@ const CONFIG_KEYS = [
   'path_class_overrides', 'dependants', 'release_note_keywords', 'low_risk_update_types', 'helm_index',
   'verdict_labels', 'outcome_labels', 'status_context', 'app_slug',
   'watch_write_mode', 'watch_timeout_min', 'watch_stale_min', 'watch_kustomizations', 'fix_forward_packages',
-  'r11_mode',
+  'r11_mode', 'drift_ignore',
 ];
 const UPDATE_TYPES = ['digest', 'pin', 'patch', 'minor', 'major'];
 // clusters/ and gotk-components always go to deep-review, and apps/ needs no override.
@@ -286,6 +286,7 @@ function loadConfig(text) {
     low_risk_update_types: asList(cfg.low_risk_update_types),
     helm_index: helmIndex,
     r11_mode: r11Mode,
+    drift_ignore: loadDriftIgnore(cfg.drift_ignore),
   }, loadLabels(cfg), loadWatchConfig(cfg));
 }
 
@@ -1936,6 +1937,281 @@ async function fetchHelmReleaseFiles(http, facts, changes, caches) {
   return out;
 }
 
+// ------------------------------------- rules drift: renovate.json vs config.yaml
+// config.yaml mirrors renovate.json by hand: gated <- dependencyDashboardApproval,
+// caps <- allowedVersions, one_minor_per_pr <- separateMultipleMinor, groups <-
+// groupName. deriveRenovateRules maps renovate.json to that shape;
+// compareRules says where the two disagree. Advisory: no verdict reads it.
+
+const DRIFT_RULE_KEYS = ['description', 'matchPackageNames', 'matchDatasources', 'matchUpdateTypes', 'matchManagers',
+  'dependencyDashboardApproval', 'allowedVersions', 'separateMultipleMinor', 'groupName'];
+const DRIFT_TOP_KEYS = ['$schema', 'packageRules'];
+const DRIFT_SECTIONS = ['gated', 'caps', 'one_minor_per_pr', 'groups'];
+const DRIFT_KINDS = ['missing-in-config', 'missing-in-renovate', 'unmappable'];
+// The two files a PR must touch for its comment to get a drift line.
+const DRIFT_FILES = ['renovate.json', 'apps/tools/n8n/triage/config.yaml'];
+const DATASOURCE_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const GROUP_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const CAP_RE = /^<\s*v?(\d+(?:\.\d+){0,3})$/;
+const BLOB_SHA = /^[0-9a-f]{40}$/;
+// What an item may look like in a comment or an alert; anything else is "other item".
+const DRIFT_ITEM_TEXT = /^(?:gated|caps|one_minor_per_pr|groups|packageRules|top-level) [A-Za-z0-9._/*@:+<>{},-]{1,120}$/;
+const DRIFT_NOT_RUN = {
+  'fetch-failed': 'renovate.json or config.yaml could not be read at this commit',
+  'renovate-invalid': 'renovate.json does not parse at this commit',
+  'config-invalid': 'config.yaml does not load at this commit',
+};
+
+// drift_ignore: renovate.json rules (by matcher set) or top-level keys that
+// have no triage mirror on purpose. keys narrows a rule entry to those options.
+function loadDriftIgnore(list) {
+  return asList(list).map((e, i) => {
+    const where = `drift_ignore[${i}]`;
+    checkKeys(where, e, ['rule', 'top_level', 'keys', 'reason']);
+    const hasRule = typeof e.rule === 'string' && e.rule.trim() !== '';
+    const hasTop = typeof e.top_level === 'string' && e.top_level.trim() !== '';
+    if (hasRule === hasTop) throw new Error(`config: ${where} needs exactly one of rule or top_level`);
+    if (typeof e.reason !== 'string' || e.reason.trim() === '' || e.reason.length > 160 || /\n/.test(e.reason)) {
+      throw new Error(`config: ${where} needs a one-line reason`);
+    }
+    const keys = asList(e.keys);
+    if (hasTop && keys.length) throw new Error(`config: ${where} keys go with rule only`);
+    if (!keys.every((k) => typeof k === 'string' && /^[A-Za-z][A-Za-z0-9]*$/.test(k))) throw new Error(`config: ${where} keys must be renovate.json option names`);
+    return { rule: hasRule ? e.rule : null, top_level: hasTop ? e.top_level : null, keys, reason: e.reason };
+  });
+}
+
+// A packageRule's stable identity: its match* keys and values, sorted. Not its
+// position, and not its description.
+function renovateRuleKey(rule) {
+  const parts = Object.keys(rule).filter((k) => /^match[A-Z]/.test(k)).sort()
+    .map((k) => `${k}=${asList(rule[k]).map(String).sort().join(',')}`);
+  return parts.length ? parts.join(' ') : '(all packages)';
+}
+
+function ruleLabel(rule) {
+  for (const k of ['matchPackageNames', 'matchDatasources', 'matchFileNames', 'matchManagers']) {
+    const v = asList(rule[k]);
+    if (v.length) return v.map(String).sort().join(',');
+  }
+  return '*';
+}
+
+function sortUpdateTypes(types) {
+  const rank = (t) => (UPDATE_TYPES.includes(t) ? UPDATE_TYPES.indexOf(t) : UPDATE_TYPES.length);
+  return Array.from(new Set(types)).sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+const gatedKey = (g) => `${g.package || '*'}@${g.datasource || '*'}:${g.update_types.length ? sortUpdateTypes(g.update_types).join('+') : '*'}`;
+const capKey = (c) => `${c.package}<${String(c.below).replace(/^v/, '')}`;
+const groupKey = (name, packages) => `${name}{${Array.from(new Set(packages)).sort().join(',')}}`;
+
+// renovate.json (text or parsed) -> the config's shape. Every entry names the
+// rule and option it came from, so drift_ignore can match it. A key the
+// mapping doesn't cover, or a matcher it can't express, is unmappable.
+function deriveRenovateRules(renovateJson) {
+  const doc = typeof renovateJson === 'string' ? JSON.parse(renovateJson) : renovateJson;
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('renovate.json must be an object');
+  const out = { gated: [], caps: [], one_minor_per_pr: [], groups: [], unmappable: [] };
+  for (const k of Object.keys(doc)) {
+    if (!DRIFT_TOP_KEYS.includes(k)) out.unmappable.push({ rule: null, top_level: k, option: k, key: k });
+  }
+  const rules = doc.packageRules === undefined ? [] : doc.packageRules;
+  if (!Array.isArray(rules)) throw new Error('renovate.json packageRules must be a list');
+  for (const r of rules) {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) {
+      out.unmappable.push({ rule: '(not a rule)', top_level: null, option: 'packageRules', key: 'packageRules@*' });
+      continue;
+    }
+    const rule = renovateRuleKey(r);
+    const label = ruleLabel(r);
+    const odd = (option) => out.unmappable.push({ rule, top_level: null, option, key: `${option}@${label}` });
+    for (const k of Object.keys(r)) if (!DRIFT_RULE_KEYS.includes(k)) odd(k);
+    const pk = asList(r.matchPackageNames);
+    const ds = asList(r.matchDatasources);
+    const ut = asList(r.matchUpdateTypes);
+    let expressible = true;
+    if (!pk.every((p) => typeof p === 'string' && PACKAGE_NAME.test(p))) { odd('matchPackageNames'); expressible = false; }
+    if (!ds.every((d) => typeof d === 'string' && DATASOURCE_NAME.test(d))) { odd('matchDatasources'); expressible = false; }
+    if (!ut.every((t) => UPDATE_TYPES.includes(t))) { odd('matchUpdateTypes'); expressible = false; }
+    if (!expressible) continue;
+    // matchManagers alone gives no datasource: the triage entry then matches any.
+    const types = sortUpdateTypes(ut);
+    if (r.dependencyDashboardApproval !== undefined) {
+      if (r.dependencyDashboardApproval !== true) odd('dependencyDashboardApproval');
+      else {
+        for (const p of pk.length ? pk : [null]) {
+          for (const d of ds.length ? ds : [null]) {
+            out.gated.push({ package: p, datasource: d, update_types: types, rule, option: 'dependencyDashboardApproval' });
+          }
+        }
+      }
+    }
+    // Caps, one-minor rules and groups are per package and for every update type.
+    const perPackage = pk.length > 0 && ut.length === 0;
+    if (r.allowedVersions !== undefined) {
+      const m = typeof r.allowedVersions === 'string' ? r.allowedVersions.trim().match(CAP_RE) : null;
+      if (!m || !perPackage) odd('allowedVersions');
+      else for (const p of pk) out.caps.push({ package: p, below: m[1], rule, option: 'allowedVersions' });
+    }
+    if (r.separateMultipleMinor !== undefined) {
+      if (r.separateMultipleMinor !== true || !perPackage) odd('separateMultipleMinor');
+      else for (const p of pk) out.one_minor_per_pr.push({ package: p, rule, option: 'separateMultipleMinor' });
+    }
+    if (r.groupName !== undefined) {
+      if (typeof r.groupName !== 'string' || !GROUP_NAME.test(r.groupName) || !perPackage) odd('groupName');
+      else out.groups.push({ name: r.groupName, packages: pk.slice(), rule, option: 'groupName' });
+    }
+  }
+  return out;
+}
+
+// Set comparison per section, order-insensitive. config is a loadConfig()
+// result; its drift_ignore drops the renovate.json side it names.
+function compareRules(derived, config) {
+  const ignores = (config && config.drift_ignore) || [];
+  const used = ignores.map(() => new Set());
+  const ignored = (e) => {
+    let hit = false;
+    ignores.forEach((ig, i) => {
+      const match = e.rule === null
+        ? ig.top_level !== null && ig.top_level === e.top_level
+        : ig.rule === e.rule && (ig.keys.length === 0 || ig.keys.includes(e.option));
+      if (match) { used[i].add(e.option); hit = true; }
+    });
+    return hit;
+  };
+  const keep = (list) => (list || []).filter((e) => !ignored(e));
+  const merged = (groups) => {
+    const by = {};
+    for (const g of groups) by[g.name] = (by[g.name] || []).concat(g.packages);
+    return Object.keys(by).map((n) => groupKey(n, by[n]));
+  };
+  const sides = {
+    gated: [keep(derived.gated).map(gatedKey), config.gated.map(gatedKey)],
+    caps: [keep(derived.caps).map(capKey), config.caps.map(capKey)],
+    one_minor_per_pr: [keep(derived.one_minor_per_pr).map((e) => e.package), config.one_minor_per_pr.slice()],
+    groups: [merged(keep(derived.groups)), merged(config.groups)],
+  };
+  const items = [];
+  for (const section of DRIFT_SECTIONS) {
+    const [renovate, cfg] = sides[section].map((l) => new Set(l));
+    for (const k of Array.from(renovate).sort()) if (!cfg.has(k)) items.push({ section, kind: 'missing-in-config', key: k });
+    for (const k of Array.from(cfg).sort()) if (!renovate.has(k)) items.push({ section, kind: 'missing-in-renovate', key: k });
+  }
+  const odd = {};
+  for (const e of keep(derived.unmappable)) odd[`${e.top_level ? 'top-level' : 'packageRules'} ${e.key}`] = e;
+  for (const k of Object.keys(odd).sort()) {
+    const e = odd[k];
+    items.push({ section: e.top_level ? 'top-level' : 'packageRules', kind: 'unmappable', key: e.key });
+  }
+  // An entry that matched nothing (or a listed key that never came up) is stale.
+  const unused = [];
+  ignores.forEach((ig, i) => {
+    const missing = ig.keys.filter((k) => !used[i].has(k));
+    if (used[i].size === 0 || missing.length) unused.push(ig.top_level ? `top_level ${ig.top_level}` : `rule ${ig.rule}${missing.length ? ` (${missing.join(', ')})` : ''}`);
+  });
+  return { drift: items.length > 0, items, unused_ignores: unused };
+}
+
+const driftItemText = (it) => `${it.section} ${it.key}`;
+
+// The triage comment's drift line. Fixed templates only.
+function rulesDriftLine(d) {
+  if (!d) return null;
+  if (d.state !== 'done') return `Rules drift: not checked — ${DRIFT_NOT_RUN[d.reason] || DRIFT_NOT_RUN['fetch-failed']}`;
+  if (!d.items.length) return 'Rules drift: none';
+  const shown = d.items.slice(0, 3).map((it) => {
+    const t = driftItemText(it);
+    return DRIFT_ITEM_TEXT.test(t) ? `\`${t}\`` : 'other item';
+  });
+  return `Rules drift: ${d.items.length} item(s) — ${shown.join(', ')}${d.items.length > 3 ? '…' : ''}`;
+}
+
+function rulesFileUrl(repo, sha, path) {
+  if (!DRIFT_FILES.includes(path) || !/^[\w.-]+\/[\w.-]+$/.test(String(repo)) || !SHA_RE.test(String(sha))) return null;
+  return `https://raw.githubusercontent.com/${repo}/${sha}/${path}`;
+}
+
+function touchesRules(files) {
+  return (Array.isArray(files) ? files : []).some((f) => f && (DRIFT_FILES.includes(f.filename) || DRIFT_FILES.includes(f.previous_filename)));
+}
+
+// A PR that changes either file: compare both as they are at its head.
+// null for any other PR.
+async function rulesDriftForPr(http, repo, sha, files, caches) {
+  if (!touchesRules(files)) return null;
+  const text = {};
+  for (const p of DRIFT_FILES) {
+    const url = rulesFileUrl(repo, sha, p);
+    if (!url) return { state: 'not_run', reason: 'fetch-failed' };
+    if (!(url in caches.files)) {
+      try {
+        const r = await http({ method: 'GET', url, headers: { Accept: 'text/plain' } });
+        caches.files[url] = r.statusCode === 200 ? bodyText(r.body) : null;
+      } catch (e) {
+        caches.files[url] = null;
+      }
+    }
+    if (typeof caches.files[url] !== 'string') return { state: 'not_run', reason: 'fetch-failed' };
+    text[p] = caches.files[url];
+  }
+  let derived;
+  let config;
+  try { derived = deriveRenovateRules(text['renovate.json']); } catch (e) { return { state: 'not_run', reason: 'renovate-invalid' }; }
+  try { config = loadConfig(text[DRIFT_FILES[1]]); } catch (e) { return { state: 'not_run', reason: 'config-invalid' }; }
+  const r = compareRules(derived, config);
+  return { state: 'done', drift: r.drift, items: r.items };
+}
+
+// The live check on the default branch, once per poll. prev is the
+// rules-drift heartbeat row's detail; response is the contents API read of
+// renovate.json (conditional on prev's ETag); config is the loaded config and
+// configSha its hash. A new blob (or a new loaded config) is compared again.
+// One alert per drifting (blob, config) pair, and one recovery once it clears.
+// A failed read records drift null and never alerts.
+function planRulesDrift(prev, response, config, configSha, now) {
+  const p = prev && typeof prev === 'object' ? prev : {};
+  const alerted = p.alerted && typeof p.alerted === 'object' && typeof p.alerted.key === 'string' ? { key: p.alerted.key, drift: p.alerted.drift === true } : null;
+  const r = response || {};
+  const body = r.body && typeof r.body === 'object' ? r.body : {};
+  let detail;
+  let fresh = false;
+  if (r.statusCode === 304 && typeof p.drift === 'boolean' && p.config_sha === configSha && BLOB_SHA.test(String(p.sha))) {
+    detail = { sha: p.sha, etag: p.etag || null, config_sha: configSha, drift: p.drift, items: p.items, keys: asList(p.keys) };
+  } else if (r.statusCode === 200 && BLOB_SHA.test(String(body.sha)) && typeof body.content === 'string' && body.encoding === 'base64') {
+    let result = null;
+    try { result = compareRules(deriveRenovateRules(decodeBase64Utf8(body.content)), config); } catch (e) { result = null; }
+    fresh = true;
+    detail = {
+      sha: body.sha,
+      // No ETag kept for a file that didn't parse, so the next run reads it again.
+      etag: result ? header(r.headers, 'etag') || null : null,
+      config_sha: configSha,
+      drift: result ? result.drift : null,
+      items: result ? result.items.length : null,
+      keys: result ? result.items.slice(0, 5).map(driftItemText) : [],
+    };
+  } else {
+    detail = { sha: BLOB_SHA.test(String(p.sha)) ? p.sha : null, etag: null, config_sha: configSha, drift: null, items: null, keys: [] };
+  }
+  detail.alerted = alerted;
+  const key = detail.sha ? `${detail.sha}.${configSha}` : null;
+  let alert = null;
+  if (detail.drift === true && !(alerted && alerted.key === key && alerted.drift)) {
+    alert = { source: 'rules-drift', drift: true, items: detail.items, keys: detail.keys.slice(0, 5), sha: detail.sha.slice(0, 7), checked: now };
+  } else if (detail.drift === false && alerted && alerted.drift) {
+    alert = { source: 'rules-drift', drift: false, items: 0, keys: [], sha: detail.sha.slice(0, 7), checked: now };
+  }
+  return {
+    detail,
+    run: { sha: detail.sha, drift: detail.drift, items: detail.items, keys: detail.keys, fresh },
+    alert,
+    // Written to detail.alerted only after Home Assistant answers 2xx.
+    alerted_next: alert ? { key, drift: alert.drift } : null,
+  };
+}
+
 // ---------------------------------------------------------------- publish (write_mode labels)
 
 // Each open PR gets one triage:<verdict> label, one triage comment and one
@@ -2065,6 +2341,7 @@ function renderTriageComment(input, config) {
   if (why.length) lines.push('', '**Why**', ...why.map((r) => `- ${r}`));
   if (deps.length) lines.push('', '**Check outside the repo**', ...deps.map((d) => `- ${d}`));
   if (input.r11_line) lines.push('', input.r11_line);
+  if (input.rules_drift_line) lines.push('', input.rules_drift_line);
   if (triaged && triaged !== verdict) {
     lines.push('', `Held at \`${verdict}\`: this ruleset gave \`${triaged}\`, and triage only escalates a commit.`);
   }
@@ -2186,7 +2463,7 @@ function planPublish(prState, verdict, publication, labelEvents, appLogin, ctx) 
   const label = config.verdict_labels[eff];
   const override = findOverride(events, appLogin, managed, p.since);
   const status = { state: STATUS_STATES[eff], context: config.status_context, description: STATUS_DESCRIPTIONS[eff] };
-  const body = renderTriageComment({ head_sha: p.head_sha, ruleset: verdict.ruleset, verdict: eff, triaged_verdict: triaged, reasons: raised.reasons, override: !!override, r11_line: r11Line(ctx.r11) }, config);
+  const body = renderTriageComment({ head_sha: p.head_sha, ruleset: verdict.ruleset, verdict: eff, triaged_verdict: triaged, reasons: raised.reasons, override: !!override, r11_line: r11Line(ctx.r11), rules_drift_line: rulesDriftLine(ctx.rules_drift) }, config);
   Object.assign(plan, {
     verdict: eff, triaged_verdict: triaged, ruleset: verdict.ruleset,
     label: override ? (published ? published.label || null : null) : label,
@@ -2886,6 +3163,8 @@ const RULES_EXPORTS = {
   watchMarker, renderWatchComment, planWatchPublish,
   R11_MODES, R11_LEVELS, RENDER_STATUSES, RENDER_ERRORS, classifyRender, normaliseRender, appVersionImage, renderErrorCode,
   r11ForRequest, r11Summary, r11Line, r11Cache, checkR11, applyR11, planRenderRequests, r11Results, rawFileUrl, fetchHelmReleaseFiles,
+  DRIFT_SECTIONS, DRIFT_KINDS, DRIFT_FILES, deriveRenovateRules, compareRules, renovateRuleKey, rulesDriftLine, rulesFileUrl, touchesRules,
+  rulesDriftForPr, planRulesDrift,
 };
 
 if (typeof module !== 'undefined' && module.exports && typeof $input === 'undefined') {

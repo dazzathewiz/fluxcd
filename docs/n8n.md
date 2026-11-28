@@ -340,7 +340,7 @@ of the poll and the watcher to `triage.heartbeat`, and pings Home Assistant; see
 Every heartbeat run POSTs one JSON object to a Home Assistant webhook:
 
 ```json
-{"source": "pr-triage", "last_success": "<ISO-8601 UTC or null>", "watch_last_success": "<ISO-8601 UTC or null>", "stale": false, "checked": "<ISO-8601 UTC>"}
+{"source": "pr-triage", "last_success": "<ISO-8601 UTC or null>", "watch_last_success": "<ISO-8601 UTC or null>", "stale": false, "rules_drift": false, "checked": "<ISO-8601 UTC>"}
 ```
 
 `stale` is true when no poll run has succeeded in 2 hours, or no watcher run in
@@ -348,7 +348,9 @@ Every heartbeat run POSTs one JSON object to a Home Assistant webhook:
 when the pod loaded the config. Home Assistant alerts on two
 things: a ping that says `stale`, and no ping at all for longer than a couple of
 intervals, which means n8n itself is down. The receiver, the watchdog and the phone
-notification live in Home Assistant, outside this repo.
+notification live in Home Assistant, outside this repo. `rules_drift` is the
+last [rules drift](#rules-drift) result (true, false, or null for no result),
+for visibility only: nothing alerts on it here.
 
 - **The URL is a secret.** The webhook ID is in it. It comes from the 1Password
   field `ha-heartbeat-url`, and the `triage-schema` initContainer seeds it into
@@ -356,10 +358,11 @@ notification live in Home Assistant, outside this repo.
   empty). No credential type can carry a request URL, so a credential overwrite
   doesn't fit.
 - **Only `PR triage: alert (unsaved)` (`TriageAlertV01`) reads it.** The heartbeat
-  calls it once per run with the five keys above, and the watcher once per failed
-  watch or shared-failure group (see [R10](#r10-post-merge-watch)). It reads the URL, POSTs with a 10 s
+  calls it once per run with the six keys above, the watcher once per failed
+  watch or shared-failure group (see [R10](#r10-post-merge-watch)), and the
+  poll once per [rules drift](#rules-drift) change. It reads the URL, POSTs with a 10 s
   timeout and one retry on a network error, and returns only the HTTP status. It
-  saves no executions, and its caller policy admits only those two. The tests
+  saves no executions, and its caller policy admits only those three. The tests
   check that no other workflow names the table.
 - **The heartbeat records the result** in `triage.heartbeat.last_ping` and
   `ping_status` (the status, or NULL on a network error). A status outside 2xx
@@ -962,6 +965,55 @@ database.
 
 **Rollback** is `git revert`: the CronJob, its Secret and its network policy
 are pruned. The tables and the role stay behind, unused.
+
+## Rules drift
+
+`config.yaml` mirrors `renovate.json` by hand: `gated` mirrors
+`dependencyDashboardApproval`, `caps` mirrors `allowedVersions` (`<X` only),
+`one_minor_per_pr` mirrors `separateMultipleMinor`, and `groups` mirrors
+`groupName` (name and packages; the branch is config's own). A Renovate rule
+added without its mirror would leave R3 and R5 judging against stale rules.
+`deriveRenovateRules` in `rules.js` maps `renovate.json` to the config's shape,
+and `compareRules` compares the two per section, as sets. Each difference is
+`missing-in-config`, `missing-in-renovate`, or `unmappable`: an option or
+matcher the mapping can't express (a regex package name, another
+`allowedVersions` form, an unknown option or top-level key). Nothing is dropped
+silently. Drift is advisory: no verdict reads it.
+
+**`drift_ignore`** in `config.yaml` lists what has no mirror on purpose, each
+with a one-line reason. An entry names a packageRule by its `match*` keys and
+values (not its position or description), optionally narrowed to some of its
+options with `keys`, or a top-level key with `top_level`. An entry that matches
+nothing is reported as stale. Changing a rule's matchers makes it a new rule,
+so its ignore stops matching and the drift shows.
+
+It is checked in three places:
+
+- **Tests.** `rules.test.js` compares the repo's two files and fails on any
+  item or stale ignore. A Renovate rule change needs its mirror, or a
+  `drift_ignore` entry, in the same PR.
+- **The PR comment.** For an open PR whose changed files include either file,
+  the poll reads both at the head commit (public raw URLs) and adds one line
+  to the triage comment: `Rules drift: none`, `Rules drift: <n> item(s) —
+  <first 3>…`, or `not checked` with a reason. Fixed templates, through the
+  redaction filter with the rest of the comment. Other PRs get no line.
+- **Live, on the default branch.** Once per poll run, `Get renovate.json` reads
+  the file through the contents API, conditional on the last ETag, so it is
+  usually a 304. The ETag is sent only while the loaded config is the one it
+  was last compared with. A new blob, or a new loaded config, is compared with
+  the **loaded** config (`triage.config`, not the file in Git). The run records
+  the result in `triage.runs.drift`, and the `rules-drift` row of
+  `triage.heartbeat` keeps the blob SHA, ETag, result and last alert in
+  `detail`. A drifting result for a new (blob, config) pair calls
+  `TriageAlertV01` once with `{source: "rules-drift", drift: true, items,
+  keys (first 5), sha (short)}`. A later clean result sends one `drift: false`
+  recovery. The alert counts as sent only on a 2xx, so a failed one is sent
+  again on the next run. A failed read records `drift: null`, keeps no ETag,
+  never alerts and never fails the run. The Home Assistant receiver for
+  `rules-drift` lives outside this repo.
+
+**Rollback** is `git revert`: `runs.drift` and `heartbeat.detail` (and the
+`rules-drift` row) stay behind, unused.
 
 ## Upgrades
 

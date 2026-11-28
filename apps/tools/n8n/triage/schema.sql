@@ -277,3 +277,9 @@ BEGIN
   RETURN jsonb_build_object('runs', runs_deleted, 'watch_runs', watch_runs_deleted, 'render_requests', render_requests_deleted);
 END
 $$;
+
+-- Rules drift (renovate.json vs config.yaml): each poll run's live check
+-- result, and the rules-drift heartbeat row's state (blob SHA, ETag, result,
+-- last alert). Additive: a revert leaves both unused.
+ALTER TABLE triage.runs ADD COLUMN IF NOT EXISTS drift jsonb;
+ALTER TABLE triage.heartbeat ADD COLUMN IF NOT EXISTS detail jsonb;
