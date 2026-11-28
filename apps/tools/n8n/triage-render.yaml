@@ -1,0 +1,138 @@
+---
+# R11: renders the old and new chart of each queued HelmRelease bump
+# (triage/render.sh). No cluster credentials; the database login is the
+# triage_render role. The poll classifies the renders.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: triage-render
+  namespace: tools
+  labels:
+    app: triage-render
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app: triage-render
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          # Static helm and yq binaries, copied onto the main container's PATH.
+          initContainers:
+          - name: helm
+            image: alpine/helm:4.3.2
+            command: ["/bin/sh", "-c", "cp \"$(command -v helm)\" /tools/helm"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+            - name: tools
+              mountPath: /tools
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 64Mi
+          - name: yq
+            image: mikefarah/yq:4.54.3
+            command: ["/bin/sh", "-c", "cp \"$(command -v yq)\" /tools/yq"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+            - name: tools
+              mountPath: /tools
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 64Mi
+          containers:
+          - name: render
+            image: postgres:17.12-alpine
+            command: ["/bin/sh", "/scripts/render.sh"]
+            env:
+            - name: PATH
+              value: "/tools:/usr/local/bin:/usr/bin:/bin"
+            - name: PGHOST
+              value: "n8n-db"
+            - name: PGDATABASE
+              value: "n8n"
+            - name: PGUSER
+              value: "triage_render"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: triage-render-secrets
+                  key: TRIAGE_RENDER_DB_PASSWORD
+            - name: WORK
+              value: "/work"
+            - name: HOME
+              value: "/work/home"
+            - name: HELM_CACHE_HOME
+              value: "/helm/cache"
+            - name: HELM_CONFIG_HOME
+              value: "/helm/config"
+            - name: HELM_DATA_HOME
+              value: "/helm/data"
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tools
+              mountPath: /tools
+              readOnly: true
+            - name: work
+              mountPath: /work
+            - name: helm
+              mountPath: /helm
+            - name: tmp
+              mountPath: /tmp
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+          volumes:
+          - name: scripts
+            configMap:
+              name: triage-render-scripts
+          - name: tools
+            emptyDir:
+              sizeLimit: 256Mi
+          - name: work
+            emptyDir:
+              sizeLimit: 256Mi
+          - name: helm
+            emptyDir:
+              sizeLimit: 256Mi
+          - name: tmp
+            emptyDir:
+              sizeLimit: 64Mi

@@ -37,10 +37,12 @@ function stubHttp(map) {
   return http;
 }
 
+// Triage fixtures only: a render pair (R11, render.test.js) has no facts.
 function loadFixtures() {
   const dir = path.join(HERE, 'fixtures');
   return fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort()
-    .map((f) => Object.assign({ file: f }, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))));
+    .map((f) => Object.assign({ file: f }, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))))
+    .filter((fx) => !fx.render);
 }
 
 function withConfigSha(facts) {

@@ -74,7 +74,8 @@ spec:
           - 172.16.0.0/12
           - 192.168.0.0/16
 ---
-# n8n-db: ingress from n8n and the nightly dump, egress DNS only.
+# n8n-db: ingress from n8n, the nightly dump and the R11 render job, egress
+# DNS only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -102,6 +103,13 @@ spec:
     ports:
     - protocol: TCP
       port: 5432
+  - from:
+    - podSelector:
+        matchLabels:
+          app: triage-render
+    ports:
+    - protocol: TCP
+      port: 5432
   egress:
   - to:
     - namespaceSelector:
@@ -115,3 +123,51 @@ spec:
       port: 53
     - protocol: TCP
       port: 53
+---
+# triage-render: no ingress; egress to DNS, the database and HTTPS outside the
+# private ranges (the chart repositories and the public raw file host).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: triage-render
+  namespace: tools
+spec:
+  podSelector:
+    matchLabels:
+      app: triage-render
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+  # DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Database
+  - to:
+    - podSelector:
+        matchLabels:
+          app: n8n-db
+    ports:
+    - protocol: TCP
+      port: 5432
+  # HTTPS, internet only
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443

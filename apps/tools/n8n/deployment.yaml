@@ -29,7 +29,7 @@ spec:
       initContainers:
       # Applies triage/schema.sql, reloads config.yaml, reseeds the redaction
       # patterns and the heartbeat URL, and resets the least-privilege `triage`
-      # role. Idempotent.
+      # and `triage_render` roles. Idempotent.
       - name: triage-schema
         image: postgres:17.12-alpine
         command: ["/bin/sh", "-c"]
@@ -60,6 +60,11 @@ spec:
             secretKeyRef:
               name: n8n-secrets
               key: TRIAGE_DB_PASSWORD
+        - name: TRIAGE_RENDER_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: n8n-secrets
+              key: TRIAGE_RENDER_DB_PASSWORD
         # Identifiers, loaded into triage.config by seed.sql.
         - name: GITHUB_APP_ID
           valueFrom:

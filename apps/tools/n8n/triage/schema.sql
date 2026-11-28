@@ -210,23 +210,70 @@ CREATE INDEX IF NOT EXISTS watches_failure_group_idx ON triage.watches (repo, fa
 -- [{id, pr, merge_sha, failure_group, source}]. Additive: a revert leaves it unused.
 ALTER TABLE triage.watches ADD COLUMN IF NOT EXISTS preexisting jsonb NOT NULL DEFAULT '[]'::jsonb;
 
+-- R11: rendered-chart diff. The poll queues one request per HelmRelease chart
+-- bump; the triage-render CronJob renders the old and new chart and stores
+-- both; the poll classifies them. Additive: a revert leaves these unused.
+CREATE TABLE IF NOT EXISTS triage.render_requests (
+  id            bigserial PRIMARY KEY,
+  repo          text NOT NULL,
+  pr            integer NOT NULL,
+  head_sha      text NOT NULL,
+  -- The HelmRelease file, and the release as Flux names it.
+  path          text NOT NULL,
+  release       text NOT NULL,
+  namespace     text NOT NULL,
+  chart         text NOT NULL,
+  helm_repo_url text,
+  old_version   text NOT NULL,
+  new_version   text NOT NULL,
+  kube_version  text,
+  status        text NOT NULL DEFAULT 'pending'
+                CONSTRAINT render_requests_status_check CHECK (status IN ('pending', 'done', 'failed', 'unsupported')),
+  attempts      integer NOT NULL DEFAULT 0,
+  -- An error code, then a short detail. Never a rendered value.
+  error         text,
+  requested     timestamptz NOT NULL DEFAULT now(),
+  finished      timestamptz,
+  CONSTRAINT render_requests_key UNIQUE (repo, pr, head_sha, path, release)
+);
+CREATE INDEX IF NOT EXISTS render_requests_pending_idx ON triage.render_requests (requested) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS render_requests_finished_idx ON triage.render_requests (finished);
+
+-- One render per side. docs is the helm template output as a JSON array.
+CREATE TABLE IF NOT EXISTS triage.renders (
+  request_id   bigint NOT NULL REFERENCES triage.render_requests (id) ON DELETE CASCADE,
+  side         text NOT NULL CONSTRAINT renders_side_check CHECK (side IN ('old', 'new')),
+  -- sha256 of the pulled chart .tgz.
+  chart_digest text NOT NULL,
+  app_version  text,
+  docs         jsonb NOT NULL,
+  bytes        integer NOT NULL,
+  rendered     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT renders_request_side_key UNIQUE (request_id, side)
+);
+
 -- Retention for the run logs: deletes triage.runs and triage.watch_runs rows
--- started more than 90 days ago, and returns the counts. The heartbeat calls it
--- at most once a day. Runs as its owner, so the triage role needs EXECUTE only
--- (roles.sql), and has no DELETE on any table. verdicts.run_id and
--- publications.run_id are ON DELETE SET NULL; watches.run_id has no FK.
+-- started more than 90 days ago, and R11 render requests (with their renders,
+-- by cascade) requested more than 30 days ago, and returns the counts. The
+-- heartbeat calls it at most once a day. Runs as its owner, so the triage role
+-- needs EXECUTE only (roles.sql), and has no DELETE on any table.
+-- verdicts.run_id and publications.run_id are ON DELETE SET NULL;
+-- watches.run_id has no FK.
 CREATE OR REPLACE FUNCTION triage.prune_runs() RETURNS jsonb
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, triage
 AS $$
 DECLARE
-  runs_deleted       bigint;
-  watch_runs_deleted bigint;
+  runs_deleted            bigint;
+  watch_runs_deleted      bigint;
+  render_requests_deleted bigint;
 BEGIN
   DELETE FROM triage.runs WHERE started < now() - interval '90 days';
   GET DIAGNOSTICS runs_deleted = ROW_COUNT;
   DELETE FROM triage.watch_runs WHERE started < now() - interval '90 days';
   GET DIAGNOSTICS watch_runs_deleted = ROW_COUNT;
-  RAISE LOG 'triage.prune_runs: deleted % runs, % watch_runs', runs_deleted, watch_runs_deleted;
-  RETURN jsonb_build_object('runs', runs_deleted, 'watch_runs', watch_runs_deleted);
+  DELETE FROM triage.render_requests WHERE requested < now() - interval '30 days';
+  GET DIAGNOSTICS render_requests_deleted = ROW_COUNT;
+  RAISE LOG 'triage.prune_runs: deleted % runs, % watch_runs, % render_requests', runs_deleted, watch_runs_deleted, render_requests_deleted;
+  RETURN jsonb_build_object('runs', runs_deleted, 'watch_runs', watch_runs_deleted, 'render_requests', render_requests_deleted);
 END
 $$;

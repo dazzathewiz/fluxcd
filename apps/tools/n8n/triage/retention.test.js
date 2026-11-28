@@ -64,18 +64,26 @@ test('prune_runs: a definer function with a pinned search_path and no parameters
   assert.match(SCHEMA, /every statement must be idempotent/, 'CREATE OR REPLACE re-runs on every pod start');
 });
 
-test('prune_runs: deletes runs and watch_runs started over 90 days ago, nothing else, and returns the counts', () => {
+test('prune_runs: deletes runs and watch_runs over 90 days old and render requests over 30, nothing else, and returns the counts', () => {
   const body = statements(PRUNE);
   const deletes = body.match(/DELETE FROM [\w.]+[^;]*;/g);
   assert.deepEqual(deletes, [
     "DELETE FROM triage.runs WHERE started < now() - interval '90 days';",
     "DELETE FROM triage.watch_runs WHERE started < now() - interval '90 days';",
+    "DELETE FROM triage.render_requests WHERE requested < now() - interval '30 days';",
   ]);
   assert.ok(!/\b(TRUNCATE|UPDATE|INSERT)\b/.test(body), 'no other write');
   assert.ok(!/\b(watches|verdicts|publications)\b/.test(body), 'leaves watches, verdicts and publications alone');
-  assert.match(body, /GET DIAGNOSTICS runs_deleted = ROW_COUNT;[\s\S]*GET DIAGNOSTICS watch_runs_deleted = ROW_COUNT;/);
-  assert.match(body, /RAISE LOG 'triage\.prune_runs: deleted % runs, % watch_runs', runs_deleted, watch_runs_deleted;/);
-  assert.match(body, /RETURN jsonb_build_object\('runs', runs_deleted, 'watch_runs', watch_runs_deleted\);/);
+  assert.match(body, /GET DIAGNOSTICS runs_deleted = ROW_COUNT;[\s\S]*GET DIAGNOSTICS watch_runs_deleted = ROW_COUNT;[\s\S]*GET DIAGNOSTICS render_requests_deleted = ROW_COUNT;/);
+  assert.match(body, /RAISE LOG 'triage\.prune_runs: deleted % runs, % watch_runs, % render_requests', runs_deleted, watch_runs_deleted, render_requests_deleted;/);
+  assert.match(body, /RETURN jsonb_build_object\('runs', runs_deleted, 'watch_runs', watch_runs_deleted, 'render_requests', render_requests_deleted\);/);
+});
+
+test('renders go with their request: the FK cascades, so pruning a request prunes both renders', () => {
+  const table = SCHEMA.slice(SCHEMA.indexOf('CREATE TABLE IF NOT EXISTS triage.renders (')).split(/\n\);/)[0];
+  assert.match(table, /request_id\s+bigint NOT NULL REFERENCES triage\.render_requests \(id\) ON DELETE CASCADE,/);
+  assert.match(table, /CONSTRAINT renders_request_side_key UNIQUE \(request_id, side\)/);
+  assert.match(SCHEMA, /CONSTRAINT render_requests_key UNIQUE \(repo, pr, head_sha, path, release\)/);
 });
 
 test('rows that point at a pruned run keep their own data: the run_id FKs are ON DELETE SET NULL', () => {

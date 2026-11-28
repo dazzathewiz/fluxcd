@@ -200,5 +200,9 @@ watch_kustomizations:
   - path: orchestration/
     name: cluster-orchestration
 
+# R11 rendered-chart diff. shadow: shown in the triage comment, not used in
+# the verdict. on: can only raise the verdict.
+r11_mode: "shadow"
+
 # A failure on a change to these packages is fixed forward, never reverted.
 fix_forward_packages: [inventree/inventree]
