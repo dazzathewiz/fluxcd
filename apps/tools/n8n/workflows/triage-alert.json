@@ -42,7 +42,7 @@
         "url": "={{ $json.url || '' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($('When called').first().json.source === 'pr-watch' ? { source: 'pr-watch', pr: Number.isInteger($('When called').first().json.pr) ? $('When called').first().json.pr : null, prs: Array.isArray($('When called').first().json.prs) ? $('When called').first().json.prs.filter((n) => Number.isInteger(n)) : [], status: ['failed', 'timeout'].includes($('When called').first().json.status) ? $('When called').first().json.status : null, action: ['revert', 'fix-forward', 'investigate'].includes($('When called').first().json.action) ? $('When called').first().json.action : null, fix_forward: $('When called').first().json.fix_forward === true, checked: $('When called').first().json.checked } : { source: 'pr-triage', last_success: $('When called').first().json.last_success || null, watch_last_success: $('When called').first().json.watch_last_success || null, stale: $('When called').first().json.stale === true, checked: $('When called').first().json.checked }) }}",
+        "jsonBody": "={{ JSON.stringify($('When called').first().json.source === 'pr-watch' ? { source: 'pr-watch', pr: Number.isInteger($('When called').first().json.pr) ? $('When called').first().json.pr : null, prs: Array.isArray($('When called').first().json.prs) ? $('When called').first().json.prs.filter((n) => Number.isInteger(n)) : [], status: ['failed', 'timeout'].includes($('When called').first().json.status) ? $('When called').first().json.status : null, action: ['revert', 'fix-forward', 'investigate'].includes($('When called').first().json.action) ? $('When called').first().json.action : null, fix_forward: $('When called').first().json.fix_forward === true, checked: $('When called').first().json.checked } : $('When called').first().json.source === 'rules-drift' ? { source: 'rules-drift', drift: [true, false].includes($('When called').first().json.drift) ? $('When called').first().json.drift : null, items: Number.isInteger($('When called').first().json.items) ? $('When called').first().json.items : null, keys: Array.isArray($('When called').first().json.keys) ? $('When called').first().json.keys.filter((k) => typeof k === 'string' && /^[A-Za-z0-9._/*@:+<>{}, -]{1,140}$/.test(k)).slice(0, 5) : [], sha: /^[0-9a-f]{7}$/.test(String($('When called').first().json.sha)) ? $('When called').first().json.sha : null, checked: $('When called').first().json.checked } : { source: 'pr-triage', last_success: $('When called').first().json.last_success || null, watch_last_success: $('When called').first().json.watch_last_success || null, stale: $('When called').first().json.stale === true, rules_drift: [true, false].includes($('When called').first().json.rules_drift) ? $('When called').first().json.rules_drift : null, checked: $('When called').first().json.checked }) }}",
         "options": {
           "response": {
             "response": {
@@ -121,7 +121,7 @@
     "executionOrder": "v1",
     "timezone": "UTC",
     "callerPolicy": "workflowsFromAList",
-    "callerIds": "TriageBeat000001,TriageWatch00001",
+    "callerIds": "TriageBeat000001,TriageWatch00001,TriagePoll000001",
     "saveDataSuccessExecution": "none",
     "saveDataErrorExecution": "none",
     "saveManualExecutions": false,

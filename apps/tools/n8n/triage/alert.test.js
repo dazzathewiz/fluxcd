@@ -17,12 +17,13 @@ const wf = (f) => JSON.parse(read(`workflows/${f}`));
 const BEAT = wf('triage-heartbeat.json');
 const ALERT = wf('triage-alert.json');
 const next = (w, name) => (((w.connections[name] || {}).main || [])[0] || []).map((l) => l.node);
-const KEYS = ['checked', 'last_success', 'source', 'stale', 'watch_last_success'];
+const KEYS = ['checked', 'last_success', 'rules_drift', 'source', 'stale', 'watch_last_success'];
+const DRIFT_KEYS = ['checked', 'drift', 'items', 'keys', 'sha', 'source'];
 const WATCH_KEYS = ['action', 'checked', 'fix_forward', 'pr', 'prs', 'source', 'status'];
 const WATCH = wf('triage-watch.json');
 
 // What Record last success returns: pg hands timestamptz back as Dates.
-const ROW = { name: 'triage-poll', last_success: new Date('2026-11-20T01:15:00.123Z'), watch_last_success: new Date('2026-11-20T01:25:00Z'), checked: new Date('2026-11-20T01:30:00Z'), stale: false };
+const ROW = { name: 'triage-poll', last_success: new Date('2026-11-20T01:15:00.123Z'), watch_last_success: new Date('2026-11-20T01:25:00Z'), checked: new Date('2026-11-20T01:30:00Z'), stale: false, rules_drift: false };
 
 function payload(row) {
   return h.code(h.nodeOf(BEAT, 'Ping payload'), {}, [{ json: JSON.parse(JSON.stringify(row)) }], 0)[0].json;
@@ -35,10 +36,14 @@ function expr(value, $json, out) {
   return vm.runInNewContext(`(${body})`, { $json, $ });
 }
 
-test('payload: exactly source, last_success, watch_last_success, stale and checked, in ISO-8601 UTC', () => {
+test('payload: exactly source, last_success, watch_last_success, stale, rules_drift and checked, in ISO-8601 UTC', () => {
   const p = payload(ROW);
   assert.deepEqual(Object.keys(p).sort(), KEYS);
-  assert.deepEqual(p, { source: 'pr-triage', last_success: '2026-11-20T01:15:00.123Z', watch_last_success: '2026-11-20T01:25:00.000Z', stale: false, checked: '2026-11-20T01:30:00.000Z' });
+  assert.deepEqual(p, { source: 'pr-triage', last_success: '2026-11-20T01:15:00.123Z', watch_last_success: '2026-11-20T01:25:00.000Z', stale: false, rules_drift: false, checked: '2026-11-20T01:30:00.000Z' });
+  // rules_drift: true, false, or null (no check yet, or the last read failed).
+  assert.equal(payload(Object.assign({}, ROW, { rules_drift: true })).rules_drift, true);
+  assert.equal(payload(Object.assign({}, ROW, { rules_drift: null })).rules_drift, null);
+  assert.equal(payload(Object.assign({}, ROW, { rules_drift: 'yes' })).rules_drift, null);
   const none = payload(Object.assign({}, ROW, { last_success: null, watch_last_success: null, stale: true }));
   assert.equal(none.last_success, null);
   assert.equal(none.watch_last_success, null);
@@ -46,7 +51,7 @@ test('payload: exactly source, last_success, watch_last_success, stale and check
   assert.match(none.checked, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
 });
 
-test('payload: the body TriageAlertV01 sends is the same five keys, with no URL', () => {
+test('payload: the body TriageAlertV01 sends is the same six keys, with no URL', () => {
   const post = h.nodeOf(ALERT, 'POST');
   const url = 'http://ha.example.test:8123/api/webhook/secret-id';
   const trigger = Object.assign(payload(ROW), { extra: 'dropped', url });
@@ -82,7 +87,7 @@ test('payload: a watcher alert is exactly source, pr, prs, status, action, fix_f
   assert.equal(pass('off', 'off', 'failed'), false);
 });
 
-test('TriageAlertV01 saves no executions and only the heartbeat and the watcher may call it', () => {
+test('TriageAlertV01 saves no executions and only the heartbeat, the watcher and the poll may call it', () => {
   assert.equal(ALERT.id, 'TriageAlertV01');
   const s = ALERT.settings;
   assert.equal(s.saveDataSuccessExecution, 'none');
@@ -90,15 +95,30 @@ test('TriageAlertV01 saves no executions and only the heartbeat and the watcher 
   assert.equal(s.saveManualExecutions, false);
   assert.equal(s.saveExecutionProgress, false);
   assert.equal(s.callerPolicy, 'workflowsFromAList');
-  assert.equal(String(s.callerIds), `${BEAT.id},${WATCH.id}`);
+  assert.equal(String(s.callerIds), `${BEAT.id},${WATCH.id},${h.POLL.id}`);
   const triggers = ALERT.nodes.filter((n) => /trigger$/i.test(n.type) || n.type === 'n8n-nodes-base.webhook');
   assert.deepEqual(triggers.map((n) => n.type), ['n8n-nodes-base.executeWorkflowTrigger']);
   // Only the heartbeat calls it.
   for (const f of WORKFLOWS) {
     for (const n of wf(f).nodes) {
-      if (n.type === 'n8n-nodes-base.executeWorkflow' && n.parameters.workflowId === ALERT.id) assert.ok(['triage-heartbeat.json', 'triage-watch.json'].includes(f), `${f} calls ${ALERT.id}`);
+      if (n.type === 'n8n-nodes-base.executeWorkflow' && n.parameters.workflowId === ALERT.id) assert.ok(['triage-heartbeat.json', 'triage-watch.json', 'triage-poll.json'].includes(f), `${f} calls ${ALERT.id}`);
     }
   }
+});
+
+test('payload: a rules drift alert is exactly source, drift, items, keys, sha and checked', () => {
+  const post = h.nodeOf(ALERT, 'POST');
+  // What the poll's Drift alert payload node passes, plus anything else.
+  const item = { source: 'rules-drift', drift: true, items: 2, keys: ['one_minor_per_pr k3s-io/k3s', 'gated postgres@docker:major'], sha: 'abcdef1', checked: '2026-11-28T00:00:00.000Z', url: 'https://x', detail: { etag: 'e' } };
+  const body = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': item }));
+  assert.deepEqual(Object.keys(body).sort(), DRIFT_KEYS);
+  assert.deepEqual(body, { source: 'rules-drift', drift: true, items: 2, keys: item.keys, sha: 'abcdef1', checked: item.checked });
+  // Odd values are dropped, and at most five keys get through.
+  const odd = JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': Object.assign({}, item, {
+    drift: 'yes', items: '2', sha: 'not-a-sha', keys: ['a', 'b', 'c', 'd', 'e', 'f', 7, 'https://x?y=`z`'],
+  }) }));
+  assert.deepEqual([odd.drift, odd.items, odd.sha, odd.keys], [null, null, null, ['a', 'b', 'c', 'd', 'e']]);
+  assert.deepEqual(JSON.parse(expr(post.parameters.jsonBody, {}, { 'When called': Object.assign({}, item, { keys: 'x', drift: false }) })), Object.assign({}, body, { keys: [], drift: false }));
 });
 
 test('TriageAlertV01: 10 s timeout, one retry, and only the status code goes back', () => {

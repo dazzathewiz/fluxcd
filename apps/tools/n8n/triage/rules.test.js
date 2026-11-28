@@ -624,14 +624,11 @@ test('config drift: caps mirror renovate.json allowedVersions', () => {
   assert.deepEqual(CONFIG.caps.map((c) => `${c.package} <${c.below}`).sort(), fromRenovate.sort());
 });
 
-test('config drift: groups and one-minor packages mirror renovate.json', () => {
-  const groups = renovateRules().filter((r) => r.groupName && (r.matchPackageNames || []).length > 1);
-  assert.deepEqual(
-    CONFIG.groups.map((g) => [g.name, g.branch, g.packages.slice().sort()]),
-    groups.map((g) => [g.groupName, `renovate/${g.groupName}`, g.matchPackageNames.slice().sort()]),
-  );
-  const helmSeparate = renovateRules().filter((r) => r.separateMultipleMinor && (r.matchDatasources || []).includes('helm'));
-  assert.deepEqual(CONFIG.one_minor_per_pr.slice().sort(), [].concat(...helmSeparate.map((r) => r.matchPackageNames)).sort());
+// Groups and one-minor packages are compared by compareRules (rules drift,
+// below). The branch is config's own: Renovate's default for the group.
+test('config drift: each group comes from Renovate\'s default branch for it', () => {
+  assert.ok(CONFIG.groups.length > 0);
+  for (const g of CONFIG.groups) assert.equal(g.branch, `renovate/${g.name}`);
 });
 
 function walkYaml(dir, out) {
@@ -676,4 +673,260 @@ test('config drift: helm_index matches the repo HelmReleases and HelmRepositorie
     expected[r.chart] = repoUrls[r.source];
   }
   assert.deepEqual(CONFIG.helm_index, expected);
+});
+
+// ------------------------------------------------ rules drift (renovate.json vs config.yaml)
+
+const RENOVATE_TEXT = fs.readFileSync(path.join(REPO_ROOT, 'renovate.json'), 'utf8');
+const renovateDoc = () => JSON.parse(RENOVATE_TEXT);
+const drift = (doc, config) => rules.compareRules(rules.deriveRenovateRules(doc), config || CONFIG);
+const withRules = (fn) => { const d = renovateDoc(); fn(d.packageRules, d); return d; };
+
+test('rules drift: the repo\'s renovate.json and config.yaml agree, and every drift_ignore entry is used', () => {
+  const r = drift(RENOVATE_TEXT);
+  assert.deepEqual(r.items, []);
+  assert.equal(r.drift, false);
+  assert.deepEqual(r.unused_ignores, []);
+  for (const ig of CONFIG.drift_ignore) assert.ok(ig.reason.length > 0 && ig.reason.length <= 80, `short reason: ${ig.reason}`);
+});
+
+test('rules drift: an added gated rule is missing-in-config', () => {
+  const d = withRules((rs) => rs.push({ matchDatasources: ['docker'], matchPackageNames: ['grafana/grafana'], matchUpdateTypes: ['major'], dependencyDashboardApproval: true }));
+  const r = drift(d);
+  assert.equal(r.drift, true);
+  assert.deepEqual(r.items, [{ section: 'gated', kind: 'missing-in-config', key: 'grafana/grafana@docker:major' }]);
+});
+
+test('rules drift: a cap removed from renovate.json is missing-in-renovate', () => {
+  const d = withRules((rs) => rs.splice(rs.findIndex((x) => x.allowedVersions === '<24.0.0'), 1));
+  assert.deepEqual(drift(d).items, [{ section: 'caps', kind: 'missing-in-renovate', key: 'traefik<24.0.0' }]);
+});
+
+test('rules drift: an allowedVersions the caps can\'t express is unmappable, never dropped', () => {
+  for (const v of ['^2.0.0', '/^v?2\\./', '<=2.0.0', '>=1.0.0 <2.0.0']) {
+    const d = withRules((rs) => { rs.find((x) => x.allowedVersions === '<24.0.0').allowedVersions = v; });
+    const r = drift(d);
+    assert.equal(r.drift, true, v);
+    assert.deepEqual(r.items.map((i) => [i.section, i.kind, i.key]), [
+      ['caps', 'missing-in-renovate', 'traefik<24.0.0'],
+      ['packageRules', 'unmappable', 'allowedVersions@traefik'],
+    ], v);
+  }
+  // A cap on a rule with no package, or limited to some update types, is unmappable too.
+  const noPkg = withRules((rs) => rs.push({ matchDatasources: ['helm'], allowedVersions: '<2.0.0' }));
+  assert.ok(drift(noPkg).items.some((i) => i.kind === 'unmappable' && i.key === 'allowedVersions@helm'));
+});
+
+test('rules drift: unknown options and matchers the mapping can\'t express are unmappable', () => {
+  const cases = [
+    [{ matchPackageNames: ['postgres'], rangeStrategy: 'pin' }, 'rangeStrategy@postgres'],
+    [{ matchPackageNames: ['/^postgres/'], dependencyDashboardApproval: true }, 'matchPackageNames@/^postgres/'],
+    [{ matchPackageNames: ['grafana/*'], dependencyDashboardApproval: true }, 'matchPackageNames@grafana/*'],
+    [{ matchDepNames: ['x'], dependencyDashboardApproval: true }, 'matchDepNames@*'],
+    [{ matchPackageNames: ['caddy'], matchUpdateTypes: ['lockFileMaintenance'], dependencyDashboardApproval: true }, 'matchUpdateTypes@caddy'],
+    [{ matchPackageNames: ['caddy'], dependencyDashboardApproval: false }, 'dependencyDashboardApproval@caddy'],
+    [{ matchPackageNames: ['caddy'], matchUpdateTypes: ['minor'], separateMultipleMinor: true }, 'separateMultipleMinor@caddy'],
+    [{ matchPackageNames: ['caddy'], groupName: 'All Caddy' }, 'groupName@caddy'],
+  ];
+  for (const [rule, key] of cases) {
+    const r = drift(withRules((rs) => rs.push(rule)));
+    assert.ok(r.items.some((i) => i.kind === 'unmappable' && i.key === key), `${key}: ${JSON.stringify(r.items)}`);
+  }
+  // A new top-level option is unmappable until drift_ignore names it.
+  const top = withRules((rs, d) => { d.ignoreDeps = ['x']; });
+  assert.deepEqual(drift(top).items, [{ section: 'top-level', kind: 'unmappable', key: 'ignoreDeps' }]);
+  // A non-object renovate.json, or packageRules that isn't a list, can't be compared at all.
+  assert.throws(() => rules.deriveRenovateRules('[]'));
+  assert.throws(() => rules.deriveRenovateRules('{"packageRules": {}}'));
+  assert.throws(() => rules.deriveRenovateRules('{'));
+});
+
+test('rules drift: what each option maps to', () => {
+  const d = rules.deriveRenovateRules({
+    packageRules: [
+      { matchManagers: ['flux'], matchPackageNames: ['b', 'a'], matchUpdateTypes: ['major', 'minor'], dependencyDashboardApproval: true },
+      { matchDatasources: ['helm', 'docker'], dependencyDashboardApproval: true },
+      { matchPackageNames: ['a', 'b'], separateMultipleMinor: true, allowedVersions: '< v3' },
+      { matchPackageNames: ['a'], groupName: 'ab' },
+      { matchPackageNames: ['b'], groupName: 'ab' },
+    ],
+  });
+  // matchManagers alone gives no datasource; one entry per package and datasource.
+  assert.deepEqual(d.gated.map((g) => [g.package, g.datasource, g.update_types]), [
+    ['b', null, ['minor', 'major']], ['a', null, ['minor', 'major']], [null, 'helm', []], [null, 'docker', []],
+  ]);
+  assert.deepEqual(d.caps.map((c) => [c.package, c.below]), [['a', '3'], ['b', '3']]);
+  assert.deepEqual(d.one_minor_per_pr.map((e) => e.package), ['a', 'b']);
+  assert.deepEqual(d.unmappable, []);
+  // Groups from two rules with the same groupName are one group.
+  const config = rules.loadConfig(CONFIG_TEXT);
+  config.groups = [{ name: 'ab', branch: 'renovate/ab', packages: ['b', 'a'] }];
+  const r = rules.compareRules(d, config);
+  assert.ok(!r.items.some((i) => i.section === 'groups'), JSON.stringify(r.items));
+});
+
+test('rules drift: drift_ignore matches by matcher set, not position or description, and a stale entry is reported', () => {
+  // Moving the ignored rule and rewording its description changes nothing.
+  const moved = withRules((rs) => {
+    const i = rs.findIndex((x) => (x.matchFileNames || []).includes('.archive/**'));
+    const [r] = rs.splice(i, 1);
+    r.description = 'reworded';
+    rs.unshift(r);
+  });
+  assert.deepEqual(drift(moved), { drift: false, items: [], unused_ignores: [] });
+  // Changing its matchers makes it a different rule: its options show, and the entry is stale.
+  const changed = withRules((rs) => { rs.find((x) => (x.matchFileNames || []).includes('.archive/**')).matchFileNames = ['.old/**']; });
+  const r = drift(changed);
+  assert.deepEqual(r.items.map((i) => i.key), ['enabled@.old/**', 'matchFileNames@.old/**']);
+  assert.deepEqual(r.unused_ignores, ['rule matchFileNames=.archive/**']);
+  // keys ignores only the options it lists.
+  const extra = withRules((rs) => { rs.find((x) => (x.matchPackageNames || []).includes('n8nio/n8n') && x.schedule).automerge = true; });
+  assert.deepEqual(drift(extra).items, [{ section: 'packageRules', kind: 'unmappable', key: 'automerge@n8nio/n8n' }]);
+  // An option the rule no longer has makes the entry stale too.
+  const gone = withRules((rs) => { delete rs.find((x) => (x.matchPackageNames || []).includes('n8nio/n8n') && x.schedule).schedule; });
+  assert.deepEqual(drift(gone).unused_ignores, ['rule matchDatasources=docker matchPackageNames=n8nio/n8n (schedule)']);
+  // Ignoring a mapped option on a rule drops only that option's entry: the
+  // system-upgrade-controller rule still derives its gate, and its group is
+  // hidden only by the ignore.
+  const d = rules.deriveRenovateRules(RENOVATE_TEXT);
+  assert.ok(d.gated.some((g) => g.package === 'rancher/system-upgrade-controller'));
+  assert.ok(d.groups.some((g) => g.name === 'system-upgrade-controller'));
+  const noIgnore = Object.assign({}, CONFIG, { drift_ignore: CONFIG.drift_ignore.filter((ig) => !ig.keys.includes('groupName')) });
+  assert.deepEqual(rules.compareRules(d, noIgnore).items.map((i) => [i.section, i.kind, i.key]),
+    [['groups', 'missing-in-config', 'system-upgrade-controller{rancher/system-upgrade-controller}']]);
+});
+
+test('rules drift: order does not matter, in either file', () => {
+  const shuffled = withRules((rs, d) => {
+    rs.reverse();
+    for (const r of rs) {
+      for (const k of Object.keys(r)) if (Array.isArray(r[k])) r[k].reverse();
+      const keys = Object.keys(r).reverse();
+      const copy = {};
+      for (const k of keys) copy[k] = r[k];
+      for (const k of Object.keys(r)) delete r[k];
+      Object.assign(r, copy);
+    }
+    const top = Object.keys(d).reverse();
+    const c = {};
+    for (const k of top) c[k] = d[k];
+    for (const k of Object.keys(d)) delete d[k];
+    Object.assign(d, c);
+  });
+  assert.deepEqual(drift(shuffled), drift(RENOVATE_TEXT));
+  const config = rules.loadConfig(CONFIG_TEXT);
+  for (const k of ['gated', 'caps', 'one_minor_per_pr', 'groups', 'drift_ignore']) config[k] = config[k].slice().reverse();
+  config.gated = config.gated.map((g) => Object.assign({}, g, { update_types: g.update_types.slice().reverse() }));
+  config.groups = config.groups.map((g) => Object.assign({}, g, { packages: g.packages.slice().reverse() }));
+  assert.deepEqual(drift(RENOVATE_TEXT, config), { drift: false, items: [], unused_ignores: [] });
+  // The item list itself is sorted, so the comment's first three are stable.
+  const two = withRules((rs) => {
+    rs.push({ matchPackageNames: ['zz'], dependencyDashboardApproval: true });
+    rs.push({ matchPackageNames: ['aa'], dependencyDashboardApproval: true });
+  });
+  assert.deepEqual(drift(two).items.map((i) => i.key), ['aa@*:*', 'zz@*:*']);
+});
+
+test('rules drift: drift_ignore entries must say what they match and why', () => {
+  const bad = [
+    ['drift_ignore:\n  - reason: "x"\n', /exactly one of rule or top_level/],
+    ['drift_ignore:\n  - rule: "matchPackageNames=a"\n    top_level: extends\n    reason: "x"\n', /exactly one of rule or top_level/],
+    ['drift_ignore:\n  - rule: "matchPackageNames=a"\n', /one-line reason/],
+    ['drift_ignore:\n  - top_level: extends\n    keys: [a]\n    reason: "x"\n', /keys go with rule only/],
+    ['drift_ignore:\n  - rule: "matchPackageNames=a"\n    keys: ["a-b"]\n    reason: "x"\n', /option names/],
+    ['drift_ignore:\n  - rule: "matchPackageNames=a"\n    why: "x"\n', /unknown key/],
+  ];
+  const base = CONFIG_TEXT.replace(/\ndrift_ignore:\n(?:  .*\n)+/, '\n');
+  assert.ok(!/drift_ignore/.test(base.replace(/^#.*$/gm, '')));
+  assert.deepEqual(rules.loadConfig(base).drift_ignore, []);
+  for (const [block, re] of bad) assert.throws(() => rules.loadConfig(`${base}\n${block}`), re);
+});
+
+test('rules drift: the comment line is a fixed template, three items at most', () => {
+  assert.equal(rules.rulesDriftLine(null), null);
+  assert.equal(rules.rulesDriftLine({ state: 'done', items: [] }), 'Rules drift: none');
+  const items = [
+    { section: 'gated', kind: 'missing-in-config', key: 'aa@docker:major' },
+    { section: 'caps', kind: 'missing-in-renovate', key: 'traefik<24.0.0' },
+    { section: 'packageRules', kind: 'unmappable', key: 'enabled@**/gotk-components.yaml' },
+    { section: 'groups', kind: 'missing-in-config', key: 'x{a,b}' },
+  ];
+  assert.equal(rules.rulesDriftLine({ state: 'done', items: items.slice(0, 1) }), 'Rules drift: 1 item(s) — `gated aa@docker:major`');
+  assert.equal(rules.rulesDriftLine({ state: 'done', items }),
+    'Rules drift: 4 item(s) — `gated aa@docker:major`, `caps traefik<24.0.0`, `packageRules enabled@**/gotk-components.yaml`…');
+  // Anything that doesn't fit the key pattern is never shown.
+  assert.equal(rules.rulesDriftLine({ state: 'done', items: [{ section: 'packageRules', kind: 'unmappable', key: 'x` <img src=y>@*' }] }), 'Rules drift: 1 item(s) — other item');
+  assert.equal(rules.rulesDriftLine({ state: 'not_run', reason: 'config-invalid' }), 'Rules drift: not checked — config.yaml does not load at this commit');
+  assert.equal(rules.rulesDriftLine({ state: 'not_run', reason: 'whatever' }), 'Rules drift: not checked — renovate.json or config.yaml could not be read at this commit');
+});
+
+test('rules drift at a PR head: only for a PR that changes either file, read at its head commit', async () => {
+  const REPO = 'dazzathewiz/fluxcd';
+  const SHA = 'a'.repeat(40);
+  const raw = (p) => `https://raw.githubusercontent.com/${REPO}/${SHA}/${p}`;
+  const added = JSON.stringify(withRules((rs) => rs.push({ matchPackageNames: ['grafana/grafana'], dependencyDashboardApproval: true })));
+  const urls = [];
+  const stub = stubHttp({
+    [raw('renovate.json')]: { statusCode: 200, headers: {}, body: added },
+    [raw('apps/tools/n8n/triage/config.yaml')]: { statusCode: 200, headers: {}, body: CONFIG_TEXT },
+  });
+  const http = (o) => { urls.push(o.url); return stub(o); };
+  assert.equal(await rules.rulesDriftForPr(http, REPO, SHA, [{ filename: 'apps/x.yaml' }], rules.newCaches()), null);
+  assert.deepEqual(urls, [], 'any other PR reads nothing');
+  const r = await rules.rulesDriftForPr(http, REPO, SHA, [{ filename: 'renovate.json' }], rules.newCaches());
+  assert.deepEqual(r, { state: 'done', drift: true, items: [{ section: 'gated', kind: 'missing-in-config', key: 'grafana/grafana@*:*' }] });
+  assert.deepEqual(urls, [raw('renovate.json'), raw('apps/tools/n8n/triage/config.yaml')]);
+  // A rename into either path counts; a file that can't be read is not_run.
+  const missing = stubHttp({});
+  assert.deepEqual(await rules.rulesDriftForPr(missing, REPO, SHA, [{ filename: 'x', previous_filename: 'apps/tools/n8n/triage/config.yaml' }], rules.newCaches()), { state: 'not_run', reason: 'fetch-failed' });
+  const badCfg = stubHttp({ [raw('renovate.json')]: { statusCode: 200, headers: {}, body: RENOVATE_TEXT }, [raw('apps/tools/n8n/triage/config.yaml')]: { statusCode: 200, headers: {}, body: 'write_mode: "nope"\n' } });
+  assert.deepEqual(await rules.rulesDriftForPr(badCfg, REPO, SHA, [{ filename: 'renovate.json' }], rules.newCaches()), { state: 'not_run', reason: 'config-invalid' });
+  const badJson = stubHttp({ [raw('renovate.json')]: { statusCode: 200, headers: {}, body: '{' }, [raw('apps/tools/n8n/triage/config.yaml')]: { statusCode: 200, headers: {}, body: CONFIG_TEXT } });
+  assert.deepEqual(await rules.rulesDriftForPr(badJson, REPO, SHA, [{ filename: 'renovate.json' }], rules.newCaches()), { state: 'not_run', reason: 'renovate-invalid' });
+  // Only those two paths, at a full commit SHA.
+  assert.equal(rules.rulesFileUrl(REPO, SHA, '../renovate.json'), null);
+  assert.equal(rules.rulesFileUrl(REPO, 'main', 'renovate.json'), null);
+});
+
+test('rules drift live: one alert per drifting blob, none on a 304, one recovery, none on a failed read', () => {
+  const now = '2026-11-28T00:00:00.000Z';
+  const b64 = (t) => Buffer.from(t, 'utf8').toString('base64').replace(/(.{60})/g, '$1\n');
+  const read = (sha, text, etag) => ({ statusCode: 200, headers: { etag }, body: { sha, encoding: 'base64', content: b64(text) } });
+  const drifting = JSON.stringify(withRules((rs) => rs.push({ matchPackageNames: ['grafana/grafana'], dependencyDashboardApproval: true })));
+  const S1 = '1'.repeat(40);
+  const S2 = '2'.repeat(40);
+  const S3 = '3'.repeat(40);
+  // First check, clean: no alert (nothing to recover from).
+  let p = rules.planRulesDrift(null, read(S1, RENOVATE_TEXT, '"e1"'), CONFIG, 'c1', now);
+  assert.deepEqual(p.run, { sha: S1, drift: false, items: 0, keys: [], fresh: true });
+  assert.equal(p.alert, null);
+  assert.equal(p.detail.etag, '"e1"');
+  // A new blob that drifts: one alert.
+  p = rules.planRulesDrift(p.detail, read(S2, drifting, '"e2"'), CONFIG, 'c1', now);
+  assert.deepEqual(p.alert, { source: 'rules-drift', drift: true, items: 1, keys: ['gated grafana/grafana@*:*'], sha: '2222222', checked: now });
+  // Not recorded (Home Assistant didn't answer 2xx): the next run sends it again, from the 304.
+  const unsent = rules.planRulesDrift(p.detail, { statusCode: 304, headers: {} }, CONFIG, 'c1', now);
+  assert.equal(unsent.run.fresh, false);
+  assert.deepEqual(unsent.alert, p.alert);
+  // Recorded: same blob, no second alert.
+  const sent = Object.assign({}, p.detail, { alerted: p.alerted_next });
+  assert.equal(rules.planRulesDrift(sent, { statusCode: 304, headers: {} }, CONFIG, 'c1', now).alert, null);
+  assert.equal(rules.planRulesDrift(sent, read(S2, drifting, '"e2"'), CONFIG, 'c1', now).alert, null);
+  // A failed read: drift null, no ETag kept, no alert, and alerted survives.
+  const failed = rules.planRulesDrift(sent, { statusCode: 502, headers: {}, body: {} }, CONFIG, 'c1', now);
+  assert.deepEqual([failed.run.drift, failed.detail.etag, failed.alert, failed.detail.alerted], [null, null, null, sent.alerted]);
+  assert.equal(rules.planRulesDrift(sent, null, CONFIG, 'c1', now).run.drift, null);
+  // A blob that doesn't parse: null, never an alert.
+  assert.deepEqual([rules.planRulesDrift(sent, read(S3, '{', '"e3"'), CONFIG, 'c1', now).run.drift, rules.planRulesDrift(sent, read(S3, '{', '"e3"'), CONFIG, 'c1', now).alert], [null, null]);
+  // A 304 against a different loaded config can't be trusted: it counts as a failed read.
+  assert.equal(rules.planRulesDrift(sent, { statusCode: 304, headers: {} }, CONFIG, 'c2', now).run.drift, null);
+  // A later blob that is clean: one recovery, then quiet.
+  const rec = rules.planRulesDrift(failed.detail, read(S3, RENOVATE_TEXT, '"e3"'), CONFIG, 'c1', now);
+  assert.deepEqual(rec.alert, { source: 'rules-drift', drift: false, items: 0, keys: [], sha: '3333333', checked: now });
+  const after = Object.assign({}, rec.detail, { alerted: rec.alerted_next });
+  assert.equal(rules.planRulesDrift(after, { statusCode: 304, headers: {} }, CONFIG, 'c1', now).alert, null);
+  // Keys stop at five.
+  const many = JSON.stringify(withRules((rs) => { for (let i = 0; i < 7; i++) rs.push({ matchPackageNames: [`p${i}`], dependencyDashboardApproval: true }); }));
+  const m = rules.planRulesDrift(null, read(S1, many, '"e"'), CONFIG, 'c1', now);
+  assert.deepEqual([m.alert.items, m.alert.keys.length], [7, 5]);
 });
